@@ -1,14 +1,77 @@
-# Version: v1.0
+# Version: v1.1
 """
 Nexus RAG MCP Server
 Provides strict multi-tenant GraphRAG retrieval isolated by project_id and tenant_scope.
 """
 import asyncio
+import logging
 from typing import Optional
 from mcp.server.fastmcp import FastMCP
 
+from llama_index.core import Document, PropertyGraphIndex, Settings
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
+from llama_index.llms.ollama import Ollama
+from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
+
+DEFAULT_OLLAMA_URL = "http://localhost:11434" # When running outside Docker
+# If running inside docker, this would be changed, but usually MCP runs locally
+DEFAULT_NEO4J_URL = "bolt://localhost:7687"
+DEFAULT_NEO4J_USER = "neo4j"
+DEFAULT_NEO4J_PASSWORD = "password123"
+DEFAULT_EMBED_MODEL = "nomic-embed-text"
+DEFAULT_LLM_MODEL = "llama3.1:8b"
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("mcp-nexus-rag")
+
+import nest_asyncio
+nest_asyncio.apply()
+
 # Initialize FastMCP Server
-mcp = FastMCP("mcp-nexus-rag", description="Multi-tenant GraphRAG Memory Server")
+mcp = FastMCP("mcp-nexus-rag")
+
+def get_index() -> PropertyGraphIndex:
+    llm = Ollama(
+        model=DEFAULT_LLM_MODEL,
+        base_url=DEFAULT_OLLAMA_URL,
+        request_timeout=300.0,
+        context_window=8192,
+    )
+    embed_model = OllamaEmbedding(
+        model_name=DEFAULT_EMBED_MODEL,
+        base_url=DEFAULT_OLLAMA_URL,
+    )
+    
+    Settings.llm = llm
+    Settings.embed_model = embed_model
+    Settings.node_parser = SentenceSplitter(
+        chunk_size=1024,
+        chunk_overlap=128,
+    )
+
+    graph_store = Neo4jPropertyGraphStore(
+        username=DEFAULT_NEO4J_USER,
+        password=DEFAULT_NEO4J_PASSWORD,
+        url=DEFAULT_NEO4J_URL,
+    )
+    
+    try:
+        index = PropertyGraphIndex.from_existing(
+            property_graph_store=graph_store,
+            embed_model=embed_model,
+            llm=llm,
+        )
+        return index
+    except Exception as e:
+        logger.warning(f"Could not load existing index: {e}. Will create empty index.")
+        return PropertyGraphIndex.from_documents(
+            [],
+            property_graph_store=graph_store,
+            embed_model=embed_model,
+            llm=llm,
+        )
 
 @mcp.tool()
 async def get_context(query: str, project_id: str, scope: str) -> str:
@@ -23,10 +86,59 @@ async def get_context(query: str, project_id: str, scope: str) -> str:
     Returns:
         Structured context relevant to the specific project and scope.
     """
-    # TODO: Initialize LlamaIndex PropertyGraphIndex with Neo4j PropertyGraphStore.
-    # TODO: Implement strict metadata kwargs filtering against (project_id, scope).
+    logger.info(f"Retrieving context for project: {project_id}, scope: {scope}, query: {query}")
+    try:
+        index = get_index()
+        # Strict metadata kwargs filtering against (project_id, scope)
+        filters = MetadataFilters(
+            filters=[
+                ExactMatchFilter(key="project_id", value=project_id),
+                ExactMatchFilter(key="tenant_scope", value=scope)
+            ]
+        )
+        
+        retriever = index.as_retriever(filters=filters)
+        nodes = retriever.retrieve(query)
+        
+        if not nodes:
+            return f"No context found for {project_id} in scope {scope} for query: '{query}'"
+            
+        context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
+        return f"Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+    except Exception as e:
+        logger.error(f"Error retrieving context: {e}")
+        return f"Error retrieving context: {e}"
+
+@mcp.tool()
+async def ingest_document(text: str, project_id: str, scope: str, source_identifier: str = "manual") -> str:
+    """
+    Ingest a document into the Multi-Tenant GraphRAG memory.
     
-    return f"[Mock] Context retrieved for {project_id} in scope {scope}:\n- Node: Simulated Neo4j logic for '{query}'"
+    Args:
+        text: The content of the document to ingest.
+        project_id: The target tenant project ID (e.g., 'TRADING_BOT', 'WEB_PORTAL').
+        scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS', 'WEB_RESEARCH').
+        source_identifier: An optional identifier for the source of the document.
+        
+    Returns:
+        Status message about the ingestion.
+    """
+    logger.info(f"Ingesting document for project: {project_id}, scope: {scope}")
+    try:
+        index = get_index()
+        doc = Document(
+            text=text,
+            metadata={
+                "project_id": project_id,
+                "tenant_scope": scope,
+                "source": source_identifier,
+            }
+        )
+        index.insert(doc)
+        return f"Successfully ingested document for {project_id} in scope {scope}."
+    except Exception as e:
+        logger.error(f"Error ingesting document: {e}")
+        return f"Error ingesting document: {e}"
 
 def main():
     """Run the MCP server via standard stdio transport."""
