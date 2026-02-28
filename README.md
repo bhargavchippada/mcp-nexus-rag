@@ -4,7 +4,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage (194 tests)
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage (208 tests)
 
 ---
 
@@ -64,10 +64,11 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 
 ### Retrieval
 
-| Tool                 | Parameters                                      | Description                                                    |
-| -------------------- | ----------------------------------------------- | -------------------------------------------------------------- |
-| `get_graph_context`  | `query`, `project_id`, `scope`, `rerank=True`   | Query GraphRAG; cross-encoder reranks candidates by default    |
-| `get_vector_context` | `query`, `project_id`, `scope`, `rerank=True`   | Query Vector RAG; cross-encoder reranks candidates by default  |
+| Tool                 | Parameters                                       | Description                                                                                          |
+| -------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `get_graph_context`  | `query`, `project_id`, `scope`, `rerank=True`    | Query GraphRAG; cross-encoder reranks candidates by default                                          |
+| `get_vector_context` | `query`, `project_id`, `scope`, `rerank=True`    | Query Vector RAG; cross-encoder reranks candidates by default                                        |
+| `answer_query`       | `query`, `project_id`, `scope=""`, `rerank=True` | Combined RAG/GraphRAG answer via local Ollama LLM. `scope=""` retrieves from **all project scopes**. |
 
 ### Health & Diagnostics
 

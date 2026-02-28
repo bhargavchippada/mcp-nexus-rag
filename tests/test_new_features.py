@@ -690,3 +690,394 @@ class TestPrintAllStats:
                                 assert "+" in result
                                 assert "-" in result
                                 assert "|" in result
+
+
+# ---------------------------------------------------------------------------
+# Answer Query Tests
+# ---------------------------------------------------------------------------
+
+
+def _make_node(text: str) -> MagicMock:
+    """Build a minimal retriever node mock with .node.get_content()."""
+    node = MagicMock()
+    node.node.get_content.return_value = text
+    return node
+
+
+def _ollama_mock(answer: str = "The answer is 42.") -> MagicMock:
+    """Return a mock httpx.AsyncClient that yields a valid Ollama response."""
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"message": {"content": answer}}
+    mock_response.raise_for_status = MagicMock()
+
+    mock_http_client = MagicMock()
+    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+    mock_http_client.__aexit__ = AsyncMock(return_value=False)
+    mock_http_client.post = AsyncMock(return_value=mock_response)
+    return mock_http_client
+
+
+class TestAnswerQuery:
+    """Tests for the answer_query MCP tool (combined RAG + GraphRAG)."""
+
+    # ── Input validation ──────────────────────────────────────────────────────
+
+    async def test_rejects_empty_query(self):
+        result = await nexus_tools.answer_query("", "PROJ", "SCOPE")
+        assert "Error" in result
+        assert "query" in result
+
+    async def test_rejects_empty_project_id(self):
+        result = await nexus_tools.answer_query("What is X?", "", "SCOPE")
+        assert "Error" in result
+        assert "project_id" in result
+
+
+    # ── Happy path ────────────────────────────────────────────────────────────
+
+    async def test_returns_answer_from_combined_context(self):
+        """Verify answer is generated when both backends return passages."""
+        graph_node = _make_node("Graph: The sky is blue.")
+        vector_node = _make_node("Vector: Water is H2O.")
+
+        mock_graph_retriever = MagicMock()
+        mock_graph_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[vector_node])
+
+        mock_graph_index = MagicMock()
+        mock_graph_index.as_retriever.return_value = mock_graph_retriever
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("42.")):
+                        result = await nexus_tools.answer_query(
+                            "What is the answer?", "PROJ", "SCOPE"
+                        )
+                        assert result == "42."
+
+    async def test_prompt_includes_both_sources(self):
+        """Verify the Ollama prompt contains [graph] and [vector] prefixes."""
+        graph_node = _make_node("GraphPassage")
+        vector_node = _make_node("VectorPassage")
+
+        mock_graph_retriever = MagicMock()
+        mock_graph_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[vector_node])
+
+        mock_graph_index = MagicMock()
+        mock_graph_index.as_retriever.return_value = mock_graph_retriever
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        captured_payload: list[dict] = []
+
+        async def capture_post(url: str, json: dict) -> MagicMock:  # type: ignore[override]
+            captured_payload.append(json)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"message": {"content": "ok"}}
+            return resp
+
+        mock_http_client = MagicMock()
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        mock_http_client.post = capture_post
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=mock_http_client):
+                        await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+
+        assert captured_payload, "No POST was captured"
+        user_content = captured_payload[0]["messages"][1]["content"]
+        assert "[graph] GraphPassage" in user_content
+        assert "[vector] VectorPassage" in user_content
+
+    # ── Deduplication ─────────────────────────────────────────────────────────
+
+    async def test_deduplicates_identical_passages_across_sources(self):
+        """Same text from both backends should appear only once in the prompt."""
+        shared_text = "Shared knowledge."
+        graph_node = _make_node(shared_text)
+        vector_node = _make_node(shared_text)
+
+        mock_graph_retriever = MagicMock()
+        mock_graph_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[vector_node])
+
+        mock_graph_index = MagicMock()
+        mock_graph_index.as_retriever.return_value = mock_graph_retriever
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        captured_payload: list[dict] = []
+
+        async def capture_post(url: str, json: dict) -> MagicMock:  # type: ignore[override]
+            captured_payload.append(json)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"message": {"content": "deduped"}}
+            return resp
+
+        mock_http_client = MagicMock()
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        mock_http_client.post = capture_post
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=mock_http_client):
+                        await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+
+        user_content = captured_payload[0]["messages"][1]["content"]
+        assert user_content.count(shared_text) == 1
+
+    # ── No context ────────────────────────────────────────────────────────────
+
+    async def test_returns_no_context_message_when_both_backends_empty(self):
+        """Verify graceful message when neither backend returns passages."""
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+                    assert "No context found" in result
+                    assert "PROJ" in result
+                    assert "SCOPE" in result
+
+    # ── Partial results ───────────────────────────────────────────────────────
+
+    async def test_generates_answer_when_only_graph_returns_results(self):
+        """Answer is still generated if vector backend returns nothing."""
+        graph_node = _make_node("Graph-only passage.")
+        mock_graph_retriever = MagicMock()
+        mock_graph_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[])
+
+        mock_graph_index = MagicMock()
+        mock_graph_index.as_retriever.return_value = mock_graph_retriever
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("Graph answer.")):
+                        result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+                        assert result == "Graph answer."
+
+    async def test_generates_answer_when_only_vector_returns_results(self):
+        """Answer is still generated if graph backend returns nothing."""
+        vector_node = _make_node("Vector-only passage.")
+        mock_graph_retriever = MagicMock()
+        mock_graph_retriever.aretrieve = AsyncMock(return_value=[])
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[vector_node])
+
+        mock_graph_index = MagicMock()
+        mock_graph_index.as_retriever.return_value = mock_graph_retriever
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("Vector answer.")):
+                        result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+                        assert result == "Vector answer."
+
+    # ── Context truncation ────────────────────────────────────────────────────
+
+    async def test_truncates_context_when_exceeds_max_chars(self):
+        """Verify context is cut to max_context_chars and truncation marker added."""
+        long_text = "x" * 5000
+        graph_node = _make_node(long_text)
+
+        mock_graph_retriever = MagicMock()
+        mock_graph_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[])
+
+        mock_graph_index = MagicMock()
+        mock_graph_index.as_retriever.return_value = mock_graph_retriever
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        captured_payload: list[dict] = []
+
+        async def capture_post(url: str, json: dict) -> MagicMock:  # type: ignore[override]
+            captured_payload.append(json)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"message": {"content": "truncated"}}
+            return resp
+
+        mock_http_client = MagicMock()
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        mock_http_client.post = capture_post
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=mock_http_client):
+                        await nexus_tools.answer_query(
+                            "Q?", "PROJ", "SCOPE", max_context_chars=100
+                        )
+
+        user_content = captured_payload[0]["messages"][1]["content"]
+        assert "[context truncated]" in user_content
+
+    # ── Error handling ────────────────────────────────────────────────────────
+
+    async def test_handles_ollama_http_error(self):
+        """Verify Ollama HTTP errors are returned as error strings."""
+        import httpx
+
+        graph_node = _make_node("Some passage.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        mock_response = MagicMock()
+        mock_response.status_code = 503
+        mock_response.text = "Service Unavailable"
+
+        async def raise_http_error(url: str, json: dict) -> MagicMock:  # type: ignore[override]
+            raise httpx.HTTPStatusError(
+                "503", request=MagicMock(), response=mock_response
+            )
+
+        mock_http_client = MagicMock()
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        mock_http_client.post = raise_http_error
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=mock_http_client):
+                        result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+                        assert "Ollama HTTP error 503" in result
+
+    async def test_handles_ollama_connection_error(self):
+        """Verify connection errors are returned as error strings."""
+        graph_node = _make_node("Some passage.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        async def raise_connection_error(url: str, json: dict) -> MagicMock:  # type: ignore[override]
+            raise ConnectionError("refused")
+
+        mock_http_client = MagicMock()
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        mock_http_client.post = raise_connection_error
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=mock_http_client):
+                        result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+                        assert "Error generating answer" in result
+
+    # ── Model override ────────────────────────────────────────────────────────
+
+    async def test_uses_custom_model_when_provided(self):
+        """Verify model parameter overrides DEFAULT_LLM_MODEL in the payload."""
+        graph_node = _make_node("Some passage.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[graph_node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        captured_payload: list[dict] = []
+
+        async def capture_post(url: str, json: dict) -> MagicMock:  # type: ignore[override]
+            captured_payload.append(json)
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {"message": {"content": "custom model"}}
+            return resp
+
+        mock_http_client = MagicMock()
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        mock_http_client.post = capture_post
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=mock_http_client):
+                        await nexus_tools.answer_query(
+                            "Q?", "PROJ", "SCOPE", model="mistral:7b"
+                        )
+
+        assert captured_payload[0]["model"] == "mistral:7b"
+
+    # ── Backend failure isolation ─────────────────────────────────────────────
+
+    async def test_continues_if_graph_backend_raises(self):
+        """Verify that a crashing graph backend still lets vector context through."""
+        vector_node = _make_node("Vector fallback.")
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[vector_node])
+        mock_vector_index = MagicMock()
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        with patch("nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")):
+            with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("fallback")):
+                        result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
+                        assert result == "fallback"
+
+    async def test_empty_scope_omits_tenant_filter(self):
+        """Verify that an empty scope omits the tenant_scope filter in both backends."""
+        node = _make_node("Global context.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        # We will capture filters used
+        captured_filters = []
+
+        def capture_as_retriever(filters=None, **kwargs):
+            captured_filters.append(filters)
+            return mock_retriever
+
+        mock_index.as_retriever.side_effect = capture_as_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("ans")):
+                        await nexus_tools.answer_query("Q?", "PROJ", "")
+
+        # Should have captured 2 sets of filters (one graph, one vector)
+        assert len(captured_filters) == 2
+        for filters in captured_filters:
+            # filters is a MetadataFilters object. filters.filters is a list of ExactMatchFilter
+            # It should only have project_id, not tenant_scope
+            keys = [f.key for f in filters.filters]
+            assert "project_id" in keys
+            assert "tenant_scope" not in keys
+

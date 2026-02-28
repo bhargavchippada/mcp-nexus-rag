@@ -1,4 +1,4 @@
-# Version: v2.4
+# Version: v2.5
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -648,6 +648,197 @@ async def get_vector_context(
     except Exception as e:
         logger.error(f"Error retrieving Vector context: {e}")
         return f"Error retrieving Vector context: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Combined RAG + GraphRAG answer tool
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def answer_query(
+    query: str,
+    project_id: str,
+    scope: str = "",
+    rerank: bool = True,
+    model: str = "",
+    max_context_chars: int = 6000,
+) -> str:
+    """Answer a user query using both Vector RAG and GraphRAG context combined.
+
+    Retrieves context from both backends **concurrently**, deduplicates passages
+    across sources, builds a structured prompt that attributes each passage to its
+    origin (vector / graph), and generates a grounded answer with the local Ollama
+    LLM (default: ``llama3.1:8b``).
+
+    Falls back gracefully if either backend returns no hits — the answer is still
+    generated using whichever context is available.
+
+    Args:
+        query: Natural-language question to answer.
+        project_id: Tenant project ID (e.g., ``'TRADING_BOT'``).
+        scope: Retrieval scope (e.g., ``'CORE_CODE'``). If empty,
+            answers across all project scopes.
+        rerank: Apply bge-reranker cross-encoder before combining (default True).
+        model: Ollama model name override. Defaults to ``DEFAULT_LLM_MODEL``
+            (``llama3.1:8b`` unless ``LLM_MODEL`` env var is set).
+        max_context_chars: Truncate combined context to this many chars to avoid
+            exceeding the model context window (default 6000).
+
+    Returns:
+        LLM-generated answer string, or an error message if generation fails.
+    """
+    import asyncio
+    import httpx
+
+    from nexus.config import DEFAULT_LLM_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_LLM_TIMEOUT
+
+    if not query or not query.strip():
+        return "Error: 'query' must not be empty."
+    if not project_id or not project_id.strip():
+        return "Error: 'project_id' must not be empty."
+
+    llm_model = model.strip() if model.strip() else DEFAULT_LLM_MODEL
+    scope_msg = scope if (scope and scope.strip()) else "all scopes"
+    logger.info(
+        f"answer_query: project={project_id} scope={scope_msg} "
+        f"model={llm_model} query={query!r}"
+    )
+
+    # ── 1. Retrieve from both backends concurrently ──────────────────────────
+    async def _fetch_graph() -> list[str]:
+        try:
+            index = get_graph_index()
+            filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
+            if scope and scope.strip():
+                filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
+            filters = MetadataFilters(filters=filters_list)
+            nodes = await index.as_retriever(
+                filters=filters,
+                similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
+            ).aretrieve(query)
+            if rerank and RERANKER_ENABLED and nodes:
+                try:
+                    reranker = get_reranker()
+                    nodes = reranker.postprocess_nodes(
+                        nodes, query_bundle=QueryBundle(query_str=query)
+                    )
+                except Exception as e:
+                    logger.warning(f"Graph reranker failed: {e}")
+            return [n.node.get_content() for n in nodes]
+        except Exception as e:
+            logger.warning(f"Graph retrieval failed in answer_query: {e}")
+            return []
+
+    async def _fetch_vector() -> list[str]:
+        try:
+            index = get_vector_index()
+            filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
+            if scope and scope.strip():
+                filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
+            filters = MetadataFilters(filters=filters_list)
+            nodes = await index.as_retriever(
+                filters=filters,
+                similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
+            ).aretrieve(query)
+            if rerank and RERANKER_ENABLED and nodes:
+                try:
+                    reranker = get_reranker()
+                    nodes = reranker.postprocess_nodes(
+                        nodes, query_bundle=QueryBundle(query_str=query)
+                    )
+                except Exception as e:
+                    logger.warning(f"Vector reranker failed: {e}")
+            return [n.node.get_content() for n in nodes]
+        except Exception as e:
+            logger.warning(f"Vector retrieval failed in answer_query: {e}")
+            return []
+
+    graph_passages, vector_passages = await asyncio.gather(_fetch_graph(), _fetch_vector())
+
+    logger.info(
+        f"answer_query: {len(graph_passages)} graph passages, "
+        f"{len(vector_passages)} vector passages before dedup"
+    )
+
+    # ── 2. Deduplicate across both sources, preserve attribution ─────────────
+    seen: set[str] = set()
+    context_parts: list[str] = []
+
+    for passage in graph_passages:
+        key = passage.strip()
+        if key and key not in seen:
+            seen.add(key)
+            context_parts.append(f"[graph] {passage.strip()}")
+
+    for passage in vector_passages:
+        key = passage.strip()
+        if key and key not in seen:
+            seen.add(key)
+            context_parts.append(f"[vector] {passage.strip()}")
+
+    if not context_parts:
+        return (
+            f"No context found for project '{project_id}' scope '{scope_msg}'. "
+            f"Please ingest relevant documents before querying."
+        )
+
+    logger.info(f"answer_query: {len(context_parts)} unique passages after dedup")
+
+    # ── 3. Build prompt ───────────────────────────────────────────────────────
+    combined_context = "\n\n".join(context_parts)
+    if len(combined_context) > max_context_chars:
+        combined_context = combined_context[:max_context_chars] + "\n...[context truncated]"
+
+    system_prompt = (
+        "You are Ari's core identity processor. Answer the user's question using "
+        "ONLY the provided context passages. Provide a professional, natural, and "
+        "concise summary in flowing prose. Each passage is prefixed with its "
+        "source ([graph] or [vector]). Use this attribution internally to ensure "
+        "accuracy, but do not mimic relationship arrows (e.g., 'A -> B') or "
+        "internal data formats in your final response. If the answer cannot be "
+        "found in the context, say so explicitly. Do not hallucinate."
+    )
+    user_prompt = (
+        f"Context passages for project '{project_id}' / scope '{scope_msg}':\n\n"
+        f"{combined_context}\n\n"
+        f"Question: {query}\n\n"
+        "Answer based solely on the context above:"
+    )
+
+    # ── 4. Call Ollama /api/chat (non-streaming) ──────────────────────────────
+    payload = {
+        "model": llm_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.1},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_LLM_TIMEOUT) as http_client:
+            response = await http_client.post(
+                f"{DEFAULT_OLLAMA_URL}/api/chat",
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+            answer: str = data["message"]["content"].strip()
+            logger.info(
+                f"answer_query: answer generated ({len(answer)} chars) "
+                f"via {llm_model}"
+            )
+            return answer
+    except httpx.HTTPStatusError as e:
+        err = f"Ollama HTTP error {e.response.status_code}: {e.response.text[:200]}"
+        logger.error(err)
+        return err
+    except Exception as e:
+        err = f"Error generating answer: {e}"
+        logger.error(err)
+        return err
 
 
 # ---------------------------------------------------------------------------
