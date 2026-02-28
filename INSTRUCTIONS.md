@@ -1,68 +1,171 @@
 # MCP Nexus RAG: Instructions & Maintenance
 
-This submodule contains the FastMCP configuration and Python logic to support Multi-Tenant GraphRAG index generation and standard Vector RAG context retrieval using LlamaIndex, Ollama, Qdrant, and Neo4j.
+This submodule contains the FastMCP server (`server.py`) and supporting tests for Multi-Tenant **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) context retrieval, powered by LlamaIndex + Ollama.
 
-## Core Services & Hardware Dependency
+**Current server version:** `v1.5` · **Test coverage:** 99%
 
-This plugin relies on the `docker-compose.yml` provided in this directory.
+---
 
-- **Postgres (pgvector)**: `localhost:5432`
-- **Neo4j**: `bolt://localhost:7687` (neo4j/password123)
-- **Ollama**: `http://localhost:11434`
-- **Qdrant**: `localhost:6333`
+## Core Services
 
-To start or restart the infrastructure from this directory:
+All services are declared in `docker-compose.yml` in this directory:
 
-```bash
-docker-compose down && docker-compose up -d
-```
+| Service | Address | Auth |
+|---------|---------|------|
+| **Neo4j** | `bolt://localhost:7687` | `neo4j / password123` |
+| **Qdrant** | `http://localhost:6333` | — |
+| **Ollama** | `http://localhost:11434` | — |
+| **Postgres** | `localhost:5432` | `admin / password123` |
 
-### Data-Only Reset (Preserve Ollama Models)
+> Postgres is reserved for future pgvector use. The RAG server currently uses Neo4j + Qdrant only.
 
-To delete only the database data (Neo4j, Qdrant, and Postgres) while preserving your Ollama models (saving you from that 5GB download), follow this specific sequence:
-
-1. **Stop the containers**
-
-   ```bash
-   docker-compose down
-   ```
-
-2. **Delete the databases** (Replace 'mcp-nexus-rag' if your volume prefix name is different based on `docker volume ls`)
-
-   ```bash
-   docker volume rm mcp-nexus-rag_neo4j_data
-   docker volume rm mcp-nexus-rag_qdrant_data
-   docker volume rm mcp-nexus-rag_postgres_data
-   ```
-
-3. **Restart the stack** (Ollama will still have its models)
-
-   ```bash
-   docker-compose up -d
-   ```
-
-**Verification:**
-After the restart, you can verify the databases are empty but the models are present:
-
-- Check Ollama Models: `docker exec -it turiya-ollama ollama list` (Should show Llama 3.1 immediately).
-- Check Neo4j: Visit <http://localhost:7474>. (Should show 0 nodes).
-- Check Qdrant: Visit <http://localhost:6333/dashboard>. (Should show 0 collections).
-
-## Setup Dependencies
-
-We use `poetry` for dependency management:
+Start everything:
 
 ```bash
-poetry install
+docker-compose up -d
 ```
 
-## Adding the custom MCP to Antigravity (Cursor / Claude Desktop)
+---
 
-To enable agents to use the ingest and context retrieval tools, add this configuration to your MCP settings file (e.g. `claude_desktop_config.json` or Cursor MCP settings via the GUI).
+## Setup
 
-*Note: Replace `/path/to/...` with your actual absolute path to `projects/mcp-nexus-rag` inside your WSL/OS.*
+```bash
+# Install runtime + dev dependencies
+poetry install --with dev
 
-**JSON Configuration:**
+# Verify Ollama models are ready
+docker exec -it turiya-ollama ollama list
+# Expected: nomic-embed-text, llama3.1:8b, qllama/bge-reranker-v2-m3
+```
+
+---
+
+## Running Tests
+
+### Unit tests (no live services required)
+
+```bash
+PYTHONPATH=. poetry run pytest tests/test_unit.py -v
+```
+
+### Integration tests (requires live docker-compose)
+
+```bash
+PYTHONPATH=. poetry run pytest tests/test_integration.py -v
+```
+
+### Full suite + coverage
+
+```bash
+PYTHONPATH=. poetry run pytest tests/ test_rag.py --cov=server --cov-report=term-missing
+# Expected: 51 passed, 99% coverage
+```
+
+### Run the MCP server interactively
+
+```bash
+npx @modelcontextprotocol/inspector poetry run python server.py
+```
+
+---
+
+## MCP Tools Reference
+
+### Ingestion
+
+| Tool | Arguments | Notes |
+|------|-----------|-------|
+| `ingest_graph_document` | `text, project_id, scope, source_identifier?` | Builds property graph in Neo4j |
+| `ingest_vector_document` | `text, project_id, scope, source_identifier?` | Stores embedding in Qdrant (`nexus_rag` collection) |
+
+### Retrieval
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `get_graph_context` | `query, project_id, scope` | Relevant graph nodes as text |
+| `get_vector_context` | `query, project_id, scope` | Relevant vector chunks as text |
+
+### Tenant Management
+
+| Tool | Arguments | Returns |
+|------|-----------|---------|
+| `get_all_project_ids` | — | Sorted list of all distinct `project_id` values (merged from both DBs) |
+| `get_all_tenant_scopes` | `project_id?` | Sorted list of scopes; if `project_id` is given, only scopes for that project |
+| `delete_tenant_data` | `project_id, scope?` | Deletes all data for the project (or just one scope if `scope` is given). Returns `"Successfully deleted..."` or `"Partial failure deleting ...: Neo4j: ...; Qdrant: ..."` |
+
+---
+
+## Data Reset Options
+
+### Soft reset (preserve Ollama models)
+
+Deletes only Neo4j, Qdrant, and Postgres data. Volume prefix (`mcp-nexus-rag`) may differ — check `docker volume ls`.
+
+```bash
+docker-compose down
+docker volume rm mcp-nexus-rag_neo4j_data mcp-nexus-rag_qdrant_data mcp-nexus-rag_postgres_data
+docker-compose up -d
+```
+
+**Verify empty state:**
+
+- Neo4j: <http://localhost:7474> → should show 0 nodes
+- Qdrant: <http://localhost:6333/dashboard> → should show 0 collections
+- Ollama: `docker exec -it turiya-ollama ollama list` → models still present
+
+### Selective programmatic delete (via MCP tool)
+
+```
+delete_tenant_data(project_id="TRADING_BOT")              # wipe entire project
+delete_tenant_data(project_id="TRADING_BOT", scope="SYSTEM_LOGS")  # wipe one scope
+```
+
+### Full wipe (including Ollama models)
+
+```bash
+docker-compose down -v
+```
+
+> ⚠️ This destroys all volumes including the ~5 GB Ollama model cache.
+
+---
+
+## Viewing the Graph
+
+```bash
+# Launch Dash visualizer
+poetry run python visualizer.py
+```
+
+Then open the printed URL in your browser to explore Neo4j relationships interactively.
+
+---
+
+## Helpful Commands
+
+```bash
+# Live container logs
+docker-compose logs -f
+
+# Check container health
+docker-compose ps
+
+# Test Ollama connectivity
+curl -X POST http://localhost:11434/api/generate \
+  -d '{"model":"llama3.1:8b","prompt":"ping","stream":false}'
+
+# Inspect Postgres directly
+docker exec -it turiya-postgres psql -U admin -d turiya_memory
+
+# Inspect Qdrant collection points
+curl http://localhost:6333/collections/nexus_rag/points/count
+```
+
+---
+
+## MCP Client Configuration
+
+Add to `claude_desktop_config.json` or Cursor MCP settings:
 
 ```json
 {
@@ -72,52 +175,21 @@ To enable agents to use the ingest and context retrieval tools, add this configu
       "args": [
         "run",
         "python",
-        "/path/to/antigravity/projects/mcp-nexus-rag/server.py"
+        "/absolute/path/to/antigravity/projects/mcp-nexus-rag/server.py"
       ]
     }
   }
 }
 ```
 
-## Testing & Visualizing
+---
 
-- **Testing Script**: Run `poetry run python test_rag.py` to inject test graphs and vectors into different project IDs and query them.
-- **Querying**: Agents will use the `get_graph_context`, `get_vector_context`, etc., through the MCP interface naturally to append relevant history.
-- **Visualizer**: To view the graphical output, run `poetry run python visualizer.py`. It will launch a dash web server visualizing the local Neo4j relationships.
+## Security & Design Notes
 
-## Helpful Commands & Examples
-
-### Docker Commands
-
-- `docker-compose logs -f`: To view the logs of all containers in real time. Very useful for watching the `ollama-init` container pull models.
-- `docker exec -it turiya-ollama ollama list`: To verify the models built/pulled successfully inside the active Ollama container.
-- `docker-compose ps`: To check the running status (healthy/unhealthy/exited) of all the containers in the stack.
-- `docker-compose down -v`: **WARNING:** Completely wipe ALL data including Ollama models, Neo4j graph, and Qdrant vectors. Use only for a clean slate.
-
-### Test Ollama Connection
-
-To ensure the LLM is responding appropriately (specifically `llama3.1:8b`), you can run the following test `curl` command directly from your terminal:
-
-```bash
-curl -X POST http://localhost:11434/api/generate -d '{
-  "model": "llama3.1:8b",
-  "prompt": "why is the sky blue? Answer in one short sentence.",
-  "stream": false
-}'
-```
-
-### Inspecting PostgreSQL / PGVector
-
-If you need to connect directly to the PostgreSQL database to inspect the memory embeddings, run:
-
-```bash
-docker exec -it turiya-postgres psql -U admin -d turiya_memory
-```
-
-### MCP Inspector
-
-If you want to test the MCP server interactively in your browser before plugging it into Claude or Cursor, you can use the official MCP Inspector. From within the `mcp-nexus-rag` directory (`poetry` environment must be set up):
-
-```bash
-npx @modelcontextprotocol/inspector poetry run python server.py
-```
+| Topic | Decision |
+|-------|----------|
+| **Key injection** | Only `project_id`, `tenant_scope`, `source` are accepted as Neo4j property names (`_ALLOWED_META_KEYS`). All others raise `ValueError`. |
+| **Thread safety** | `setup_settings()` uses a `threading.Lock` with double-checked locking — safe for concurrent MCP requests. |
+| **Collection name** | Hardcoded as `COLLECTION_NAME = "nexus_rag"` constant — single source of truth; no scattered string literals. |
+| **Delete semantics** | Both Neo4j and Qdrant deletions run independently; partial failures are collected and returned as a descriptive error string rather than silently ignored. |
+| **No external APIs** | All LLM and embedding calls go to `localhost:11434`. Zero data exfiltration. |

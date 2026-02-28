@@ -1,31 +1,104 @@
 # MCP Nexus RAG
 
-Multi-Tenant GraphRAG Memory Server for Google Antigravity. Wraps LlamaIndex PropertyGraphIndex logic over Neo4j.
+[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen)](tests/) [![Coverage](https://img.shields.io/badge/coverage-99%25-brightgreen)](tests/) [![Version](https://img.shields.io/badge/server-v1.5-blue)](server.py)
 
-## Instructions & Maintenance
+Strict multi-tenant memory server for the Antigravity agent ecosystem.
+Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
+All inference runs locally via Ollama — zero data leakage.
 
-This submodule contains the FastMCP configuration and Python logic to support Multi-Tenant GraphRAG index generation and context retrieval using LlamaIndex, Ollama, and Neo4j.
+---
 
-### Core Services & Hardware Dependency
+## Architecture
 
-This plugin relies on the root Antigravity `docker-compose.yml` to be running.
+```
+Agent (MCP Client)
+       │
+       ▼
+ server.py (FastMCP)
+  ├── GraphRAG  → Neo4j (llama3.1:8b builds property graph)
+  └── Vector RAG → Qdrant (nomic-embed-text, collection: nexus_rag)
+```
 
-- **Postgres (pgvector)**: `localhost:5432`
-- **Neo4j**: `bolt://localhost:7687` (neo4j/password123)
-- **Ollama**: `http://localhost:11434`
-- **Qdrant**: `localhost:6333`
+### Dual-Engine Design
 
-To restart the infrastructure from the workspace root (Warning: This deletes the graph/vectors!):
+| Engine | Backend | Best For |
+|--------|---------|----------|
+| **GraphRAG** | Neo4j | Relationship traversal, architecture queries, entity linkage |
+| **Vector RAG** | Qdrant | Semantic similarity, code snippets, factual Q&A |
+
+### Multi-Tenant Isolation
+
+Every document and query carries two required metadata keys:
+
+| Key | Role | Examples |
+|-----|------|---------|
+| `project_id` | Top-level tenant namespace | `TRADING_BOT`, `WEB_PORTAL` |
+| `tenant_scope` | Domain within a project | `CORE_CODE`, `SYSTEM_LOGS`, `WEB_RESEARCH` |
+
+The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in both Neo4j Cypher and Qdrant scroll/delete — zero crosstalk between projects or scopes.
+
+---
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `ingest_graph_document` | Ingest text into GraphRAG (Neo4j) |
+| `ingest_vector_document` | Ingest text into Vector RAG (Qdrant) |
+| `get_graph_context` | Query GraphRAG for a `(project_id, scope)` |
+| `get_vector_context` | Query Vector RAG for a `(project_id, scope)` |
+| `get_all_project_ids` | List all distinct project IDs across both DBs |
+| `get_all_tenant_scopes` | List all scopes (optionally filtered by `project_id`) |
+| `delete_tenant_data` | Delete all data for a `project_id`, or a `(project_id, scope)` |
+
+`delete_tenant_data` returns a **partial-failure message** if one backend fails (e.g. `"Partial failure deleting project 'X': Qdrant: timeout"`), never silently succeeding.
+
+---
+
+## Infrastructure
+
+Services are defined in `docker-compose.yml`:
+
+| Service | Address | Purpose |
+|---------|---------|---------|
+| **Neo4j** | `bolt://localhost:7687` | GraphRAG graph store |
+| **Qdrant** | `http://localhost:6333` | Vector store (`nexus_rag` collection) |
+| **Ollama** | `http://localhost:11434` | Local LLM + embeddings |
+| **Postgres** | `localhost:5432` | Reserved (pgvector, future) |
+
+Models auto-pulled by `ollama-init` on first start:
+
+- `nomic-embed-text` — embeddings
+- `llama3.1:8b` — graph extraction
+- `qllama/bge-reranker-v2-m3` — reranker (planned)
 
 ```bash
-docker-compose down -v
 docker-compose up -d
 ```
 
-### Adding the custom MCP to Antigravity (Cursor / Claude Desktop)
+---
 
-To enable agents to use the `ingest_document` and `get_context` tools, add this configuration to your MCP settings file (e.g. `claude_desktop_config.json` or Cursor MCP settings via the GUI).
-*Note: Replace `/path/to/...` with your actual absolute path to `projects/mcp-nexus-rag` inside your WSL/OS.*
+## Quick Start
+
+```bash
+# 1. Start services
+docker-compose up -d
+
+# 2. Install dependencies
+poetry install
+
+# 3. Run integration tests (requires live services)
+PYTHONPATH=. poetry run pytest test_rag.py -v
+
+# 4. Run the full suite + coverage
+PYTHONPATH=. poetry run pytest tests/ test_rag.py --cov=server --cov-report=term-missing
+```
+
+---
+
+## MCP Client Configuration
+
+Add to `claude_desktop_config.json` or your Cursor MCP settings (replace the path):
 
 ```json
 {
@@ -35,35 +108,34 @@ To enable agents to use the `ingest_document` and `get_context` tools, add this 
       "args": [
         "run",
         "python",
-        "/path/to/antigravity/projects/mcp-nexus-rag/server.py"
+        "/absolute/path/to/projects/mcp-nexus-rag/server.py"
       ]
     }
   }
 }
 ```
 
-## System Architecture & Design
+---
 
-### Standard Vector RAG (Qdrant) vs GraphRAG (Neo4j)
+## Security Notes
 
-This system utilizes a dual-memory approach to balance speed and comprehension:
+- **Metadata key allowlist**: Only `project_id`, `tenant_scope`, `source` are accepted as Cypher property names — prevents key injection.
+- **No external API calls**: All LLM and embedding traffic stays on `localhost:11434`.
+- **Secrets**: Update `DEFAULT_NEO4J_PASSWORD` in `server.py` or migrate to environment variables for production use.
 
-1. **Vector RAG (Qdrant)**: Used for standard dense semantic search. It's fast, highly effective for factual Q&A, and finding exact code snippets or standard log retrieval. It uses `nomic-embed-text` through Ollama.
-2. **GraphRAG (Neo4j)**: Used for understanding complex relationships across multiple documents or codebases. It is better for overarching architecture queries, tracing complex state bugs, or summarizing complex entities. It uses `llama3.1:8b` running locally to build the property graph.
+---
 
-### Multi-Tenant Scoping Strategy
+## Development
 
-To prevent hallucination and contamination between different projects or areas of code, every document ingestion and query **must** contain strict metadata filters:
+```bash
+# Unit tests only (no live services needed)
+PYTHONPATH=. poetry run pytest tests/test_unit.py -v
 
-- **`project_id`**: The high-level root of the data. For example: `TRADING_BOT`, `WEB_PORTAL`, or `AUTONOMOUS_SWARM`.
-- **`tenant_scope`**: Exploring the isolated domain within a project. For example:
-  - `CORE_CODE` (Source text and algorithms)
-  - `SYSTEM_LOGS` (Runtime traces, tracebacks, analytics)
-  - `WEB_RESEARCH` (External documentation, market news)
+# Integration tests (requires live docker-compose)
+PYTHONPATH=. poetry run pytest tests/test_integration.py -v
 
-**Querying logic:** When an agent queries `get_graph_context` or `get_vector_context`, they provide the `project_id` and `scope`. The database securely restricts its vector search or traversal strictly to nodes mathematically tagged with that tuple, ensuring zero crosstalk between your quantitative trading logic and your frontend web CSS.
+# Interactive MCP Inspector
+npx @modelcontextprotocol/inspector poetry run python server.py
+```
 
-### Embeddings and Reranking Design
-
-- All embeddings are calculated locally on your RTX 5090 using **`nomic-embed-text`** via Ollama API to guarantee zero data leakage.
-- *Future Enhancement:* Output nodes retrieved by Qdrant or Neo4j will be dynamically re-scored and prioritized using the local **`bge-reranker-v2-m3`** cross-encoder model to dramatically increase relevance before being injected back into the LLM context window.
+See [`INSTRUCTIONS.md`](INSTRUCTIONS.md) for infrastructure ops, data reset, and advanced maintenance.
