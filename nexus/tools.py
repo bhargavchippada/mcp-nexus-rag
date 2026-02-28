@@ -1,4 +1,4 @@
-# Version: v2.1
+# Version: v2.2
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -26,6 +26,7 @@ from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
 from nexus.indexes import get_graph_index, get_vector_index
 from nexus.reranker import get_reranker
+from nexus.chunking import needs_chunking, chunk_document
 
 
 # ---------------------------------------------------------------------------
@@ -64,8 +65,13 @@ async def ingest_graph_document(
     project_id: str,
     scope: str,
     source_identifier: str = "manual",
+    auto_chunk: bool = True,
 ) -> str:
     """Ingest a document into the Multi-Tenant GraphRAG memory.
+
+    Large documents exceeding MAX_DOCUMENT_SIZE (default 512KB) are automatically
+    chunked into smaller pieces. Each chunk is ingested separately with its own
+    content hash, preventing duplicates at the chunk level.
 
     Skips ingestion if identical content has already been stored for this
     project+scope combination.
@@ -75,14 +81,64 @@ async def ingest_graph_document(
         project_id: The target tenant project ID (e.g., 'TRADING_BOT').
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
         source_identifier: Optional identifier for the source of the document.
+        auto_chunk: If True (default), automatically chunks large documents.
+            Set to False to reject documents exceeding MAX_DOCUMENT_SIZE.
 
     Returns:
         Status: 'Successfully ingested', 'Skipped (duplicate)', or error.
+        For chunked documents, returns count of chunks ingested.
     """
     err = _validate_ingest_inputs(text, project_id, scope)
     if err:
         return err
 
+    # Handle large documents
+    if needs_chunking(text):
+        if not auto_chunk:
+            from nexus.config import MAX_DOCUMENT_SIZE
+            return f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit. Set auto_chunk=True to split automatically."
+
+        chunks = chunk_document(text)
+        ingested = 0
+        skipped = 0
+        errors = 0
+
+        for i, chunk in enumerate(chunks):
+            chash = content_hash(chunk, project_id, scope)
+            chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+
+            if neo4j_backend.is_duplicate(chash, project_id, scope):
+                skipped += 1
+                continue
+
+            try:
+                index = get_graph_index()
+                doc = Document(
+                    text=chunk,
+                    doc_id=chash,
+                    metadata={
+                        "project_id": project_id,
+                        "tenant_scope": scope,
+                        "source": chunk_source,
+                        "content_hash": chash,
+                    },
+                )
+                index.insert(doc)
+                ingested += 1
+            except Exception as e:
+                logger.error(f"Error ingesting Graph chunk {i+1}: {e}")
+                errors += 1
+
+        logger.info(
+            f"Chunked Graph ingest: {len(chunks)} chunks, ingested={ingested}, "
+            f"skipped={skipped}, errors={errors}"
+        )
+        return (
+            f"Successfully ingested {ingested} chunks into GraphRAG for "
+            f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
+        )
+
+    # Standard single-document path
     chash = content_hash(text, project_id, scope)
     logger.info(f"Graph ingest: project={project_id} scope={scope} hash={chash[:8]}")
 
@@ -116,11 +172,15 @@ async def ingest_graph_document(
 async def ingest_graph_documents_batch(
     documents: list[dict[str, str]],
     skip_duplicates: bool = True,
+    auto_chunk: bool = True,
 ) -> dict[str, int]:
     """Batch ingest multiple documents into GraphRAG memory.
 
     Processes multiple documents in a single call for improved performance.
     Each document must have 'text', 'project_id', and 'scope' keys.
+
+    Large documents exceeding MAX_DOCUMENT_SIZE are automatically chunked
+    when auto_chunk=True (default).
 
     Args:
         documents: List of document dicts, each with keys:
@@ -129,21 +189,23 @@ async def ingest_graph_documents_batch(
             - scope: Tenant scope (required)
             - source_identifier: Optional source identifier (defaults to 'batch')
         skip_duplicates: If True, skips documents that already exist (default: True).
+        auto_chunk: If True (default), automatically chunks large documents.
 
     Returns:
-        Dictionary with counts: {'ingested': N, 'skipped': M, 'errors': K}.
+        Dictionary with counts: {'ingested': N, 'skipped': M, 'errors': K, 'chunks': C}.
 
     Examples:
         >>> await ingest_graph_documents_batch([
         ...     {"text": "Auth uses JWT", "project_id": "WEB_APP", "scope": "ARCHITECTURE"},
         ...     {"text": "DB is PostgreSQL", "project_id": "WEB_APP", "scope": "ARCHITECTURE"}
         ... ])
-        {"ingested": 2, "skipped": 0, "errors": 0}
+        {"ingested": 2, "skipped": 0, "errors": 0, "chunks": 0}
     """
     logger.info(f"Batch Graph ingest: {len(documents)} documents")
     ingested = 0
     skipped = 0
     errors = 0
+    chunks_created = 0
 
     for doc_dict in documents:
         try:
@@ -158,6 +220,40 @@ async def ingest_graph_documents_batch(
                 errors += 1
                 continue
 
+            # Handle large documents
+            if needs_chunking(text):
+                if not auto_chunk:
+                    logger.warning("Large document rejected (auto_chunk=False)")
+                    errors += 1
+                    continue
+
+                chunks = chunk_document(text)
+                chunks_created += len(chunks)
+
+                for i, chunk in enumerate(chunks):
+                    chash = content_hash(chunk, project_id, scope)
+                    chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+
+                    if skip_duplicates and neo4j_backend.is_duplicate(chash, project_id, scope):
+                        skipped += 1
+                        continue
+
+                    index = get_graph_index()
+                    doc = Document(
+                        text=chunk,
+                        doc_id=chash,
+                        metadata={
+                            "project_id": project_id,
+                            "tenant_scope": scope,
+                            "source": chunk_source,
+                            "content_hash": chash,
+                        },
+                    )
+                    index.insert(doc)
+                    ingested += 1
+                continue
+
+            # Standard single-document path
             chash = content_hash(text, project_id, scope)
 
             if skip_duplicates and neo4j_backend.is_duplicate(chash, project_id, scope):
@@ -183,9 +279,10 @@ async def ingest_graph_documents_batch(
             errors += 1
 
     logger.info(
-        f"Batch Graph ingest complete: ingested={ingested}, skipped={skipped}, errors={errors}"
+        f"Batch Graph ingest complete: ingested={ingested}, skipped={skipped}, "
+        f"errors={errors}, chunks={chunks_created}"
     )
-    return {"ingested": ingested, "skipped": skipped, "errors": errors}
+    return {"ingested": ingested, "skipped": skipped, "errors": errors, "chunks": chunks_created}
 
 
 @mcp.tool()
@@ -267,8 +364,13 @@ async def ingest_vector_document(
     project_id: str,
     scope: str,
     source_identifier: str = "manual",
+    auto_chunk: bool = True,
 ) -> str:
     """Ingest a document into the Multi-Tenant standard RAG (Vector) memory.
+
+    Large documents exceeding MAX_DOCUMENT_SIZE (default 512KB) are automatically
+    chunked into smaller pieces. Each chunk is ingested separately with its own
+    content hash, preventing duplicates at the chunk level.
 
     Skips ingestion if identical content has already been stored for this
     project+scope combination.
@@ -278,14 +380,64 @@ async def ingest_vector_document(
         project_id: The target tenant project ID (e.g., 'TRADING_BOT').
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
         source_identifier: Optional identifier for the source of the document.
+        auto_chunk: If True (default), automatically chunks large documents.
+            Set to False to reject documents exceeding MAX_DOCUMENT_SIZE.
 
     Returns:
         Status: 'Successfully ingested', 'Skipped (duplicate)', or error.
+        For chunked documents, returns count of chunks ingested.
     """
     err = _validate_ingest_inputs(text, project_id, scope)
     if err:
         return err
 
+    # Handle large documents
+    if needs_chunking(text):
+        if not auto_chunk:
+            from nexus.config import MAX_DOCUMENT_SIZE
+            return f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit. Set auto_chunk=True to split automatically."
+
+        chunks = chunk_document(text)
+        ingested = 0
+        skipped = 0
+        errors = 0
+
+        for i, chunk in enumerate(chunks):
+            chash = content_hash(chunk, project_id, scope)
+            chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+
+            if qdrant_backend.is_duplicate(chash, project_id, scope):
+                skipped += 1
+                continue
+
+            try:
+                index = get_vector_index()
+                doc = Document(
+                    text=chunk,
+                    doc_id=chash,
+                    metadata={
+                        "project_id": project_id,
+                        "tenant_scope": scope,
+                        "source": chunk_source,
+                        "content_hash": chash,
+                    },
+                )
+                index.insert(doc)
+                ingested += 1
+            except Exception as e:
+                logger.error(f"Error ingesting Vector chunk {i+1}: {e}")
+                errors += 1
+
+        logger.info(
+            f"Chunked Vector ingest: {len(chunks)} chunks, ingested={ingested}, "
+            f"skipped={skipped}, errors={errors}"
+        )
+        return (
+            f"Successfully ingested {ingested} chunks into VectorRAG for "
+            f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
+        )
+
+    # Standard single-document path
     chash = content_hash(text, project_id, scope)
     logger.info(f"Vector ingest: project={project_id} scope={scope} hash={chash[:8]}")
 
@@ -319,11 +471,15 @@ async def ingest_vector_document(
 async def ingest_vector_documents_batch(
     documents: list[dict[str, str]],
     skip_duplicates: bool = True,
+    auto_chunk: bool = True,
 ) -> dict[str, int]:
     """Batch ingest multiple documents into VectorRAG memory.
 
     Processes multiple documents in a single call for improved performance.
     Each document must have 'text', 'project_id', and 'scope' keys.
+
+    Large documents exceeding MAX_DOCUMENT_SIZE are automatically chunked
+    when auto_chunk=True (default).
 
     Args:
         documents: List of document dicts, each with keys:
@@ -332,21 +488,23 @@ async def ingest_vector_documents_batch(
             - scope: Tenant scope (required)
             - source_identifier: Optional source identifier (defaults to 'batch')
         skip_duplicates: If True, skips documents that already exist (default: True).
+        auto_chunk: If True (default), automatically chunks large documents.
 
     Returns:
-        Dictionary with counts: {'ingested': N, 'skipped': M, 'errors': K}.
+        Dictionary with counts: {'ingested': N, 'skipped': M, 'errors': K, 'chunks': C}.
 
     Examples:
         >>> await ingest_vector_documents_batch([
         ...     {"text": "Auth uses JWT", "project_id": "WEB_APP", "scope": "CODE"},
         ...     {"text": "DB is PostgreSQL", "project_id": "WEB_APP", "scope": "CODE"}
         ... ])
-        {"ingested": 2, "skipped": 0, "errors": 0}
+        {"ingested": 2, "skipped": 0, "errors": 0, "chunks": 0}
     """
     logger.info(f"Batch Vector ingest: {len(documents)} documents")
     ingested = 0
     skipped = 0
     errors = 0
+    chunks_created = 0
 
     for doc_dict in documents:
         try:
@@ -361,6 +519,40 @@ async def ingest_vector_documents_batch(
                 errors += 1
                 continue
 
+            # Handle large documents
+            if needs_chunking(text):
+                if not auto_chunk:
+                    logger.warning("Large document rejected (auto_chunk=False)")
+                    errors += 1
+                    continue
+
+                chunks = chunk_document(text)
+                chunks_created += len(chunks)
+
+                for i, chunk in enumerate(chunks):
+                    chash = content_hash(chunk, project_id, scope)
+                    chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+
+                    if skip_duplicates and qdrant_backend.is_duplicate(chash, project_id, scope):
+                        skipped += 1
+                        continue
+
+                    index = get_vector_index()
+                    doc = Document(
+                        text=chunk,
+                        doc_id=chash,
+                        metadata={
+                            "project_id": project_id,
+                            "tenant_scope": scope,
+                            "source": chunk_source,
+                            "content_hash": chash,
+                        },
+                    )
+                    index.insert(doc)
+                    ingested += 1
+                continue
+
+            # Standard single-document path
             chash = content_hash(text, project_id, scope)
 
             if skip_duplicates and qdrant_backend.is_duplicate(chash, project_id, scope):
@@ -386,9 +578,10 @@ async def ingest_vector_documents_batch(
             errors += 1
 
     logger.info(
-        f"Batch Vector ingest complete: ingested={ingested}, skipped={skipped}, errors={errors}"
+        f"Batch Vector ingest complete: ingested={ingested}, skipped={skipped}, "
+        f"errors={errors}, chunks={chunks_created}"
     )
-    return {"ingested": ingested, "skipped": skipped, "errors": errors}
+    return {"ingested": ingested, "skipped": skipped, "errors": errors, "chunks": chunks_created}
 
 
 @mcp.tool()

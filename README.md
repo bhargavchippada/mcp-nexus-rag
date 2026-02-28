@@ -4,7 +4,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage (181 tests)
 
 ---
 
@@ -138,6 +138,9 @@ PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term
 | `RERANKER_TOP_N`      | `5`                        | Number of results returned after reranking       |
 | `RERANKER_CANDIDATE_K`| `20`                       | Candidate pool size fetched before reranking     |
 | `RERANKER_ENABLED`    | `true`                     | Set to `false` to disable reranking globally     |
+| `MAX_DOCUMENT_SIZE`   | `524288` (512KB)           | Documents larger than this are auto-chunked      |
+| `INGEST_CHUNK_SIZE`   | `1024`                     | Chunk size for large document splitting          |
+| `INGEST_CHUNK_OVERLAP`| `128`                      | Overlap between chunks                           |
 | `NEO4J_URI`           | `bolt://localhost:7687`    | Neo4j connection URI                             |
 | `NEO4J_USERNAME`      | `neo4j`                    | Neo4j username                                   |
 | `NEO4J_PASSWORD`      | `password`                 | Neo4j password (use env var in production)       |
@@ -347,6 +350,19 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 ---
 
 ## Recent Updates
+
+### v2.2 (2026-02-28)
+- 🎯 **NEW**: Automatic chunking for large documents exceeding `MAX_DOCUMENT_SIZE` (default 512KB)
+- 📦 Documents are split using LlamaIndex's `SentenceSplitter` for intelligent sentence-boundary-aware chunking
+- 🎛️ New env vars: `MAX_DOCUMENT_SIZE`, `INGEST_CHUNK_SIZE`, `INGEST_CHUNK_OVERLAP`
+- 🔧 New `auto_chunk` parameter on all ingest tools (default: `True`)
+- 📊 **Tests**: 181 tests passing (20 new chunking tests), 100% coverage maintained
+
+### v2.1 (2026-02-28)
+- 🔍 **Audit**: Comprehensive code review — zero critical bugs, 2 medium-priority hardening opportunities
+- 📊 **Tests**: 161 tests passing (13 new), 100% coverage maintained
+- 📝 **Docs**: Updated CODE_REVIEW.md with v2.1 audit findings
+- ⚠️ **Known issues** (non-blocking): exception sanitization, late httpx import (see CODE_REVIEW.md)
 
 ### v2.0 (2026-02-28)
 - 🎯 **NEW**: Cross-encoder reranking via `BAAI/bge-reranker-v2-m3` for both GraphRAG and Vector RAG

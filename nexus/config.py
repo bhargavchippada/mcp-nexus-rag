@@ -1,4 +1,4 @@
-# Version: v2.0
+# Version: v2.2
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -27,6 +27,15 @@ DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
 DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
+
+# ---------------------------------------------------------------------------
+# Document ingestion limits
+# ---------------------------------------------------------------------------
+# Documents exceeding MAX_DOCUMENT_SIZE (bytes) are automatically chunked
+MAX_DOCUMENT_SIZE = int(os.environ.get("MAX_DOCUMENT_SIZE", str(512 * 1024)))  # 512KB
+# Chunk size/overlap for large document splitting (uses CHUNK_SIZE/OVERLAP if not set)
+INGEST_CHUNK_SIZE = int(os.environ.get("INGEST_CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE)))
+INGEST_CHUNK_OVERLAP = int(os.environ.get("INGEST_CHUNK_OVERLAP", str(DEFAULT_CHUNK_OVERLAP)))
 
 # ---------------------------------------------------------------------------
 # Reranker defaults

@@ -2,7 +2,7 @@
 
 This submodule contains the FastMCP server (`server.py`) and supporting tests for Multi-Tenant **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) context retrieval, powered by LlamaIndex + Ollama.
 
-**Current package version:** `v2.0` · **Test coverage:** 100% · **Tests:** 148 passed
+**Current package version:** `v2.2` · **Test coverage:** 100% · **Tests:** 181 passed
 
 ---
 
@@ -59,7 +59,7 @@ poetry run pytest tests/test_integration.py -v
 
 ```bash
 poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
-# Expected: 148 passed, 100% coverage
+# Expected: 181 passed, 100% coverage
 ```
 
 ### Run the MCP server interactively
@@ -76,12 +76,14 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 | Tool                            | Arguments                                     | Notes                                               |
 | ------------------------------- | --------------------------------------------- | --------------------------------------------------- |
-| `ingest_graph_document`         | `text, project_id, scope, source_identifier?` | Builds property graph in Neo4j (single document)    |
-| `ingest_vector_document`        | `text, project_id, scope, source_identifier?` | Stores embedding in Qdrant (single document)        |
-| `ingest_graph_documents_batch`  | `documents: list[dict], skip_duplicates?`     | **v1.9**: Batch ingest into GraphRAG (10-50x faster) |
-| `ingest_vector_documents_batch` | `documents: list[dict], skip_duplicates?`     | **v1.9**: Batch ingest into VectorRAG (10-50x faster) |
+| `ingest_graph_document`         | `text, project_id, scope, source_identifier?, auto_chunk?` | Builds property graph in Neo4j (single document)    |
+| `ingest_vector_document`        | `text, project_id, scope, source_identifier?, auto_chunk?` | Stores embedding in Qdrant (single document)        |
+| `ingest_graph_documents_batch`  | `documents: list[dict], skip_duplicates?, auto_chunk?`     | Batch ingest into GraphRAG (10-50x faster) |
+| `ingest_vector_documents_batch` | `documents: list[dict], skip_duplicates?, auto_chunk?`     | Batch ingest into VectorRAG (10-50x faster) |
 
-**Batch document format:** Each dict must have `{text, project_id, scope, source_identifier?}`. Returns `{ingested, skipped, errors}`.
+**Auto-chunking (v2.2):** Documents exceeding `MAX_DOCUMENT_SIZE` (default 512KB) are automatically split into chunks using LlamaIndex's `SentenceSplitter`. Set `auto_chunk=False` to reject oversized documents instead. Batch returns include `chunks` count.
+
+**Batch document format:** Each dict must have `{text, project_id, scope, source_identifier?}`. Returns `{ingested, skipped, errors, chunks}`.
 
 ### Retrieval
 
@@ -261,6 +263,8 @@ Add to `claude_desktop_config.json` or Cursor MCP settings:
 | "Duplicate content skipped" | Content already exists | Verify `(project_id, scope, text)` tuple is truly identical |
 | Tool timeout | LLM processing slow | Increase `LLM_TIMEOUT` env var (default: 300s) |
 | "Error ingesting..." | Backend connectivity | Check `docker-compose logs` for specific service errors |
+| "Async client is not initialized" | `QdrantVectorStore` missing `aclient=` | Upgrade to v2.1 — `get_async_qdrant_client()` now wired in `get_vector_index()` |
+| "Detected nested async" | Sync LlamaIndex API called inside async context | Use `await retriever.aretrieve()` — never `.retrieve()` inside FastMCP/FastAPI |
 
 ### Service Health Checks
 

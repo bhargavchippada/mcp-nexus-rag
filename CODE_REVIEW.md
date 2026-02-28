@@ -1,6 +1,6 @@
 # MCP Nexus RAG - Code Review Report
 
-**Version**: v1.3.0
+**Version**: v2.1
 **Review Date**: 2026-02-28
 **Reviewed By**: Ari (Antigravity AI Architect)
 **Status**: ✅ Production-Ready
@@ -15,7 +15,7 @@ The MCP Nexus RAG codebase is **well-architected, thoroughly tested, and product
 
 | Metric | Value | Assessment |
 |--------|-------|------------|
-| **Test Coverage** | 100% (148/148 tests passing) | ✅ Excellent |
+| **Test Coverage** | 100% (161/161 tests passing) | ✅ Excellent |
 | **Code Quality** | 0 linting issues (ruff) | ✅ Clean |
 | **Type Safety** | ~95% type hints | ✅ Very Good |
 | **Documentation** | Complete docstrings + INSTRUCTIONS.md | ✅ Comprehensive |
@@ -94,6 +94,24 @@ All previously recommended enhancements from v1.1 and v1.2 code reviews have bee
 
 None identified.
 
+### 🟡 Medium Priority (v2.1 Audit)
+
+#### 0. Linting Issues in Test Code
+
+**Location**: `tests/test_reranker.py` — lines 302, 447
+
+```python
+lines = [l for l in result.split("\n") if l.startswith("- ")]
+```
+
+**Issue**: Ambiguous variable name `l` (lowercase L) violates PEP 8 E741.
+
+**Fix**: Replace with `line`:
+
+```python
+lines = [line for line in result.split("\n") if line.startswith("- ")]
+```
+
 ### 🟡 Medium Priority
 
 #### 1. Raw Exception Messages Exposed to MCP Client
@@ -136,7 +154,26 @@ def _validate_ingest_inputs(text, project_id, scope):
 
 ### 🟢 Low Priority
 
-#### 3. Hardcoded Default Password in Source
+#### 3. Late httpx Import in health_check()
+
+**Location**: `nexus/tools.py:472`
+
+```python
+@mcp.tool()
+async def health_check() -> dict[str, str]:
+    import httpx  # ← Late import inside function body
+```
+
+**Issue**: Import errors surface only at runtime when `health_check()` is called, not on module load. Breaks static analysis tools.
+
+**Fix**: Move to module-level imports:
+
+```python
+import httpx
+# ... at top of tools.py
+```
+
+#### 5. Hardcoded Default Password in Source
 
 **Location**: `nexus/config.py:17`
 
@@ -146,7 +183,7 @@ DEFAULT_NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password123")
 
 **Status**: Warning comment added ✅. Acceptable for local dev. Set `NEO4J_PASSWORD` env var in production.
 
-#### 4. No Per-Tenant Rate Limiting
+#### 6. No Per-Tenant Rate Limiting
 
 **Issue**: A single tenant can flood the ingestion pipeline, starving others.
 
@@ -238,7 +275,8 @@ def validate_production_config() -> None:
 | `test_new_features.py` | 23 | Batch tools, stats, health check |
 | `test_isolation.py` | 1 | Cross-tenant isolation |
 | `test_reranker.py` | 27 | Reranker singleton, vector/graph integration, config |
-| **Total** | **148** | **100% coverage** |
+| Other tests | 13 | Post-retrieval dedup, additional coverage |
+| **Total** | **161** | **100% coverage** |
 
 ### Additional Test Scenarios (Nice to Have)
 
@@ -296,5 +334,5 @@ The v2.0 codebase has addressed all high-priority recommendations from the v1.1 
 
 ---
 
-**Review Completed**: 2026-02-28
-**Next Review**: After v2.1 structural changes or new backend additions
+**Review Completed**: 2026-02-28 (v2.1 audit)
+**Next Review**: After v2.2 structural changes or new backend additions
