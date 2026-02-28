@@ -220,6 +220,65 @@ async def ingest_vector_document(text: str, project_id: str, scope: str, source_
         logger.error(f"Error ingesting Vector document: {e}")
         return f"Error ingesting Vector document: {e}"
 
+from neo4j import GraphDatabase
+
+def get_distinct_metadata_neo4j(key: str) -> list[str]:
+    try:
+        driver = GraphDatabase.driver(DEFAULT_NEO4J_URL, auth=(DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD))
+        with driver.session() as session:
+            result = session.run(f"MATCH (n) WHERE n.{key} IS NOT NULL RETURN DISTINCT n.{key} AS value")
+            return [record["value"] for record in result]
+    except Exception as e:
+        logger.warning(f"Neo4j distinct {key} error: {e}")
+        return []
+
+def get_distinct_metadata_qdrant(key: str) -> list[str]:
+    values = set()
+    try:
+        client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
+        offset = None
+        while True:
+            records, offset = client.scroll(
+                collection_name="nexus_rag",
+                limit=1000,
+                with_payload=[key],
+                offset=offset
+            )
+            for record in records:
+                if record.payload and key in record.payload:
+                    values.add(record.payload[key])
+            if offset is None:
+                break
+    except Exception as e:
+        logger.warning(f"Qdrant distinct {key} error: {e}")
+    return list(values)
+
+@mcp.tool()
+async def get_all_project_ids() -> list[str]:
+    """
+    Retrieve a list of all distinct project IDs available across the databases.
+    
+    Returns:
+        A list of project_id strings.
+    """
+    logger.info("Retrieving all project IDs")
+    graph_ids = get_distinct_metadata_neo4j("project_id")
+    vector_ids = get_distinct_metadata_qdrant("project_id")
+    return sorted(list(set(graph_ids + vector_ids)))
+
+@mcp.tool()
+async def get_all_tenant_scopes() -> list[str]:
+    """
+    Retrieve a list of all distinct tenant scopes available across the databases.
+    
+    Returns:
+        A list of tenant_scope strings.
+    """
+    logger.info("Retrieving all tenant scopes")
+    graph_scopes = get_distinct_metadata_neo4j("tenant_scope")
+    vector_scopes = get_distinct_metadata_qdrant("tenant_scope")
+    return sorted(list(set(graph_scopes + vector_scopes)))
+
 def main():
     """Run the MCP server via standard stdio transport."""
     mcp.run()

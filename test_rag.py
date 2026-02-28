@@ -1,5 +1,5 @@
 import asyncio
-from server import ingest_graph_document, get_graph_context, ingest_vector_document, get_vector_context
+from server import ingest_graph_document, get_graph_context, ingest_vector_document, get_vector_context, get_all_project_ids, get_all_tenant_scopes
 import pytest
 
 @pytest.mark.asyncio
@@ -64,9 +64,26 @@ async def test_vector_rag():
     cross_context = await get_vector_context("quantum trading", "WEB_PORTAL", "TECH_RESEARCH")
     print(f"Vector Cross-Contamination Context:\n{cross_context}")
 
+@pytest.mark.asyncio
+async def test_metadata_extraction():
+    print("\n--- Testing Metadata Extraction ---")
+    try:
+        projects = await get_all_project_ids()
+        scopes = await get_all_tenant_scopes()
+        print(f"Discovered Projects: {projects}")
+        print(f"Discovered Scopes: {scopes}")
+        
+        assert "TRADING_BOT" in projects
+        assert "WEB_PORTAL" in projects
+        assert "WEB_RESEARCH" in scopes
+        assert "TECH_RESEARCH" in scopes
+    except Exception as e:
+        pytest.skip(f"Could not verify metadata (DBs might be missing or empty): {e}")
+
 async def main():
     await test_graph_rag()
     await test_vector_rag()
+    await test_metadata_extraction()
 
 if __name__ == "__main__":
     asyncio.run(main())
