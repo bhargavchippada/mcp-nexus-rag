@@ -1,0 +1,120 @@
+services:
+  # Structured Data & PGVector for LlamaIndex vector storage
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: turiya-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: turiya_memory
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command: >
+      postgres -c shared_buffers=256MB -c effective_cache_size=1GB -c work_mem=16MB -c maintenance_work_mem=128MB
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U admin -d turiya_memory" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Graph Database for Microsoft GraphRAG
+  neo4j:
+    image: neo4j:2025-community
+    container_name: turiya-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/password123
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 2g
+      NEO4J_server_memory_pagecache_size: 1g
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: 'apoc.*'
+      NEO4J_dbms_security_procedures_allowlist: 'apoc.*'
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Vector Database for LlamaIndex
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: turiya-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # Local LLM Server tuned for RTX 5090
+  ollama:
+    image: ollama/ollama:latest
+    container_name: turiya-ollama
+    restart: unless-stopped
+    environment:
+      - OLLAMA_ORIGINS=*
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_CONTEXT_LENGTH=32768
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_MAX_LOADED_MODELS=3
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_KEEP_ALIVE=24h
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    healthcheck:
+      test: [ "CMD", "ollama", "list" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # Improved Init Service: Pulls models reliably
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: turiya-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: [ "/bin/sh", "-c" ]
+    command:
+      - |
+        echo 'Waiting for Ollama API to be fully responsive...'
+        until curl -s http://ollama:11434/api/tags > /dev/null; do 
+          sleep 2
+        done
+
+        # Array of models to pull
+        MODELS="nomic-embed-text qllama/bge-reranker-v2-m3 llama3.1:8b"
+
+        for MODEL in $$MODELS; do
+          echo "Processing model: $$MODEL"
+          curl -sf -X POST http://ollama:11434/api/pull -d "{\"name\":\"$$MODEL\"}"
+          echo "Finished pulling $$MODEL"
+        done
+        echo 'All models initialized successfully.'
+
+volumes:
+  postgres_data:
+  neo4j_data:
+  qdrant_data:
+  ollama_data:

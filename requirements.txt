@@ -1,6 +1,0 @@
-mcp>=1.0.0
-llama-index-core
-llama-index-llms-ollama
-llama-index-embeddings-ollama
-llama-index-graph-stores-neo4j
-neo4j
