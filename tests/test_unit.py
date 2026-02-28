@@ -336,3 +336,172 @@ class TestSetupSettings:
     def test_lock_exists(self):
         import threading
         assert isinstance(server._settings_lock, type(threading.Lock()))
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — _content_hash
+# ---------------------------------------------------------------------------
+
+class TestContentHash:
+    def test_same_text_same_project_scope_is_identical(self):
+        h1 = server._content_hash("Hello", "PROJ", "SCOPE")
+        h2 = server._content_hash("Hello", "PROJ", "SCOPE")
+        assert h1 == h2
+
+    def test_different_project_gives_different_hash(self):
+        h1 = server._content_hash("Hello", "PROJ_A", "SCOPE")
+        h2 = server._content_hash("Hello", "PROJ_B", "SCOPE")
+        assert h1 != h2
+
+    def test_different_scope_gives_different_hash(self):
+        h1 = server._content_hash("Hello", "PROJ", "SCOPE_A")
+        h2 = server._content_hash("Hello", "PROJ", "SCOPE_B")
+        assert h1 != h2
+
+    def test_different_text_gives_different_hash(self):
+        h1 = server._content_hash("Hello", "PROJ", "SCOPE")
+        h2 = server._content_hash("World", "PROJ", "SCOPE")
+        assert h1 != h2
+
+    def test_returns_hex_string(self):
+        h = server._content_hash("x", "P", "S")
+        assert len(h) == 64
+        assert all(c in "0123456789abcdef" for c in h)
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — _is_duplicate_qdrant
+# ---------------------------------------------------------------------------
+
+class TestIsDuplicateQdrant:
+    def test_returns_true_when_record_found(self):
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = (["fake_record"], None)
+        with patch("qdrant_client.QdrantClient", return_value=mock_client):
+            assert server._is_duplicate_qdrant("abc", "PROJ", "SCOPE") is True
+
+    def test_returns_false_when_no_record(self):
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([], None)
+        with patch("qdrant_client.QdrantClient", return_value=mock_client):
+            assert server._is_duplicate_qdrant("abc", "PROJ", "SCOPE") is False
+
+    def test_fail_open_on_exception(self):
+        with patch("qdrant_client.QdrantClient", side_effect=Exception("timeout")):
+            # Must return False (fail-open), not raise
+            assert server._is_duplicate_qdrant("abc", "PROJ", "SCOPE") is False
+
+    def test_scroll_uses_all_three_filters(self):
+        mock_client = MagicMock()
+        mock_client.scroll.return_value = ([], None)
+        with patch("qdrant_client.QdrantClient", return_value=mock_client):
+            server._is_duplicate_qdrant("HASH123", "MY_PROJ", "MY_SCOPE")
+        _, kwargs = mock_client.scroll.call_args
+        keys = {c.key for c in kwargs["scroll_filter"].must}
+        assert keys == {"project_id", "tenant_scope", "content_hash"}
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — _is_duplicate_neo4j
+# ---------------------------------------------------------------------------
+
+class TestIsDuplicateNeo4j:
+    def _make_driver_with_single(self, single_return):
+        mock_session = MagicMock()
+        mock_session.run.return_value.single.return_value = single_return
+        mock_driver = MagicMock()
+        mock_driver.__enter__ = lambda s: mock_driver
+        mock_driver.__exit__ = MagicMock(return_value=False)
+        mock_driver.session.return_value.__enter__ = lambda s: mock_session
+        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_driver
+
+    def test_returns_true_when_exists(self):
+        driver = self._make_driver_with_single({"exists": True})
+        with patch("server._neo4j_driver", return_value=driver):
+            assert server._is_duplicate_neo4j("abc", "PROJ", "SCOPE") is True
+
+    def test_returns_false_when_not_exists(self):
+        driver = self._make_driver_with_single({"exists": False})
+        with patch("server._neo4j_driver", return_value=driver):
+            assert server._is_duplicate_neo4j("abc", "PROJ", "SCOPE") is False
+
+    def test_returns_false_when_no_record(self):
+        driver = self._make_driver_with_single(None)
+        with patch("server._neo4j_driver", return_value=driver):
+            assert server._is_duplicate_neo4j("abc", "PROJ", "SCOPE") is False
+
+    def test_fail_open_on_exception(self):
+        with patch("server._neo4j_driver", side_effect=Exception("bolt down")):
+            assert server._is_duplicate_neo4j("abc", "PROJ", "SCOPE") is False
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — ingest tools with dedup gate
+# ---------------------------------------------------------------------------
+
+class TestIngestVectorDedup:
+    async def test_skips_on_duplicate(self):
+        with patch("server._content_hash", return_value="HASH"), \
+             patch("server._is_duplicate_qdrant", return_value=True) as mock_check, \
+             patch("server.get_vector_index") as mock_index:
+            result = await server.ingest_vector_document("text", "PROJ", "SCOPE")
+        assert "Skipped" in result
+        mock_index.assert_not_called()
+        mock_check.assert_called_once_with("HASH", "PROJ", "SCOPE")
+
+    async def test_ingests_on_first_time(self):
+        mock_index = MagicMock()
+        with patch("server._content_hash", return_value="HASH"), \
+             patch("server._is_duplicate_qdrant", return_value=False), \
+             patch("server.get_vector_index", return_value=mock_index):
+            result = await server.ingest_vector_document("text", "PROJ", "SCOPE")
+        assert "Successfully" in result
+        mock_index.insert.assert_called_once()
+
+    async def test_doc_id_set_to_hash(self):
+        mock_index = MagicMock()
+        with patch("server._content_hash", return_value="DEADBEEF"), \
+             patch("server._is_duplicate_qdrant", return_value=False), \
+             patch("server.get_vector_index", return_value=mock_index):
+            await server.ingest_vector_document("text", "PROJ", "SCOPE")
+        doc = mock_index.insert.call_args[0][0]
+        assert doc.doc_id == "DEADBEEF"
+
+    async def test_content_hash_in_metadata(self):
+        mock_index = MagicMock()
+        with patch("server._content_hash", return_value="CAFEF00D"), \
+             patch("server._is_duplicate_qdrant", return_value=False), \
+             patch("server.get_vector_index", return_value=mock_index):
+            await server.ingest_vector_document("text", "PROJ", "SCOPE")
+        doc = mock_index.insert.call_args[0][0]
+        assert doc.metadata["content_hash"] == "CAFEF00D"
+
+
+class TestIngestGraphDedup:
+    async def test_skips_on_duplicate(self):
+        with patch("server._content_hash", return_value="HASH"), \
+             patch("server._is_duplicate_neo4j", return_value=True) as mock_check, \
+             patch("server.get_graph_index") as mock_index:
+            result = await server.ingest_graph_document("text", "PROJ", "SCOPE")
+        assert "Skipped" in result
+        mock_index.assert_not_called()
+        mock_check.assert_called_once_with("HASH", "PROJ", "SCOPE")
+
+    async def test_ingests_on_first_time(self):
+        mock_index = MagicMock()
+        with patch("server._content_hash", return_value="HASH"), \
+             patch("server._is_duplicate_neo4j", return_value=False), \
+             patch("server.get_graph_index", return_value=mock_index):
+            result = await server.ingest_graph_document("text", "PROJ", "SCOPE")
+        assert "Successfully" in result
+        mock_index.insert.assert_called_once()
+
+    async def test_doc_id_set_to_hash(self):
+        mock_index = MagicMock()
+        with patch("server._content_hash", return_value="GRAPHHASH"), \
+             patch("server._is_duplicate_neo4j", return_value=False), \
+             patch("server.get_graph_index", return_value=mock_index):
+            await server.ingest_graph_document("text", "PROJ", "SCOPE")
+        doc = mock_index.insert.call_args[0][0]
+        assert doc.doc_id == "GRAPHHASH"

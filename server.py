@@ -1,8 +1,9 @@
-# Version: v1.5
+# Version: v1.6
 """
 Nexus RAG MCP Server
 Provides strict multi-tenant GraphRAG and Standard RAG retrieval isolated by project_id and tenant_scope.
 """
+import hashlib
 import logging
 import threading
 from typing import Optional
@@ -31,7 +32,7 @@ DEFAULT_EMBED_MODEL = "nomic-embed-text"
 DEFAULT_LLM_MODEL = "llama3.1:8b"
 
 # Allowed metadata keys for safe Cypher queries — prevents key injection
-_ALLOWED_META_KEYS = frozenset({"project_id", "tenant_scope", "source"})
+_ALLOWED_META_KEYS = frozenset({"project_id", "tenant_scope", "source", "content_hash"})
 
 COLLECTION_NAME = "nexus_rag"  # single source-of-truth for the Qdrant collection name
 
@@ -234,12 +235,106 @@ def delete_data_qdrant(project_id: str, scope: str = "") -> None:
         raise
 
 
-# --- MCP Tools ---
+# --- Deduplication helpers ---
+
+def _content_hash(text: str, project_id: str, scope: str) -> str:
+    """SHA-256 hash of content scoped to its tenant context.
+
+    Hashing includes project_id and scope so identical text in different
+    projects/scopes is treated as distinct content (not a duplicate).
+
+    Args:
+        text: Raw document text.
+        project_id: Tenant project ID.
+        scope: Tenant scope.
+
+    Returns:
+        Hex-encoded SHA-256 digest.
+    """
+    payload = f"{project_id}\x00{scope}\x00{text}"
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _is_duplicate_qdrant(content_hash: str, project_id: str, scope: str) -> bool:
+    """Return True if this content hash already exists in Qdrant.
+
+    Fails open (returns False) on any error so ingestion is never
+    silently blocked by a connectivity issue.
+
+    Args:
+        content_hash: SHA-256 hex digest from _content_hash().
+        project_id: Tenant project ID.
+        scope: Tenant scope.
+
+    Returns:
+        True if a duplicate was found, False otherwise.
+    """
+    try:
+        client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
+        records, _ = client.scroll(
+            collection_name=COLLECTION_NAME,
+            scroll_filter=qdrant_models.Filter(
+                must=[
+                    qdrant_models.FieldCondition(
+                        key="project_id",
+                        match=qdrant_models.MatchValue(value=project_id),
+                    ),
+                    qdrant_models.FieldCondition(
+                        key="tenant_scope",
+                        match=qdrant_models.MatchValue(value=scope),
+                    ),
+                    qdrant_models.FieldCondition(
+                        key="content_hash",
+                        match=qdrant_models.MatchValue(value=content_hash),
+                    ),
+                ]
+            ),
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        )
+        return len(records) > 0
+    except Exception as e:
+        logger.warning(f"Qdrant dedup check failed (fail-open): {e}")
+        return False
+
+
+def _is_duplicate_neo4j(content_hash: str, project_id: str, scope: str) -> bool:
+    """Return True if this content hash already exists in Neo4j.
+
+    Fails open (returns False) on any error.
+
+    Args:
+        content_hash: SHA-256 hex digest from _content_hash().
+        project_id: Tenant project ID.
+        scope: Tenant scope.
+
+    Returns:
+        True if a duplicate was found, False otherwise.
+    """
+    try:
+        with _neo4j_driver() as driver:
+            with driver.session() as session:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id, tenant_scope: $scope, "
+                    "content_hash: $content_hash}) RETURN COUNT(n) > 0 AS exists",
+                    project_id=project_id,
+                    scope=scope,
+                    content_hash=content_hash,
+                )
+                record = result.single()
+                return bool(record["exists"]) if record else False
+    except Exception as e:
+        logger.warning(f"Neo4j dedup check failed (fail-open): {e}")
+        return False
+
+
 
 @mcp.tool()
 async def ingest_graph_document(text: str, project_id: str, scope: str, source_identifier: str = "manual") -> str:
     """
     Ingest a document into the Multi-Tenant GraphRAG memory.
+    Skips ingestion if identical content has already been stored for this project+scope.
 
     Args:
         text: The content of the document to ingest.
@@ -248,21 +343,32 @@ async def ingest_graph_document(text: str, project_id: str, scope: str, source_i
         source_identifier: An optional identifier for the source of the document.
 
     Returns:
-        Status message about the ingestion.
+        Status message: 'Successfully ingested', 'Skipped (duplicate)', or error.
     """
-    logger.info(f"Ingesting Graph document for project: {project_id}, scope: {scope}")
+    chash = _content_hash(text, project_id, scope)
+    logger.info(f"Ingesting Graph document for project: {project_id}, scope: {scope}, hash: {chash[:8]}")
+
+    if _is_duplicate_neo4j(chash, project_id, scope):
+        logger.info(f"Duplicate Graph document detected — skipping LLM extraction.")
+        return (
+            f"Skipped: duplicate content already exists in GraphRAG for "
+            f"project '{project_id}', scope '{scope}'."
+        )
+
     try:
         index = get_graph_index()
         doc = Document(
             text=text,
+            doc_id=chash,  # deterministic ID prevents LlamaIndex-level duplication
             metadata={
                 "project_id": project_id,
                 "tenant_scope": scope,
                 "source": source_identifier,
+                "content_hash": chash,
             }
         )
         index.insert(doc)
-        return f"Successfully ingested Graph document for {project_id} in scope {scope}."
+        return f"Successfully ingested Graph document for '{project_id}' in scope '{scope}'."
     except Exception as e:
         logger.error(f"Error ingesting Graph document: {e}")
         return f"Error ingesting Graph document: {e}"
@@ -304,6 +410,7 @@ async def get_graph_context(query: str, project_id: str, scope: str) -> str:
 async def ingest_vector_document(text: str, project_id: str, scope: str, source_identifier: str = "manual") -> str:
     """
     Ingest a document into the Multi-Tenant standard RAG (Vector) memory.
+    Skips ingestion if identical content has already been stored for this project+scope.
 
     Args:
         text: The content of the document to ingest.
@@ -312,21 +419,32 @@ async def ingest_vector_document(text: str, project_id: str, scope: str, source_
         source_identifier: An optional identifier for the source of the document.
 
     Returns:
-        Status message about the ingestion.
+        Status message: 'Successfully ingested', 'Skipped (duplicate)', or error.
     """
-    logger.info(f"Ingesting Vector document for project: {project_id}, scope: {scope}")
+    chash = _content_hash(text, project_id, scope)
+    logger.info(f"Ingesting Vector document for project: {project_id}, scope: {scope}, hash: {chash[:8]}")
+
+    if _is_duplicate_qdrant(chash, project_id, scope):
+        logger.info(f"Duplicate Vector document detected — skipping embedding call.")
+        return (
+            f"Skipped: duplicate content already exists in VectorRAG for "
+            f"project '{project_id}', scope '{scope}'."
+        )
+
     try:
         index = get_vector_index()
         doc = Document(
             text=text,
+            doc_id=chash,  # deterministic ID → Qdrant upsert, not insert-duplicate
             metadata={
                 "project_id": project_id,
                 "tenant_scope": scope,
                 "source": source_identifier,
+                "content_hash": chash,
             }
         )
         index.insert(doc)
-        return f"Successfully ingested Vector document for {project_id} in scope {scope}."
+        return f"Successfully ingested Vector document for '{project_id}' in scope '{scope}'."
     except Exception as e:
         logger.error(f"Error ingesting Vector document: {e}")
         return f"Error ingesting Vector document: {e}"

@@ -188,8 +188,56 @@ Add to `claude_desktop_config.json` or Cursor MCP settings:
 
 | Topic | Decision |
 |-------|----------|
-| **Key injection** | Only `project_id`, `tenant_scope`, `source` are accepted as Neo4j property names (`_ALLOWED_META_KEYS`). All others raise `ValueError`. |
+| **Key injection** | Only `project_id`, `tenant_scope`, `source`, `content_hash` are accepted as Neo4j property names (`_ALLOWED_META_KEYS`). All others raise `ValueError`. |
 | **Thread safety** | `setup_settings()` uses a `threading.Lock` with double-checked locking — safe for concurrent MCP requests. |
 | **Collection name** | Hardcoded as `COLLECTION_NAME = "nexus_rag"` constant — single source of truth; no scattered string literals. |
 | **Delete semantics** | Both Neo4j and Qdrant deletions run independently; partial failures are collected and returned as a descriptive error string rather than silently ignored. |
 | **No external APIs** | All LLM and embedding calls go to `localhost:11434`. Zero data exfiltration. |
+
+---
+
+## Deduplication Design (v1.6)
+
+Both ingest tools perform a **tenant-scoped SHA-256 content check** before touching any index:
+
+```text
+hash = SHA-256(project_id \x00 scope \x00 text)
+```
+
+Including `project_id` and `scope` in the hash means the same document in different projects or scopes is **never** treated as a duplicate.
+
+### Per-backend strategy
+
+| Backend | Dedup mechanism | Where hash is stored |
+|---------|----------------|---------------------|
+| **Qdrant** (vector) | Scroll for `content_hash` + `project_id` + `tenant_scope` before embed | Qdrant point payload (`content_hash` field) |
+| **Neo4j** (graph) | Cypher `MATCH (n {content_hash, project_id, tenant_scope})` before LLM extraction | Node properties set by LlamaIndex metadata |
+
+### Return values
+
+| Condition | Return string |
+|-----------|---------------|
+| New content | `"Successfully ingested ..."` |
+| Duplicate found | `"Skipped: duplicate content already exists in [GraphRAG\|VectorRAG] for project '...', scope '...'."` |
+| Ingest error | `"Error ingesting ...: <exception>"` |
+
+### Fail-open behaviour
+
+If the dedup check itself fails (e.g. Qdrant or Neo4j is temporarily down), the function **falls through to ingestion** rather than silently discarding content. A `WARNING` is logged.
+
+### doc_id determinism
+
+Both tools set `doc.doc_id = content_hash`. This means:
+
+- **Qdrant**: LlamaIndex derives point IDs from `doc_id` → Qdrant upserts rather than appending a duplicate even if the pre-check races.
+- **Neo4j**: The property graph store tracks documents by `doc_id` at the LlamaIndex layer.
+
+### Clearing existing duplicates
+
+If duplicates were ingested before v1.6, delete the project/scope and re-ingest:
+
+```bash
+# Via MCP tool
+delete_tenant_data(project_id="MY_PROJECT")  # or with scope= for targeted cleanup
+# Then re-ingest — dedup will prevent recurrence
+```
