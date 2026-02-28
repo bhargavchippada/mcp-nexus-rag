@@ -2,7 +2,7 @@
 
 This submodule contains the FastMCP server (`server.py`) and supporting tests for Multi-Tenant **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) context retrieval, powered by LlamaIndex + Ollama.
 
-**Current server version:** `v1.5` · **Test coverage:** 99%
+**Current package version:** `v1.1.0` · **Test coverage:** 100% · **Tests:** 99 passed
 
 ---
 
@@ -45,7 +45,7 @@ docker exec -it turiya-ollama ollama list
 ### Unit tests (no live services required)
 
 ```bash
-PYTHONPATH=. poetry run pytest tests/test_unit.py -v
+PYTHONPATH=. poetry run pytest tests/test_unit.py tests/test_coverage.py -v
 ```
 
 ### Integration tests (requires live docker-compose)
@@ -57,8 +57,8 @@ PYTHONPATH=. poetry run pytest tests/test_integration.py -v
 ### Full suite + coverage
 
 ```bash
-PYTHONPATH=. poetry run pytest tests/ test_rag.py --cov=server --cov-report=term-missing
-# Expected: 51 passed, 99% coverage
+PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
+# Expected: 99 passed, 100% coverage
 ```
 
 ### Run the MCP server interactively

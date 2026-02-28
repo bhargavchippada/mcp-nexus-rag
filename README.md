@@ -1,6 +1,6 @@
 # MCP Nexus RAG
 
-[![Tests](https://img.shields.io/badge/tests-51%20passed-brightgreen)](tests/) [![Coverage](https://img.shields.io/badge/coverage-99%25-brightgreen)](tests/) [![Version](https://img.shields.io/badge/server-v1.5-blue)](server.py)
+[![Tests](https://img.shields.io/badge/tests-99%20passed-brightgreen)](tests/) [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](tests/) [![Version](https://img.shields.io/badge/package-v1.1.0-blue)](nexus/__init__.py)
 
 Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
@@ -87,11 +87,8 @@ docker-compose up -d
 # 2. Install dependencies
 poetry install
 
-# 3. Run integration tests (requires live services)
-PYTHONPATH=. poetry run pytest test_rag.py -v
-
-# 4. Run the full suite + coverage
-PYTHONPATH=. poetry run pytest tests/ test_rag.py --cov=server --cov-report=term-missing
+# 3. Run the full suite + coverage (no live services required)
+PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
 ```
 
 ---
@@ -119,9 +116,9 @@ Add to `claude_desktop_config.json` or your Cursor MCP settings (replace the pat
 
 ## Security Notes
 
-- **Metadata key allowlist**: Only `project_id`, `tenant_scope`, `source` are accepted as Cypher property names — prevents key injection.
+- **Metadata key allowlist**: `nexus.config.ALLOWED_META_KEYS` — only `project_id`, `tenant_scope`, `source`, `content_hash` are accepted as Cypher/Qdrant property names, preventing key injection.
 - **No external API calls**: All LLM and embedding traffic stays on `localhost:11434`.
-- **Secrets**: Update `DEFAULT_NEO4J_PASSWORD` in `server.py` or migrate to environment variables for production use.
+- **Secrets**: `DEFAULT_NEO4J_PASSWORD` is defined in `nexus/config.py`. Migrate to environment variables for production deployments.
 
 ---
 
@@ -129,10 +126,13 @@ Add to `claude_desktop_config.json` or your Cursor MCP settings (replace the pat
 
 ```bash
 # Unit tests only (no live services needed)
-PYTHONPATH=. poetry run pytest tests/test_unit.py -v
+PYTHONPATH=. poetry run pytest tests/test_unit.py tests/test_coverage.py -v
 
 # Integration tests (requires live docker-compose)
 PYTHONPATH=. poetry run pytest tests/test_integration.py -v
+
+# Full suite + 100% coverage
+PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
 
 # Interactive MCP Inspector
 npx @modelcontextprotocol/inspector poetry run python server.py

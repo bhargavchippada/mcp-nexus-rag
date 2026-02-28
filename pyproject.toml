@@ -34,3 +34,7 @@ dev = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "integration: tests that exercise near-live or mocked-live backend interactions",
+]
