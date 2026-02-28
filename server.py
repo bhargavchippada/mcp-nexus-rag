@@ -1,4 +1,4 @@
-# Version: v1.7
+# Version: v1.8
 # ruff: noqa: E402
 """
 Nexus RAG MCP Server — entry point.
@@ -27,6 +27,7 @@ from nexus.tools import (  # noqa: F401
     get_graph_context,
     ingest_vector_document,
     get_vector_context,
+    health_check,
     get_all_project_ids,
     get_all_tenant_scopes,
     delete_tenant_data,

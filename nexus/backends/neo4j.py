@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.9
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
 """
@@ -137,3 +137,35 @@ def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
     except Exception as e:
         logger.warning(f"Neo4j dedup check failed (fail-open): {e}")
         return False
+
+
+def get_document_count(project_id: str, scope: str = "") -> int:
+    """Return the count of documents for a project/scope in Neo4j.
+
+    Args:
+        project_id: Tenant project ID.
+        scope: Optional tenant scope. If empty, counts all scopes.
+
+    Returns:
+        Number of nodes matching the criteria, 0 on error.
+    """
+    try:
+        with neo4j_driver() as driver:
+            with driver.session() as session:
+                if scope:
+                    result = session.run(
+                        "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
+                        "RETURN COUNT(n) AS count",
+                        project_id=project_id,
+                        scope=scope,
+                    )
+                else:
+                    result = session.run(
+                        "MATCH (n {project_id: $project_id}) RETURN COUNT(n) AS count",
+                        project_id=project_id,
+                    )
+                record = result.single()
+                return int(record["count"]) if record else 0
+    except Exception as e:
+        logger.warning(f"Neo4j document count error: {e}")
+        return 0

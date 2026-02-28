@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.9
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -12,7 +12,12 @@ from llama_index.core import Document
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from qdrant_client.http import models as qdrant_models
 
-from nexus.config import logger, mcp
+from nexus.config import (
+    logger,
+    mcp,
+    DEFAULT_QDRANT_URL,
+    DEFAULT_OLLAMA_URL,
+)
 from nexus.dedup import content_hash
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
@@ -101,6 +106,82 @@ async def ingest_graph_document(
     except Exception as e:
         logger.error(f"Error ingesting Graph document: {e}")
         return f"Error ingesting Graph document: {e}"
+
+
+@mcp.tool()
+async def ingest_graph_documents_batch(
+    documents: list[dict[str, str]],
+    skip_duplicates: bool = True,
+) -> dict[str, int]:
+    """Batch ingest multiple documents into GraphRAG memory.
+
+    Processes multiple documents in a single call for improved performance.
+    Each document must have 'text', 'project_id', and 'scope' keys.
+
+    Args:
+        documents: List of document dicts, each with keys:
+            - text: Document content (required)
+            - project_id: Tenant project ID (required)
+            - scope: Tenant scope (required)
+            - source_identifier: Optional source identifier (defaults to 'batch')
+        skip_duplicates: If True, skips documents that already exist (default: True).
+
+    Returns:
+        Dictionary with counts: {'ingested': N, 'skipped': M, 'errors': K}.
+
+    Examples:
+        >>> await ingest_graph_documents_batch([
+        ...     {"text": "Auth uses JWT", "project_id": "WEB_APP", "scope": "ARCHITECTURE"},
+        ...     {"text": "DB is PostgreSQL", "project_id": "WEB_APP", "scope": "ARCHITECTURE"}
+        ... ])
+        {"ingested": 2, "skipped": 0, "errors": 0}
+    """
+    logger.info(f"Batch Graph ingest: {len(documents)} documents")
+    ingested = 0
+    skipped = 0
+    errors = 0
+
+    for doc_dict in documents:
+        try:
+            text = doc_dict.get("text", "")
+            project_id = doc_dict.get("project_id", "")
+            scope = doc_dict.get("scope", "")
+            source_identifier = doc_dict.get("source_identifier", "batch")
+
+            err = _validate_ingest_inputs(text, project_id, scope)
+            if err:
+                logger.warning(f"Validation error in batch item: {err}")
+                errors += 1
+                continue
+
+            chash = content_hash(text, project_id, scope)
+
+            if skip_duplicates and neo4j_backend.is_duplicate(chash, project_id, scope):
+                skipped += 1
+                continue
+
+            index = get_graph_index()
+            doc = Document(
+                text=text,
+                doc_id=chash,
+                metadata={
+                    "project_id": project_id,
+                    "tenant_scope": scope,
+                    "source": source_identifier,
+                    "content_hash": chash,
+                },
+            )
+            index.insert(doc)
+            ingested += 1
+
+        except Exception as e:
+            logger.error(f"Error in batch Graph ingest: {e}")
+            errors += 1
+
+    logger.info(
+        f"Batch Graph ingest complete: ingested={ingested}, skipped={skipped}, errors={errors}"
+    )
+    return {"ingested": ingested, "skipped": skipped, "errors": errors}
 
 
 @mcp.tool()
@@ -196,6 +277,82 @@ async def ingest_vector_document(
 
 
 @mcp.tool()
+async def ingest_vector_documents_batch(
+    documents: list[dict[str, str]],
+    skip_duplicates: bool = True,
+) -> dict[str, int]:
+    """Batch ingest multiple documents into VectorRAG memory.
+
+    Processes multiple documents in a single call for improved performance.
+    Each document must have 'text', 'project_id', and 'scope' keys.
+
+    Args:
+        documents: List of document dicts, each with keys:
+            - text: Document content (required)
+            - project_id: Tenant project ID (required)
+            - scope: Tenant scope (required)
+            - source_identifier: Optional source identifier (defaults to 'batch')
+        skip_duplicates: If True, skips documents that already exist (default: True).
+
+    Returns:
+        Dictionary with counts: {'ingested': N, 'skipped': M, 'errors': K}.
+
+    Examples:
+        >>> await ingest_vector_documents_batch([
+        ...     {"text": "Auth uses JWT", "project_id": "WEB_APP", "scope": "CODE"},
+        ...     {"text": "DB is PostgreSQL", "project_id": "WEB_APP", "scope": "CODE"}
+        ... ])
+        {"ingested": 2, "skipped": 0, "errors": 0}
+    """
+    logger.info(f"Batch Vector ingest: {len(documents)} documents")
+    ingested = 0
+    skipped = 0
+    errors = 0
+
+    for doc_dict in documents:
+        try:
+            text = doc_dict.get("text", "")
+            project_id = doc_dict.get("project_id", "")
+            scope = doc_dict.get("scope", "")
+            source_identifier = doc_dict.get("source_identifier", "batch")
+
+            err = _validate_ingest_inputs(text, project_id, scope)
+            if err:
+                logger.warning(f"Validation error in batch item: {err}")
+                errors += 1
+                continue
+
+            chash = content_hash(text, project_id, scope)
+
+            if skip_duplicates and qdrant_backend.is_duplicate(chash, project_id, scope):
+                skipped += 1
+                continue
+
+            index = get_vector_index()
+            doc = Document(
+                text=text,
+                doc_id=chash,
+                metadata={
+                    "project_id": project_id,
+                    "tenant_scope": scope,
+                    "source": source_identifier,
+                    "content_hash": chash,
+                },
+            )
+            index.insert(doc)
+            ingested += 1
+
+        except Exception as e:
+            logger.error(f"Error in batch Vector ingest: {e}")
+            errors += 1
+
+    logger.info(
+        f"Batch Vector ingest complete: ingested={ingested}, skipped={skipped}, errors={errors}"
+    )
+    return {"ingested": ingested, "skipped": skipped, "errors": errors}
+
+
+@mcp.tool()
 async def get_vector_context(query: str, project_id: str, scope: str) -> str:
     """Retrieve isolated context from the standard RAG (Vector) memory.
 
@@ -227,8 +384,51 @@ async def get_vector_context(query: str, project_id: str, scope: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Metadata / admin tools
+# Health & admin tools
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def health_check() -> dict[str, str]:
+    """Check connectivity to all backend services (Neo4j, Qdrant, Ollama).
+
+    Returns:
+        Dictionary with status of each service: "ok" or error message.
+    """
+    import httpx
+
+    status = {}
+
+    # Check Neo4j
+    try:
+        with neo4j_backend.neo4j_driver() as driver:
+            with driver.session() as session:
+                session.run("RETURN 1")
+        status["neo4j"] = "ok"
+    except Exception as e:
+        status["neo4j"] = f"error: {str(e)[:100]}"
+
+    # Check Qdrant
+    try:
+        client = qdrant_backend.get_client(DEFAULT_QDRANT_URL)
+        client.get_collections()
+        status["qdrant"] = "ok"
+    except Exception as e:
+        status["qdrant"] = f"error: {str(e)[:100]}"
+
+    # Check Ollama
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as http_client:
+            response = await http_client.get(f"{DEFAULT_OLLAMA_URL}/api/tags")
+            if response.status_code == 200:
+                status["ollama"] = "ok"
+            else:
+                status["ollama"] = f"error: HTTP {response.status_code}"
+    except Exception as e:
+        status["ollama"] = f"error: {str(e)[:100]}"
+
+    logger.info(f"Health check: {status}")
+    return status
 
 
 @mcp.tool()
@@ -314,3 +514,31 @@ async def delete_tenant_data(project_id: str, scope: str = "") -> str:
     if errors:
         return f"Partial failure deleting {label}: {'; '.join(errors)}"
     return f"Successfully deleted data for {label}"
+
+
+@mcp.tool()
+async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
+    """Get statistics for a project (and optionally a specific scope).
+
+    Returns document counts from both GraphRAG and VectorRAG backends.
+
+    Args:
+        project_id: The target tenant project ID.
+        scope: Optional. If provided, returns stats for this specific scope only.
+
+    Returns:
+        Dictionary with 'graph_docs' and 'vector_docs' counts.
+    """
+    if not project_id or not project_id.strip():
+        return {"error": "project_id must not be empty"}
+
+    logger.info(f"Getting stats: project_id={project_id!r} scope={scope!r}")
+
+    graph_count = neo4j_backend.get_document_count(project_id, scope)
+    vector_count = qdrant_backend.get_document_count(project_id, scope)
+
+    return {
+        "graph_docs": graph_count,
+        "vector_docs": vector_count,
+        "total_docs": graph_count + vector_count,
+    }

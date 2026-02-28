@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.9
 """
 nexus.dedup — Tenant-scoped SHA-256 content hashing.
 

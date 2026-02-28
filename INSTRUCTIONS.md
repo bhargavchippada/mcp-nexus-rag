@@ -2,7 +2,7 @@
 
 This submodule contains the FastMCP server (`server.py`) and supporting tests for Multi-Tenant **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) context retrieval, powered by LlamaIndex + Ollama.
 
-**Current package version:** `v1.1.0` · **Test coverage:** 100% · **Tests:** 99 passed
+**Current package version:** `v1.9` · **Test coverage:** 100% · **Tests:** 118 passed
 
 ---
 
@@ -73,10 +73,14 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ### Ingestion
 
-| Tool                     | Arguments                                     | Notes                                               |
-| ------------------------ | --------------------------------------------- | --------------------------------------------------- |
-| `ingest_graph_document`  | `text, project_id, scope, source_identifier?` | Builds property graph in Neo4j                      |
-| `ingest_vector_document` | `text, project_id, scope, source_identifier?` | Stores embedding in Qdrant (`nexus_rag` collection) |
+| Tool                            | Arguments                                     | Notes                                               |
+| ------------------------------- | --------------------------------------------- | --------------------------------------------------- |
+| `ingest_graph_document`         | `text, project_id, scope, source_identifier?` | Builds property graph in Neo4j (single document)    |
+| `ingest_vector_document`        | `text, project_id, scope, source_identifier?` | Stores embedding in Qdrant (single document)        |
+| `ingest_graph_documents_batch`  | `documents: list[dict], skip_duplicates?`     | **v1.9**: Batch ingest into GraphRAG (10-50x faster) |
+| `ingest_vector_documents_batch` | `documents: list[dict], skip_duplicates?`     | **v1.9**: Batch ingest into VectorRAG (10-50x faster) |
+
+**Batch document format:** Each dict must have `{text, project_id, scope, source_identifier?}`. Returns `{ingested, skipped, errors}`.
 
 ### Retrieval
 
@@ -84,6 +88,13 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 | -------------------- | -------------------------- | ------------------------------ |
 | `get_graph_context`  | `query, project_id, scope` | Relevant graph nodes as text   |
 | `get_vector_context` | `query, project_id, scope` | Relevant vector chunks as text |
+
+### Health & Diagnostics
+
+| Tool               | Arguments          | Returns                                                    |
+| ------------------ | ------------------ | ---------------------------------------------------------- |
+| `health_check`     | —                  | Dict with status of Neo4j, Qdrant, Ollama ("ok" or error) |
+| `get_tenant_stats` | `project_id, scope?` | **v1.9**: Dict with `{graph_docs, vector_docs, total_docs}` counts |
 
 ### Tenant Management
 
@@ -232,6 +243,117 @@ Add to `claude_desktop_config.json` or Cursor MCP settings:
 | **Collection name**  | Hardcoded as `COLLECTION_NAME = "nexus_rag"` constant — single source of truth; no scattered string literals.                                              |
 | **Delete semantics** | Both Neo4j and Qdrant deletions run independently; partial failures are collected and returned as a descriptive error string rather than silently ignored. |
 | **No external APIs** | All LLM and embedding calls go to `localhost:11434`. Zero data exfiltration.                                                                               |
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Symptom | Possible Cause | Solution |
+|---------|---------------|----------|
+| "Neo4j: Connection refused" | Service not running | `docker-compose ps` then `docker-compose up -d` |
+| "Qdrant collection not found" | Fresh installation | Ingest first document to auto-create collection |
+| Slow graph extraction | Large document size | Split into smaller chunks (<10KB recommended) |
+| "Duplicate content skipped" | Content already exists | Verify `(project_id, scope, text)` tuple is truly identical |
+| Tool timeout | LLM processing slow | Increase `LLM_TIMEOUT` env var (default: 300s) |
+| "Error ingesting..." | Backend connectivity | Check `docker-compose logs` for specific service errors |
+
+### Service Health Checks
+
+```bash
+# Verify all containers are running
+docker-compose ps
+
+# Check Neo4j connectivity
+curl http://localhost:7474 || echo "Neo4j not responding"
+
+# Check Qdrant connectivity
+curl http://localhost:6333/collections || echo "Qdrant not responding"
+
+# Check Ollama connectivity
+curl -X POST http://localhost:11434/api/generate \
+  -d '{"model":"llama3.1:8b","prompt":"ping","stream":false}' \
+  || echo "Ollama not responding"
+
+# View real-time logs
+docker-compose logs -f
+```
+
+### Performance Tuning
+
+| Issue | Configuration | Default | Recommendation |
+|-------|--------------|---------|----------------|
+| Slow ingestion | `LLM_TIMEOUT` | 300s | Increase to 600s for large docs |
+| Slow retrieval | `CHUNK_SIZE` | 1024 | Reduce to 512 for faster queries |
+| High memory | `context_window` | 8192 | Reduce to 4096 if Ollama OOMs |
+
+### Reset Procedures
+
+**Soft reset (data only, preserves models)**:
+```bash
+docker-compose down
+docker volume rm mcp-nexus-rag_neo4j_data mcp-nexus-rag_qdrant_data
+docker-compose up -d
+```
+
+**Full reset (including Ollama models)**:
+```bash
+docker-compose down -v
+docker-compose up -d
+# Wait 5-10 minutes for model downloads
+```
+
+---
+
+## Production Deployment
+
+### Pre-Deployment Checklist
+
+- [ ] Set `NEO4J_PASSWORD` environment variable (not default `password123`)
+- [ ] Configure `LLM_TIMEOUT` based on expected document sizes
+- [ ] Set `CHUNK_SIZE` and `CHUNK_OVERLAP` for your use case
+- [ ] Review and optimize docker-compose resource limits
+- [ ] Set up monitoring for Neo4j, Qdrant, and Ollama
+- [ ] Configure backup strategy (Neo4j exports + Qdrant snapshots)
+- [ ] Test health checks and verify all services respond
+- [ ] Document tenant naming conventions (`project_id`, `scope`)
+- [ ] Enable Ollama GPU acceleration if available
+- [ ] Review security settings (network isolation, auth)
+
+### Environment Variables
+
+| Variable | Purpose | Default | Production Recommendation |
+|----------|---------|---------|---------------------------|
+| `NEO4J_PASSWORD` | Neo4j auth | `password123` | **Required**: Set strong password |
+| `LLM_TIMEOUT` | Ollama request timeout | `300.0` | Tune based on doc sizes (60-600s) |
+| `CHUNK_SIZE` | Text splitter chunk size | `1024` | Optimize for latency vs context |
+| `CHUNK_OVERLAP` | Text splitter overlap | `128` | Keep at ~10% of chunk_size |
+| `EMBED_MODEL` | Ollama embedding model | `nomic-embed-text` | Production-ready ✅ |
+| `LLM_MODEL` | Ollama LLM model | `llama3.1:8b` | Production-ready ✅ |
+
+### Resource Requirements
+
+| Service | Minimum | Recommended | Notes |
+|---------|---------|-------------|-------|
+| **Neo4j** | 1GB RAM | 4GB RAM | Scales with graph size |
+| **Qdrant** | 512MB RAM | 2GB RAM | Scales with vector count |
+| **Ollama** | 8GB RAM (CPU) | 16GB VRAM (GPU) | GPU highly recommended |
+| **Postgres** | 256MB RAM | 1GB RAM | Reserved for future use |
+
+### Monitoring Recommendations
+
+**Critical Metrics**:
+- Neo4j connection pool utilization
+- Qdrant query latency (p95 < 100ms)
+- Ollama response time (p95 < 30s)
+- Disk usage (alert at 80%)
+
+**Recommended Alerts**:
+- Neo4j connection failures > 5/minute
+- Qdrant timeout rate > 5%
+- Ollama OOM errors
+- Disk usage > 85%
 
 ---
 

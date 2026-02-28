@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v1.9
 """
 nexus — Multi-Tenant RAG package for the Antigravity agent ecosystem.
 
@@ -11,4 +11,4 @@ tools     : All @mcp.tool()-decorated MCP tool functions.
 backends  : Database-specific helpers (neo4j, qdrant).
 """
 
-__version__ = "1.1.0"
+__version__ = "1.9.0"

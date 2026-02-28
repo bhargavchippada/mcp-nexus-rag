@@ -110,6 +110,8 @@ class TestGetVectorIndex:
 
     def test_uses_default_qdrant_url(self):
         """collection_name and URL come from config constants."""
+        # Reset cache before test
+        nexus_indexes._vector_index_cache = None
         mock_client = MagicMock()
         with (
             patch.object(nexus_indexes, "setup_settings"),

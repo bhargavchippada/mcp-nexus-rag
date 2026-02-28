@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.9
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -14,10 +14,19 @@ from mcp.server.fastmcp import FastMCP
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_NEO4J_URL = os.environ.get("NEO4J_URL", "bolt://localhost:7687")
 DEFAULT_NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
+# WARNING: Default password for development only. Set NEO4J_PASSWORD env var in production.
 DEFAULT_NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password123")
 DEFAULT_QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
+
+# ---------------------------------------------------------------------------
+# LLM & Text processing defaults
+# ---------------------------------------------------------------------------
+DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
+DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
+DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
+DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
 
 # ---------------------------------------------------------------------------
 # Allowlist — prevents Cypher key injection in dynamic MATCH clauses

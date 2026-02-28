@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.9
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
@@ -175,3 +175,38 @@ def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
     except Exception as e:
         logger.warning(f"Qdrant dedup check failed (fail-open): {e}")
         return False
+
+
+def get_document_count(project_id: str, scope: str = "") -> int:
+    """Return the count of documents for a project/scope in Qdrant.
+
+    Args:
+        project_id: Tenant project ID.
+        scope: Optional tenant scope. If empty, counts all scopes.
+
+    Returns:
+        Number of points matching the criteria, 0 on error.
+    """
+    try:
+        client = get_client()
+        must_conditions: list = [
+            qdrant_models.FieldCondition(
+                key="project_id",
+                match=qdrant_models.MatchValue(value=project_id),
+            )
+        ]
+        if scope:
+            must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="tenant_scope",
+                    match=qdrant_models.MatchValue(value=scope),
+                )
+            )
+        result = client.count(
+            collection_name=COLLECTION_NAME,
+            count_filter=qdrant_models.Filter(must=must_conditions),
+        )
+        return result.count if result else 0
+    except Exception as e:
+        logger.warning(f"Qdrant document count error: {e}")
+        return 0

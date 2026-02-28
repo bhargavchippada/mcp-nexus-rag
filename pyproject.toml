@@ -1,6 +1,6 @@
 [project]
 name = "mcp-nexus-rag"
-version = "0.1.0"
+version = "1.9.0"
 description = "MCP Nexus Multi-Tenant RAG"
 authors = [
     {name = "Turiya"}
@@ -15,7 +15,8 @@ dependencies = [
     "llama-index-graph-stores-neo4j (>=0.5.1,<0.6.0)",
     "llama-index-vector-stores-qdrant (>=0.9.1,<0.10.0)",
     "qdrant-client (>=1.17.0,<2.0.0)",
-    "nest-asyncio (>=1.6.0,<2.0.0)"
+    "nest-asyncio (>=1.6.0,<2.0.0)",
+    "httpx (>=0.27.0,<1.0.0)"
 ]
 
 [tool.poetry]
@@ -37,6 +38,7 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "integration: tests that exercise near-live or mocked-live backend interactions",
 ]

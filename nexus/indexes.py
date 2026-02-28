@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.9
 """
 nexus.indexes — LlamaIndex settings bootstrap and index factories.
 """
@@ -22,6 +22,10 @@ from nexus.config import (
     DEFAULT_QDRANT_URL,
     DEFAULT_EMBED_MODEL,
     DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
     COLLECTION_NAME,
     logger,
 )
@@ -35,6 +39,13 @@ nest_asyncio.apply()
 # ---------------------------------------------------------------------------
 _settings_initialized = False
 _settings_lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Index caching — reuse connections across calls
+# ---------------------------------------------------------------------------
+_graph_index_cache = None
+_vector_index_cache = None
+_index_cache_lock = threading.Lock()
 
 
 def setup_settings() -> None:
@@ -52,56 +63,80 @@ def setup_settings() -> None:
         Settings.llm = Ollama(
             model=DEFAULT_LLM_MODEL,
             base_url=DEFAULT_OLLAMA_URL,
-            request_timeout=300.0,
-            context_window=8192,
+            request_timeout=DEFAULT_LLM_TIMEOUT,
+            context_window=DEFAULT_CONTEXT_WINDOW,
         )
         Settings.embed_model = OllamaEmbedding(
             model_name=DEFAULT_EMBED_MODEL,
             base_url=DEFAULT_OLLAMA_URL,
         )
-        Settings.node_parser = SentenceSplitter(chunk_size=1024, chunk_overlap=128)
+        Settings.node_parser = SentenceSplitter(
+            chunk_size=DEFAULT_CHUNK_SIZE,
+            chunk_overlap=DEFAULT_CHUNK_OVERLAP,
+        )
         _settings_initialized = True
 
 
 def get_graph_index() -> PropertyGraphIndex:
     """Return a PropertyGraphIndex connected to the local Neo4j instance.
 
+    Uses a cached instance for performance. Thread-safe via double-checked locking.
     Loads an existing index if available, otherwise creates an empty one.
 
     Returns:
         PropertyGraphIndex instance.
     """
-    setup_settings()
-    graph_store = Neo4jPropertyGraphStore(
-        username=DEFAULT_NEO4J_USER,
-        password=DEFAULT_NEO4J_PASSWORD,
-        url=DEFAULT_NEO4J_URL,
-    )
-    try:
-        return PropertyGraphIndex.from_existing(
-            property_graph_store=graph_store,
-            embed_model=Settings.embed_model,
-            llm=Settings.llm,
+    global _graph_index_cache
+    if _graph_index_cache is not None:
+        return _graph_index_cache
+
+    with _index_cache_lock:
+        if _graph_index_cache is not None:
+            return _graph_index_cache
+
+        setup_settings()
+        graph_store = Neo4jPropertyGraphStore(
+            username=DEFAULT_NEO4J_USER,
+            password=DEFAULT_NEO4J_PASSWORD,
+            url=DEFAULT_NEO4J_URL,
         )
-    except Exception as e:
-        logger.warning(
-            f"Could not load existing Graph index: {e}. Creating empty index."
-        )
-        return PropertyGraphIndex.from_documents(
-            [],
-            property_graph_store=graph_store,
-            embed_model=Settings.embed_model,
-            llm=Settings.llm,
-        )
+        try:
+            _graph_index_cache = PropertyGraphIndex.from_existing(
+                property_graph_store=graph_store,
+                embed_model=Settings.embed_model,
+                llm=Settings.llm,
+            )
+        except Exception as e:
+            logger.warning(
+                f"Could not load existing Graph index: {e}. Creating empty index."
+            )
+            _graph_index_cache = PropertyGraphIndex.from_documents(
+                [],
+                property_graph_store=graph_store,
+                embed_model=Settings.embed_model,
+                llm=Settings.llm,
+            )
+        return _graph_index_cache
 
 
 def get_vector_index() -> VectorStoreIndex:
     """Return a VectorStoreIndex backed by the local Qdrant collection.
 
+    Uses a cached instance for performance. Thread-safe via double-checked locking.
+
     Returns:
         VectorStoreIndex instance.
     """
-    setup_settings()
-    client = get_qdrant_client(url=DEFAULT_QDRANT_URL)
-    vector_store = QdrantVectorStore(client=client, collection_name=COLLECTION_NAME)
-    return VectorStoreIndex.from_vector_store(vector_store=vector_store)
+    global _vector_index_cache
+    if _vector_index_cache is not None:
+        return _vector_index_cache
+
+    with _index_cache_lock:
+        if _vector_index_cache is not None:
+            return _vector_index_cache
+
+        setup_settings()
+        client = get_qdrant_client(url=DEFAULT_QDRANT_URL)
+        vector_store = QdrantVectorStore(client=client, collection_name=COLLECTION_NAME)
+        _vector_index_cache = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+        return _vector_index_cache
