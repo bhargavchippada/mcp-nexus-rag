@@ -1,10 +1,10 @@
-# Version: v1.3
+# Version: v1.4
 """
 Nexus RAG MCP Server
 Provides strict multi-tenant GraphRAG and Standard RAG retrieval isolated by project_id and tenant_scope.
 """
-import asyncio
 import logging
+import threading
 from typing import Optional
 
 import qdrant_client
@@ -40,24 +40,28 @@ mcp = FastMCP("mcp-nexus-rag")
 
 # --- Singleton LLM / Embed settings ---
 _settings_initialized = False
+_settings_lock = threading.Lock()
 
 def setup_settings():
-    """Initialize LLM and embedding model settings once."""
+    """Initialize LLM and embedding model settings once (thread-safe)."""
     global _settings_initialized
     if _settings_initialized:
         return
-    Settings.llm = Ollama(
-        model=DEFAULT_LLM_MODEL,
-        base_url=DEFAULT_OLLAMA_URL,
-        request_timeout=300.0,
-        context_window=8192,
-    )
-    Settings.embed_model = OllamaEmbedding(
-        model_name=DEFAULT_EMBED_MODEL,
-        base_url=DEFAULT_OLLAMA_URL,
-    )
-    Settings.node_parser = SentenceSplitter(chunk_size=1024, chunk_overlap=128)
-    _settings_initialized = True
+    with _settings_lock:
+        if _settings_initialized:  # double-checked locking
+            return
+        Settings.llm = Ollama(
+            model=DEFAULT_LLM_MODEL,
+            base_url=DEFAULT_OLLAMA_URL,
+            request_timeout=300.0,
+            context_window=8192,
+        )
+        Settings.embed_model = OllamaEmbedding(
+            model_name=DEFAULT_EMBED_MODEL,
+            base_url=DEFAULT_OLLAMA_URL,
+        )
+        Settings.node_parser = SentenceSplitter(chunk_size=1024, chunk_overlap=128)
+        _settings_initialized = True
 
 
 # --- Index factories ---
@@ -99,7 +103,7 @@ def get_vector_index() -> VectorStoreIndex:
 # --- Neo4j helpers ---
 
 def _neo4j_driver():
-    """Return a new Neo4j driver. Caller is responsible for closing it."""
+    """Return a new Neo4j driver configured for use as a context manager."""
     return GraphDatabase.driver(DEFAULT_NEO4J_URL, auth=(DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD))
 
 
@@ -151,13 +155,13 @@ def delete_data_neo4j(project_id: str, scope: str = "") -> None:
 
 def _scroll_qdrant_field(
     key: str,
-    filter: Optional[qdrant_models.Filter] = None,
+    qdrant_filter: Optional[qdrant_models.Filter] = None,
 ) -> set[str]:
     """Scroll the entire nexus_rag collection and collect distinct values for *key*.
 
     Args:
         key: Payload field name to collect.
-        filter: Optional Qdrant filter to restrict which points are scanned.
+        qdrant_filter: Optional Qdrant filter to restrict which points are scanned.
 
     Returns:
         Set of unique string values found in the payload.
@@ -168,7 +172,7 @@ def _scroll_qdrant_field(
     while True:
         records, offset = client.scroll(
             collection_name="nexus_rag",
-            scroll_filter=filter,
+            scroll_filter=qdrant_filter,
             limit=1000,
             with_payload=[key],
             offset=offset,
@@ -406,7 +410,7 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
         try:
             vector_scopes = _scroll_qdrant_field(
                 "tenant_scope",
-                filter=qdrant_models.Filter(
+                qdrant_filter=qdrant_models.Filter(
                     must=[
                         qdrant_models.FieldCondition(
                             key="project_id",
