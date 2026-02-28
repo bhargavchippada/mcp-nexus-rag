@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.1
 """
 nexus.indexes — LlamaIndex settings bootstrap and index factories.
 """
@@ -12,7 +12,7 @@ from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
-from nexus.backends.qdrant import get_client as get_qdrant_client
+from nexus.backends.qdrant import get_client as get_qdrant_client, get_async_client as get_async_qdrant_client
 
 from nexus.config import (
     DEFAULT_OLLAMA_URL,
@@ -137,6 +137,9 @@ def get_vector_index() -> VectorStoreIndex:
 
         setup_settings()
         client = get_qdrant_client(url=DEFAULT_QDRANT_URL)
-        vector_store = QdrantVectorStore(client=client, collection_name=COLLECTION_NAME)
+        aclient = get_async_qdrant_client(url=DEFAULT_QDRANT_URL)
+        vector_store = QdrantVectorStore(
+            client=client, aclient=aclient, collection_name=COLLECTION_NAME
+        )
         _vector_index_cache = VectorStoreIndex.from_vector_store(vector_store=vector_store)
         return _vector_index_cache

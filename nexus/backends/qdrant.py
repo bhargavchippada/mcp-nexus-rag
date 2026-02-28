@@ -1,9 +1,11 @@
-# Version: v1.9
+# Version: v2.1
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
 Bug fix v1.7: QdrantClient is cached per URL via get_client() to avoid
 creating a new connection on every helper call (scroll, delete, dedup).
+Bug fix v2.1: AsyncQdrantClient is cached per URL via get_async_client()
+for use with QdrantVectorStore(aclient=...) so aretrieve() works.
 """
 
 import logging
@@ -11,6 +13,7 @@ import threading
 from typing import Optional
 
 import qdrant_client
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qdrant_models
 
 from nexus.config import (
@@ -27,6 +30,9 @@ logger = logging.getLogger("mcp-nexus-rag")
 _client_cache: dict[str, qdrant_client.QdrantClient] = {}
 _client_lock = threading.Lock()
 
+_async_client_cache: dict[str, AsyncQdrantClient] = {}
+_async_client_lock = threading.Lock()
+
 
 def get_client(url: str = DEFAULT_QDRANT_URL) -> qdrant_client.QdrantClient:
     """Return a cached QdrantClient for *url*, creating one on first call.
@@ -42,6 +48,25 @@ def get_client(url: str = DEFAULT_QDRANT_URL) -> qdrant_client.QdrantClient:
             if url not in _client_cache:  # double-checked
                 _client_cache[url] = qdrant_client.QdrantClient(url=url)
     return _client_cache[url]
+
+
+def get_async_client(url: str = DEFAULT_QDRANT_URL) -> AsyncQdrantClient:
+    """Return a cached AsyncQdrantClient for *url*, creating one on first call.
+
+    Required by QdrantVectorStore(aclient=...) so that aretrieve() works
+    without triggering a nested-async error.
+
+    Args:
+        url: Qdrant service URL.
+
+    Returns:
+        Shared AsyncQdrantClient instance.
+    """
+    if url not in _async_client_cache:
+        with _async_client_lock:
+            if url not in _async_client_cache:  # double-checked
+                _async_client_cache[url] = AsyncQdrantClient(url=url)
+    return _async_client_cache[url]
 
 
 def scroll_field(

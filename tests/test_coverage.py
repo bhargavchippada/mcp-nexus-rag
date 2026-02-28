@@ -91,12 +91,14 @@ class TestGetVectorIndex:
 
     def test_returns_vector_store_index(self):
         mock_client = MagicMock()
+        mock_aclient = MagicMock()
         mock_store = MagicMock()
         mock_index = MagicMock()
 
         with (
             patch.object(nexus_indexes, "setup_settings"),
             patch("nexus.indexes.get_qdrant_client", return_value=mock_client),
+            patch("nexus.indexes.get_async_qdrant_client", return_value=mock_aclient),
             patch("nexus.indexes.QdrantVectorStore", return_value=mock_store),
             patch(
                 "nexus.indexes.VectorStoreIndex.from_vector_store",
@@ -113,11 +115,15 @@ class TestGetVectorIndex:
         # Reset cache before test
         nexus_indexes._vector_index_cache = None
         mock_client = MagicMock()
+        mock_aclient = MagicMock()
         with (
             patch.object(nexus_indexes, "setup_settings"),
             patch(
                 "nexus.indexes.get_qdrant_client", return_value=mock_client
             ) as mock_cls,
+            patch(
+                "nexus.indexes.get_async_qdrant_client", return_value=mock_aclient
+            ),
             patch("nexus.indexes.QdrantVectorStore"),
             patch("nexus.indexes.VectorStoreIndex.from_vector_store"),
         ):
