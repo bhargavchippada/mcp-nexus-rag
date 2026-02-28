@@ -222,10 +222,10 @@ async def get_graph_context(
                 ExactMatchFilter(key="tenant_scope", value=scope),
             ]
         )
-        nodes = index.as_retriever(
+        nodes = await index.as_retriever(
             filters=filters,
             similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
-        ).retrieve(query)
+        ).aretrieve(query)
         if not nodes:
             return f"No Graph context found for {project_id} in scope {scope} for query: '{query}'"
         if rerank and RERANKER_ENABLED:
@@ -415,10 +415,10 @@ async def get_vector_context(
                 ExactMatchFilter(key="tenant_scope", value=scope),
             ]
         )
-        nodes = index.as_retriever(
+        nodes = await index.as_retriever(
             filters=filters,
             similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
-        ).retrieve(query)
+        ).aretrieve(query)
         if not nodes:
             return f"No Vector context found for {project_id} in scope {scope} for query: '{query}'"
         if rerank and RERANKER_ENABLED:

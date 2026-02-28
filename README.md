@@ -1,7 +1,5 @@
 # MCP Nexus RAG
 
-[![Tests](https://img.shields.io/badge/tests-148%20passed-brightgreen)](tests/) [![Coverage](https://img.shields.io/badge/coverage-100%25-brightgreen)](tests/) [![Version](https://img.shields.io/badge/package-v2.0.0-blue)](nexus/__init__.py) [![Code Review](https://img.shields.io/badge/code_review-A+-brightgreen)](CODE_REVIEW.md)
-
 Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
@@ -145,6 +143,140 @@ PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term
 | `NEO4J_PASSWORD`      | `password`                 | Neo4j password (use env var in production)       |
 | `QDRANT_URL`          | `http://localhost:6333`    | Qdrant connection URL                            |
 | `OLLAMA_BASE_URL`     | `http://localhost:11434`   | Ollama base URL                                  |
+
+---
+
+## Querying the Server
+
+The server uses **stdio transport** (standard MCP protocol), not HTTP — so `curl` cannot reach it directly. Use one of the methods below.
+
+### Option 1: MCP Inspector (browser UI)
+
+```bash
+# Start the inspector — opens http://localhost:5173 in your browser
+npx @modelcontextprotocol/inspector poetry run python server.py
+```
+
+In the browser UI, select a tool (e.g. `get_vector_context`), fill in the arguments, and click **Run**.
+
+### Option 2: Python MCP client (scriptable, no extra install)
+
+The `mcp` Python package is already installed as a transitive dependency. Use it to call any tool from a script:
+
+```bash
+# Query Vector RAG
+poetry run python - <<'EOF'
+import asyncio, json
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+SERVER = StdioServerParameters(command="poetry", args=["run", "python", "server.py"])
+
+async def call(tool, **kwargs):
+    async with stdio_client(SERVER) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool(tool, kwargs)
+            print(json.dumps([c.text for c in res.content], indent=2))
+
+asyncio.run(call(
+    "get_vector_context",
+    query="how does deduplication work?",
+    project_id="MY_PROJECT",
+    scope="CORE_CODE",
+))
+EOF
+```
+
+```bash
+# Query GraphRAG with reranking disabled
+poetry run python - <<'EOF'
+import asyncio, json
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+SERVER = StdioServerParameters(command="poetry", args=["run", "python", "server.py"])
+
+async def call(tool, **kwargs):
+    async with stdio_client(SERVER) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool(tool, kwargs)
+            print(json.dumps([c.text for c in res.content], indent=2))
+
+asyncio.run(call(
+    "get_graph_context",
+    query="what entities are related to ingestion?",
+    project_id="MY_PROJECT",
+    scope="CORE_CODE",
+    rerank=False,
+))
+EOF
+```
+
+```bash
+# Ingest a document
+poetry run python - <<'EOF'
+import asyncio, json
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+SERVER = StdioServerParameters(command="poetry", args=["run", "python", "server.py"])
+
+async def call(tool, **kwargs):
+    async with stdio_client(SERVER) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool(tool, kwargs)
+            print(json.dumps([c.text for c in res.content], indent=2))
+
+asyncio.run(call(
+    "ingest_vector_document",
+    text="Deduplication uses SHA-256 content hashing.",
+    project_id="MY_PROJECT",
+    scope="CORE_CODE",
+))
+EOF
+```
+
+```bash
+# Health check
+poetry run python - <<'EOF'
+import asyncio, json
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+SERVER = StdioServerParameters(command="poetry", args=["run", "python", "server.py"])
+
+async def call(tool, **kwargs):
+    async with stdio_client(SERVER) as (r, w):
+        async with ClientSession(r, w) as s:
+            await s.initialize()
+            res = await s.call_tool(tool, kwargs)
+            print(json.dumps([c.text for c in res.content], indent=2))
+
+asyncio.run(call("health_check"))
+EOF
+```
+
+### Option 3: Python one-liner (no extra tooling)
+
+```bash
+poetry run python - <<'EOF'
+import asyncio
+from nexus.tools import get_vector_context
+
+async def main():
+    result = await get_vector_context(
+        query="how does deduplication work?",
+        project_id="MY_PROJECT",
+        scope="CORE_CODE",
+    )
+    print(result)
+
+asyncio.run(main())
+EOF
+```
 
 ---
 

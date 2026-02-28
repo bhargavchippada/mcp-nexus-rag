@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 tests/test_reranker.py — Unit tests for nexus.reranker and reranker integration
 in get_vector_context / get_graph_context.
@@ -7,7 +7,7 @@ All tests are fully mocked — no real model is loaded, no backends are hit.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import nexus.reranker as reranker_module
 from nexus.reranker import get_reranker, reset_reranker
@@ -31,6 +31,13 @@ def _make_reranker_mock(top_n_nodes=None):
     mock = MagicMock()
     mock.postprocess_nodes.return_value = top_n_nodes or []
     return mock
+
+
+def _make_retriever_mock(nodes):
+    """Return a mock retriever whose aretrieve coroutine returns nodes."""
+    mock_retriever = MagicMock()
+    mock_retriever.aretrieve = AsyncMock(return_value=nodes)
+    return mock_retriever
 
 
 # ---------------------------------------------------------------------------
@@ -96,9 +103,6 @@ class TestGetRerankerSingleton:
             )
         }):
             get_reranker()
-        _, kwargs = mock_cls.call_args
-        assert kwargs.get("model") == DEFAULT_RERANKER_MODEL or mock_cls.call_args[0][0] == DEFAULT_RERANKER_MODEL or True
-        # Verify model kwarg was passed
         all_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args.kwargs else {}
         if "model" in all_kwargs:
             assert all_kwargs["model"] == DEFAULT_RERANKER_MODEL
@@ -154,8 +158,7 @@ class TestGetVectorContextReranker:
         reranked = [_make_node("doc B")]
 
         mock_reranker = _make_reranker_mock(reranked)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -174,8 +177,7 @@ class TestGetVectorContextReranker:
 
         nodes = [_make_node("doc A"), _make_node("doc B")]
         mock_reranker = _make_reranker_mock([_make_node("doc B")])
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -194,8 +196,7 @@ class TestGetVectorContextReranker:
 
         nodes = [_make_node("doc A")]
         mock_reranker = _make_reranker_mock([_make_node("doc A")])
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -214,8 +215,7 @@ class TestGetVectorContextReranker:
         nodes = [_make_node("doc A"), _make_node("doc B")]
         mock_reranker = MagicMock()
         mock_reranker.postprocess_nodes.side_effect = RuntimeError("model error")
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -225,7 +225,6 @@ class TestGetVectorContextReranker:
 
         result = await tools.get_vector_context("test query", "PROJ", "SCOPE")
 
-        # Should not raise; should return original nodes
         assert "doc A" in result
         assert "doc B" in result
 
@@ -236,8 +235,7 @@ class TestGetVectorContextReranker:
 
         nodes = [_make_node("doc A")]
         mock_reranker = _make_reranker_mock(nodes)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -255,8 +253,7 @@ class TestGetVectorContextReranker:
     async def test_empty_nodes_returns_no_context_message(self, monkeypatch):
         from nexus import tools
 
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = []
+        mock_retriever = _make_retriever_mock([])
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -273,8 +270,7 @@ class TestGetVectorContextReranker:
 
         nodes = [_make_node("only doc")]
         mock_reranker = _make_reranker_mock(nodes)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -293,8 +289,7 @@ class TestGetVectorContextReranker:
         candidates = [_make_node("low relevance"), _make_node("high relevance")]
         reranked = [_make_node("high relevance"), _make_node("low relevance")]
         mock_reranker = _make_reranker_mock(reranked)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = candidates
+        mock_retriever = _make_retriever_mock(candidates)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -328,8 +323,7 @@ class TestGetGraphContextReranker:
         nodes = [_make_node("graph A"), _make_node("graph B")]
         reranked = [_make_node("graph B")]
         mock_reranker = _make_reranker_mock(reranked)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -348,8 +342,7 @@ class TestGetGraphContextReranker:
 
         nodes = [_make_node("graph A")]
         mock_reranker = _make_reranker_mock([_make_node("graph A")])
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -367,8 +360,7 @@ class TestGetGraphContextReranker:
 
         nodes = [_make_node("graph A")]
         mock_reranker = _make_reranker_mock([_make_node("graph A")])
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -387,8 +379,7 @@ class TestGetGraphContextReranker:
         nodes = [_make_node("graph A"), _make_node("graph B")]
         mock_reranker = MagicMock()
         mock_reranker.postprocess_nodes.side_effect = RuntimeError("model error")
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -408,8 +399,7 @@ class TestGetGraphContextReranker:
 
         nodes = [_make_node("graph A")]
         mock_reranker = _make_reranker_mock(nodes)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever = _make_retriever_mock(nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -426,8 +416,7 @@ class TestGetGraphContextReranker:
     async def test_empty_nodes_returns_no_context_message(self, monkeypatch):
         from nexus import tools
 
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = []
+        mock_retriever = _make_retriever_mock([])
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
@@ -445,8 +434,7 @@ class TestGetGraphContextReranker:
         candidates = [_make_node("low graph"), _make_node("high graph")]
         reranked = [_make_node("high graph"), _make_node("low graph")]
         mock_reranker = _make_reranker_mock(reranked)
-        mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = candidates
+        mock_retriever = _make_retriever_mock(candidates)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
 
