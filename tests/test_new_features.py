@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.0
 """
 Unit tests for new v1.9 features: batch ingestion and tenant statistics.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -20,37 +20,47 @@ class TestGetTenantStats:
     """Tests for the get_tenant_stats MCP tool."""
 
     async def test_returns_counts_from_both_backends(self):
-        """Verify stats are collected from both Neo4j and Qdrant."""
+        """Verify stats are collected from all Neo4j helpers and Qdrant."""
         with patch.object(neo4j_backend, "get_document_count", return_value=5):
-            with patch.object(qdrant_backend, "get_document_count", return_value=3):
-                result = await nexus_tools.get_tenant_stats("TEST_PROJECT", "TEST_SCOPE")
-                assert result["graph_docs"] == 5
-                assert result["vector_docs"] == 3
-                assert result["total_docs"] == 8
+            with patch.object(neo4j_backend, "get_chunk_node_count", return_value=3):
+                with patch.object(neo4j_backend, "get_entity_node_count", return_value=2):
+                    with patch.object(qdrant_backend, "get_document_count", return_value=7):
+                        result = await nexus_tools.get_tenant_stats("TEST_PROJECT", "TEST_SCOPE")
+                        assert result["graph_nodes_total"] == 5
+                        assert result["graph_chunk_nodes"] == 3
+                        assert result["graph_entity_nodes"] == 2
+                        assert result["vector_docs"] == 7
+                        assert result["total_docs"] == 12  # 5 + 7
 
     async def test_handles_empty_scope(self):
         """Verify stats work without scope (all scopes)."""
         with patch.object(neo4j_backend, "get_document_count", return_value=10):
-            with patch.object(qdrant_backend, "get_document_count", return_value=15):
-                result = await nexus_tools.get_tenant_stats("TEST_PROJECT")
-                assert result["graph_docs"] == 10
-                assert result["vector_docs"] == 15
-                assert result["total_docs"] == 25
+            with patch.object(neo4j_backend, "get_chunk_node_count", return_value=6):
+                with patch.object(neo4j_backend, "get_entity_node_count", return_value=4):
+                    with patch.object(qdrant_backend, "get_document_count", return_value=15):
+                        result = await nexus_tools.get_tenant_stats("TEST_PROJECT")
+                        assert result["graph_nodes_total"] == 10
+                        assert result["vector_docs"] == 15
+                        assert result["total_docs"] == 25
 
     async def test_rejects_empty_project_id(self):
-        """Verify empty project_id is rejected."""
-        result = await nexus_tools.get_tenant_stats("")
-        assert "error" in result
-        assert "project_id" in result["error"].lower()
+        """Verify empty project_id raises ValueError."""
+        import pytest
+        with pytest.raises(ValueError, match="project_id must not be empty"):
+            await nexus_tools.get_tenant_stats("")
 
-    async def test_handles_backend_errors_gracefully(self):
-        """Verify errors from backends return 0 counts."""
+    async def test_handles_backend_zeros(self):
+        """Verify zero counts are returned correctly."""
         with patch.object(neo4j_backend, "get_document_count", return_value=0):
-            with patch.object(qdrant_backend, "get_document_count", return_value=0):
-                result = await nexus_tools.get_tenant_stats("TEST_PROJECT", "TEST_SCOPE")
-                assert result["graph_docs"] == 0
-                assert result["vector_docs"] == 0
-                assert result["total_docs"] == 0
+            with patch.object(neo4j_backend, "get_chunk_node_count", return_value=0):
+                with patch.object(neo4j_backend, "get_entity_node_count", return_value=0):
+                    with patch.object(qdrant_backend, "get_document_count", return_value=0):
+                        result = await nexus_tools.get_tenant_stats("TEST_PROJECT", "TEST_SCOPE")
+                        assert result["graph_nodes_total"] == 0
+                        assert result["graph_chunk_nodes"] == 0
+                        assert result["graph_entity_nodes"] == 0
+                        assert result["vector_docs"] == 0
+                        assert result["total_docs"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +112,92 @@ class TestNeo4jGetDocumentCount:
             neo4j_backend, "neo4j_driver", side_effect=Exception("Connection failed")
         ):
             count = neo4j_backend.get_document_count("TEST_PROJECT", "TEST_SCOPE")
+            assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Neo4j Chunk Node Count Tests
+# ---------------------------------------------------------------------------
+
+
+class TestNeo4jGetChunkNodeCount:
+    """Tests for Neo4j get_chunk_node_count backend function."""
+
+    def _mock_driver(self, count: int) -> MagicMock:
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.single.return_value = {"count": count}
+        mock_session.run.return_value = mock_result
+        mock_driver.__enter__ = lambda s: mock_driver
+        mock_driver.__exit__ = MagicMock(return_value=False)
+        mock_driver.session.return_value.__enter__ = lambda s: mock_session
+        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_driver
+
+    def test_counts_chunk_nodes_with_scope(self):
+        """Verify chunk count returns correct count with scope filter."""
+        mock_driver = self._mock_driver(7)
+        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+            count = neo4j_backend.get_chunk_node_count("TEST_PROJECT", "TEST_SCOPE")
+            assert count == 7
+
+    def test_counts_chunk_nodes_without_scope(self):
+        """Verify chunk count works across all scopes."""
+        mock_driver = self._mock_driver(20)
+        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+            count = neo4j_backend.get_chunk_node_count("TEST_PROJECT")
+            assert count == 20
+
+    def test_returns_zero_on_error(self):
+        """Verify errors return 0 instead of raising."""
+        with patch.object(
+            neo4j_backend, "neo4j_driver", side_effect=Exception("Connection failed")
+        ):
+            count = neo4j_backend.get_chunk_node_count("TEST_PROJECT", "TEST_SCOPE")
+            assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# Neo4j Entity Node Count Tests
+# ---------------------------------------------------------------------------
+
+
+class TestNeo4jGetEntityNodeCount:
+    """Tests for Neo4j get_entity_node_count backend function."""
+
+    def _mock_driver(self, count: int) -> MagicMock:
+        mock_driver = MagicMock()
+        mock_session = MagicMock()
+        mock_result = MagicMock()
+        mock_result.single.return_value = {"count": count}
+        mock_session.run.return_value = mock_result
+        mock_driver.__enter__ = lambda s: mock_driver
+        mock_driver.__exit__ = MagicMock(return_value=False)
+        mock_driver.session.return_value.__enter__ = lambda s: mock_session
+        mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
+        return mock_driver
+
+    def test_counts_entity_nodes_with_scope(self):
+        """Verify entity count traverses from chunk to adjacent nodes."""
+        mock_driver = self._mock_driver(150)
+        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+            count = neo4j_backend.get_entity_node_count("TEST_PROJECT", "TEST_SCOPE")
+            assert count == 150
+
+    def test_counts_entity_nodes_without_scope(self):
+        """Verify entity count works across all scopes."""
+        mock_driver = self._mock_driver(300)
+        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+            count = neo4j_backend.get_entity_node_count("TEST_PROJECT")
+            assert count == 300
+
+    def test_returns_zero_on_error(self):
+        """Verify errors return 0 instead of raising."""
+        with patch.object(
+            neo4j_backend, "neo4j_driver", side_effect=Exception("Connection failed")
+        ):
+            count = neo4j_backend.get_entity_node_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 0
 
 
@@ -435,3 +531,162 @@ class TestHealthCheck:
                     assert result["neo4j"] == "ok"
                     assert result["qdrant"] == "ok"
                     assert "error: HTTP 500" in result["ollama"]
+
+
+# ---------------------------------------------------------------------------
+# Print All Stats Tests
+# ---------------------------------------------------------------------------
+
+
+class TestPrintAllStats:
+    """Tests for the print_all_stats MCP tool."""
+
+    async def test_returns_empty_message_when_no_data(self):
+        """Verify empty databases return appropriate message."""
+        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=[]):
+            with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
+                result = await nexus_tools.print_all_stats()
+                assert "No data found" in result
+                assert "empty" in result.lower()
+
+    async def test_returns_table_with_single_project(self):
+        """Verify table is generated for single project."""
+        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]):
+            with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
+                with patch.object(
+                    neo4j_backend, "get_scopes_for_project", return_value=["SCOPE1"]
+                ):
+                    with patch.object(
+                        qdrant_backend, "scroll_field", return_value=set()
+                    ):
+                        with patch.object(
+                            neo4j_backend, "get_document_count", return_value=10
+                        ):
+                            with patch.object(
+                                qdrant_backend, "get_document_count", return_value=5
+                            ):
+                                result = await nexus_tools.print_all_stats()
+
+                                assert "PROJ1" in result
+                                assert "SCOPE1" in result
+                                assert "PROJECT_ID" in result
+                                assert "GRAPH" in result
+                                assert "VECTOR" in result
+                                assert "TOTAL" in result
+                                assert "10" in result
+                                assert "5" in result
+                                assert "15" in result  # 10 + 5
+
+    async def test_returns_table_with_multiple_projects(self):
+        """Verify table includes multiple projects and scopes."""
+        with patch.object(
+            neo4j_backend, "get_distinct_metadata", return_value=["PROJ1", "PROJ2"]
+        ):
+            with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
+                with patch.object(
+                    neo4j_backend,
+                    "get_scopes_for_project",
+                    side_effect=[["SCOPE1", "SCOPE2"], ["SCOPE3"]],
+                ):
+                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                        with patch.object(
+                            neo4j_backend, "get_document_count", return_value=5
+                        ):
+                            with patch.object(
+                                qdrant_backend, "get_document_count", return_value=3
+                            ):
+                                result = await nexus_tools.print_all_stats()
+
+                                assert "PROJ1" in result
+                                assert "PROJ2" in result
+                                assert "SCOPE1" in result
+                                assert "SCOPE2" in result
+                                assert "SCOPE3" in result
+                                assert "Projects: 2" in result
+                                assert "Rows: 3" in result
+
+    async def test_includes_summary_totals(self):
+        """Verify summary row shows correct totals."""
+        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]):
+            with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
+                with patch.object(
+                    neo4j_backend, "get_scopes_for_project", return_value=["SCOPE1"]
+                ):
+                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                        with patch.object(
+                            neo4j_backend, "get_document_count", return_value=20
+                        ):
+                            with patch.object(
+                                qdrant_backend, "get_document_count", return_value=30
+                            ):
+                                result = await nexus_tools.print_all_stats()
+
+                                # Check summary line
+                                assert "Graph nodes: 20" in result
+                                assert "Vector docs: 30" in result
+                                assert "Total: 50" in result
+
+
+    async def test_handles_projects_in_only_vector_store(self):
+        """Verify projects only in Qdrant are included."""
+        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=[]):
+            with patch.object(
+                qdrant_backend, "get_distinct_metadata", return_value=["VECTOR_ONLY"]
+            ):
+                with patch.object(
+                    neo4j_backend, "get_scopes_for_project", return_value=[]
+                ):
+                    with patch.object(
+                        qdrant_backend, "scroll_field", return_value={"VSCOPE"}
+                    ):
+                        with patch.object(
+                            neo4j_backend, "get_document_count", return_value=0
+                        ):
+                            with patch.object(
+                                qdrant_backend, "get_document_count", return_value=15
+                            ):
+                                result = await nexus_tools.print_all_stats()
+
+                                assert "VECTOR_ONLY" in result
+                                assert "VSCOPE" in result
+                                assert "15" in result
+
+    async def test_handles_project_with_no_scopes(self):
+        """Verify project with no scopes shows '(all)' placeholder."""
+        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]):
+            with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
+                with patch.object(
+                    neo4j_backend, "get_scopes_for_project", return_value=[]
+                ):
+                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                        with patch.object(
+                            neo4j_backend, "get_document_count", return_value=5
+                        ):
+                            with patch.object(
+                                qdrant_backend, "get_document_count", return_value=5
+                            ):
+                                result = await nexus_tools.print_all_stats()
+
+                                assert "PROJ1" in result
+                                assert "(all)" in result
+
+    async def test_table_has_proper_ascii_formatting(self):
+        """Verify table has proper ASCII border formatting."""
+        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["P1"]):
+            with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
+                with patch.object(
+                    neo4j_backend, "get_scopes_for_project", return_value=["S1"]
+                ):
+                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                        with patch.object(
+                            neo4j_backend, "get_document_count", return_value=1
+                        ):
+                            with patch.object(
+                                qdrant_backend, "get_document_count", return_value=1
+                            ):
+                                result = await nexus_tools.print_all_stats()
+
+                                # Check for table borders
+                                assert "+" in result
+                                assert "-" in result
+                                assert "|" in result

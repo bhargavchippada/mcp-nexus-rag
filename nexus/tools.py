@@ -1,4 +1,4 @@
-# Version: v2.2
+# Version: v2.4
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -727,7 +727,7 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
     if project_id:
         graph_scopes = neo4j_backend.get_scopes_for_project(project_id)
         try:
-            vector_scopes = qdrant_backend.scroll_field(
+            vector_scopes = set(qdrant_backend.scroll_field(
                 "tenant_scope",
                 qdrant_filter=qdrant_models.Filter(
                     must=[
@@ -737,15 +737,15 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
                         )
                     ]
                 ),
-            )
+            ))
         except Exception as e:
             logger.warning(f"Qdrant scopes error: {e}")
             vector_scopes = set()
         return sorted(set(graph_scopes) | vector_scopes)
     else:
         graph_scopes = neo4j_backend.get_distinct_metadata("tenant_scope")
-        vector_scopes = qdrant_backend.get_distinct_metadata("tenant_scope")
-        return sorted(set(graph_scopes) | set(vector_scopes))
+        vector_scopes2 = qdrant_backend.get_distinct_metadata("tenant_scope")
+        return sorted(set(graph_scopes) | set(vector_scopes2))
 
 
 @mcp.tool()
@@ -787,28 +787,168 @@ async def delete_tenant_data(project_id: str, scope: str = "") -> str:
 async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
     """Get statistics for a project (and optionally a specific scope).
 
-    Returns document counts from both GraphRAG and VectorRAG backends.
+    Returns document counts from both GraphRAG and VectorRAG backends,
+    including a breakdown of Neo4j chunk nodes (ingested source documents)
+    versus entity nodes (LLM-extracted concepts and relationships).
 
     Args:
         project_id: The target tenant project ID.
         scope: Optional. If provided, returns stats for this specific scope only.
 
     Returns:
-        Dictionary with 'graph_docs' and 'vector_docs' counts.
+        Dictionary with keys:
+        - ``graph_nodes_total``: all Neo4j nodes for this project/scope
+        - ``graph_chunk_nodes``: source doc nodes (have content_hash)
+        - ``graph_entity_nodes``: LLM-extracted entity nodes (no content_hash)
+        - ``vector_docs``: Qdrant points
+        - ``total_docs``: graph_nodes_total + vector_docs
     """
     if not project_id or not project_id.strip():
-        return {"error": "project_id must not be empty"}
+        raise ValueError("project_id must not be empty")
 
     logger.info(f"Getting stats: project_id={project_id!r} scope={scope!r}")
 
-    graph_count = neo4j_backend.get_document_count(project_id, scope)
-    vector_count = qdrant_backend.get_document_count(project_id, scope)
+    graph_total   = neo4j_backend.get_document_count(project_id, scope)
+    graph_chunks  = neo4j_backend.get_chunk_node_count(project_id, scope)
+    graph_entities = neo4j_backend.get_entity_node_count(project_id, scope)
+    vector_count  = qdrant_backend.get_document_count(project_id, scope)
 
     return {
-        "graph_docs": graph_count,
+        "graph_nodes_total": graph_total,
+        "graph_chunk_nodes": graph_chunks,
+        "graph_entity_nodes": graph_entities,
         "vector_docs": vector_count,
-        "total_docs": graph_count + vector_count,
+        "total_docs": graph_total + vector_count,
     }
+
+
+
+@mcp.tool()
+async def print_all_stats() -> str:
+    """Print a comprehensive table of all projects, scopes, and document counts.
+
+    Displays statistics across all tenants including:
+    - Project ID and scope
+    - Graph chunk node count (source docs ingested into Neo4j)
+    - Graph entity node count (LLM-extracted concept/entity nodes)
+    - Vector document count (Qdrant)
+    - Total per row
+    - Summary totals at the bottom
+
+    Returns:
+        Formatted ASCII table string with all statistics.
+    """
+    logger.info("Generating comprehensive stats table")
+
+    # Gather all project IDs
+    graph_project_ids = set(neo4j_backend.get_distinct_metadata("project_id"))
+    vector_project_ids = set(qdrant_backend.get_distinct_metadata("project_id"))
+    all_project_ids = sorted(graph_project_ids | vector_project_ids)
+
+    if not all_project_ids:
+        return "No data found. Both GraphRAG and VectorRAG are empty."
+
+    # Build rows: [(project_id, scope, graph_total, graph_chunks, graph_entities, vector_count)]
+    rows: list[tuple[str, str, int, int, int, int]] = []
+
+    for project_id in all_project_ids:
+        graph_scopes = set(neo4j_backend.get_scopes_for_project(project_id))
+        try:
+            vector_scopes = qdrant_backend.scroll_field(
+                "tenant_scope",
+                qdrant_filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="project_id",
+                            match=qdrant_models.MatchValue(value=project_id),
+                        )
+                    ]
+                ),
+            )
+        except Exception:
+            vector_scopes = set()
+
+        all_scopes = sorted(graph_scopes | vector_scopes)
+
+        if not all_scopes:
+            graph_total = neo4j_backend.get_document_count(project_id, "")
+            graph_chunks = neo4j_backend.get_chunk_node_count(project_id, "")
+            graph_entities = neo4j_backend.get_entity_node_count(project_id, "")
+            vector_count = qdrant_backend.get_document_count(project_id, "")
+            rows.append((project_id, "(all)", graph_total, graph_chunks, graph_entities, vector_count))
+        else:
+            for scope in all_scopes:
+                graph_total = neo4j_backend.get_document_count(project_id, scope)
+                graph_chunks = neo4j_backend.get_chunk_node_count(project_id, scope)
+                graph_entities = neo4j_backend.get_entity_node_count(project_id, scope)
+                vector_count = qdrant_backend.get_document_count(project_id, scope)
+                rows.append((project_id, scope, graph_total, graph_chunks, graph_entities, vector_count))
+
+    # Column widths
+    col_project  = max(len("PROJECT_ID"), max(len(r[0]) for r in rows))
+    col_scope    = max(len("SCOPE"),      max(len(r[1]) for r in rows))
+    col_graph    = max(len("GRAPH"),      max(len(str(r[2])) for r in rows))
+    col_chunks   = max(len("CHUNKS"),     max(len(str(r[3])) for r in rows))
+    col_entities = max(len("ENTITIES"),   max(len(str(r[4])) for r in rows))
+    col_vector   = max(len("VECTOR"),     max(len(str(r[5])) for r in rows))
+    col_total    = max(len("TOTAL"),      max(len(str(r[2] + r[5])) for r in rows))
+
+    def _sep() -> str:
+        return (
+            "+" + "-" * (col_project  + 2)
+            + "+" + "-" * (col_scope    + 2)
+            + "+" + "-" * (col_graph    + 2)
+            + "+" + "-" * (col_chunks   + 2)
+            + "+" + "-" * (col_entities + 2)
+            + "+" + "-" * (col_vector   + 2)
+            + "+" + "-" * (col_total    + 2)
+            + "+"
+        )
+
+    sep = _sep()
+    header = (
+        f"| {'PROJECT_ID':<{col_project}} | {'SCOPE':<{col_scope}} | "
+        f"{'GRAPH':>{col_graph}} | {'CHUNKS':>{col_chunks}} | {'ENTITIES':>{col_entities}} | "
+        f"{'VECTOR':>{col_vector}} | {'TOTAL':>{col_total}} |"
+    )
+
+    lines = [sep, header, sep]
+
+    total_graph = total_chunks = total_entities = total_vector = 0
+
+    for project_id, scope, graph_total, graph_chunks, graph_entities, vector_count in rows:
+        row_total = graph_total + vector_count
+        total_graph    += graph_total
+        total_chunks   += graph_chunks
+        total_entities += graph_entities
+        total_vector   += vector_count
+        line = (
+            f"| {project_id:<{col_project}} | {scope:<{col_scope}} | "
+            f"{graph_total:>{col_graph}} | {graph_chunks:>{col_chunks}} | "
+            f"{graph_entities:>{col_entities}} | {vector_count:>{col_vector}} | "
+            f"{row_total:>{col_total}} |"
+        )
+        lines.append(line)
+
+    lines.append(sep)
+
+    grand_total = total_graph + total_vector
+    summary = (
+        f"| {'TOTAL':<{col_project}} | {'':<{col_scope}} | "
+        f"{total_graph:>{col_graph}} | {total_chunks:>{col_chunks}} | "
+        f"{total_entities:>{col_entities}} | {total_vector:>{col_vector}} | "
+        f"{grand_total:>{col_total}} |"
+    )
+    lines.append(summary)
+    lines.append(sep)
+
+    lines.append(
+        f"\nProjects: {len(all_project_ids)} | Rows: {len(rows)} | "
+        f"Graph nodes: {total_graph} (chunks={total_chunks}, entities={total_entities}) | "
+        f"Vector docs: {total_vector} | Total: {grand_total}"
+    )
+
+    return "\n".join(lines)
 
 
 @mcp.tool()

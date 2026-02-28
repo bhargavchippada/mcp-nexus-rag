@@ -4,7 +4,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage (181 tests)
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage (194 tests)
 
 ---
 
@@ -74,7 +74,20 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 | Tool               | Description                                             |
 | ------------------ | ------------------------------------------------------- |
 | `health_check`     | Check connectivity to Neo4j, Qdrant, and Ollama         |
-| `get_tenant_stats` | Get document counts for project/scope                   |
+| `get_tenant_stats` | Get document/node counts for project/scope              |
+| `print_all_stats`  | Display ASCII table of all projects, scopes, and counts |
+
+`get_tenant_stats` returns:
+
+| Key                  | Description                                                     |
+| -------------------- | --------------------------------------------------------------- |
+| `graph_nodes_total`  | All Neo4j nodes for the project/scope                           |
+| `graph_chunk_nodes`  | Source doc nodes (have `content_hash`) — what you ingested      |
+| `graph_entity_nodes` | LLM-extracted concept/entity nodes (no `content_hash`)          |
+| `vector_docs`        | Qdrant point count                                              |
+| `total_docs`         | `graph_nodes_total` + `vector_docs`                             |
+
+`print_all_stats` table columns: `PROJECT_ID`, `SCOPE`, `GRAPH`, `CHUNKS`, `ENTITIES`, `VECTOR`, `TOTAL`
 
 ### Tenant Management
 
@@ -85,6 +98,7 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 | `delete_tenant_data`    | Delete all data for a `project_id`, or a `(project_id, scope)`  |
 
 **Notes:**
+
 - `delete_tenant_data` returns a **partial-failure message** if one backend fails, never silently succeeding.
 - Batch ingestion tools accept a list of `{text, project_id, scope, source_identifier?}` dicts and return `{ingested, skipped, errors}` counts.
 - Reranker errors are caught and logged as warnings; the tool falls back to un-reranked results rather than failing.
@@ -351,7 +365,24 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ## Recent Updates
 
+### v2.4 (2026-02-28)
+
+- 🔬 **NEW**: `get_tenant_stats` returns a detailed graph breakdown:
+  - `graph_nodes_total` — all Neo4j nodes for the project/scope
+  - `graph_chunk_nodes` — source doc nodes (content we explicitly ingested)
+  - `graph_entity_nodes` — LLM-extracted concept/entity nodes (produced by `llama3.1:8b`)
+- 📊 **NEW**: `print_all_stats` table now includes **CHUNKS** and **ENTITIES** columns
+- 🔧 Two new `nexus/backends/neo4j.py` helpers: `get_chunk_node_count`, `get_entity_node_count`
+- ✅ **Tests**: 194 tests passing (6 new), 100% coverage maintained, mypy clean
+
+### v2.3 (2026-02-28)
+
+- 📊 **NEW**: `print_all_stats` MCP tool — displays comprehensive ASCII table of all projects, scopes, and document counts
+- 🎯 Shows project_id, scope, graph docs, vector docs, and totals in a formatted table
+- 📈 **Tests**: 188 tests passing (7 new stats tests), 100% coverage maintained
+
 ### v2.2 (2026-02-28)
+
 - 🎯 **NEW**: Automatic chunking for large documents exceeding `MAX_DOCUMENT_SIZE` (default 512KB)
 - 📦 Documents are split using LlamaIndex's `SentenceSplitter` for intelligent sentence-boundary-aware chunking
 - 🎛️ New env vars: `MAX_DOCUMENT_SIZE`, `INGEST_CHUNK_SIZE`, `INGEST_CHUNK_OVERLAP`
@@ -359,12 +390,14 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 - 📊 **Tests**: 181 tests passing (20 new chunking tests), 100% coverage maintained
 
 ### v2.1 (2026-02-28)
+
 - 🔍 **Audit**: Comprehensive code review — zero critical bugs, 2 medium-priority hardening opportunities
 - 📊 **Tests**: 161 tests passing (13 new), 100% coverage maintained
 - 📝 **Docs**: Updated CODE_REVIEW.md with v2.1 audit findings
 - ⚠️ **Known issues** (non-blocking): exception sanitization, late httpx import (see CODE_REVIEW.md)
 
 ### v2.0 (2026-02-28)
+
 - 🎯 **NEW**: Cross-encoder reranking via `BAAI/bge-reranker-v2-m3` for both GraphRAG and Vector RAG
 - ⚡ Two-stage retrieval: candidate pool of 20 → reranked top-5 (configurable via env vars)
 - 🔧 `nexus/reranker.py`: lazy-loaded singleton with FP16 inference and `reset_reranker()` for test isolation
@@ -373,12 +406,14 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 - 📈 **Tests**: 148 tests passing (27 new reranker tests), 100% coverage maintained
 
 ### v1.9 (2026-02-28)
+
 - ⚡ Batch ingestion tools (`ingest_graph_documents_batch`, `ingest_vector_documents_batch`) — 10-50x faster bulk operations
 - 📊 `get_tenant_stats()` MCP tool for document counts per project/scope
 - 🔧 Backend helper functions: `get_document_count()` for both Neo4j and Qdrant
 - 📈 **Tests**: 121 tests passing (31 new tests), 100% coverage maintained
 
 ### v1.8 (2026-02-28)
+
 - ✅ `health_check()` MCP tool for service connectivity verification
 - ⚡ Index instance caching (20-50ms faster per call)
 - 🎛️ Configurable: LLM timeout, context window, chunk size via environment variables
@@ -386,6 +421,7 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 - 🔒 Security warning added for default password
 
 ### v1.1.0
+
 - Initial release with GraphRAG + Vector RAG
 - Multi-tenant isolation
 - Deduplication support

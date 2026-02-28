@@ -1,4 +1,4 @@
-# Version: v2.0
+# Version: v2.1
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
 """
@@ -186,4 +186,80 @@ def get_document_count(project_id: str, scope: str = "") -> int:
                 return int(record["count"]) if record else 0
     except Exception as e:
         logger.warning(f"Neo4j document count error: {e}")
+        return 0
+
+
+def get_chunk_node_count(project_id: str, scope: str = "") -> int:
+    """Count source chunk nodes (those with content_hash) for a project/scope.
+
+    Chunk nodes are the raw text documents we explicitly ingested.  They always
+    carry a ``content_hash`` property set by nexus.dedup.
+
+    Args:
+        project_id: Tenant project ID.
+        scope: Optional tenant scope. If empty, counts all scopes.
+
+    Returns:
+        Number of chunk nodes, 0 on error.
+    """
+    try:
+        with neo4j_driver() as driver:
+            with driver.session() as session:
+                if scope:
+                    result = session.run(
+                        "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
+                        "WHERE n.content_hash IS NOT NULL RETURN COUNT(n) AS count",
+                        project_id=project_id,
+                        scope=scope,
+                    )
+                else:
+                    result = session.run(
+                        "MATCH (n {project_id: $project_id}) "
+                        "WHERE n.content_hash IS NOT NULL RETURN COUNT(n) AS count",
+                        project_id=project_id,
+                    )
+                record = result.single()
+                return int(record["count"]) if record else 0
+    except Exception as e:
+        logger.warning(f"Neo4j chunk count error: {e}")
+        return 0
+
+
+def get_entity_node_count(project_id: str, scope: str = "") -> int:
+    """Count LLM-extracted entity nodes connected to chunk nodes for a project/scope.
+
+    Entity nodes are created by the LlamaIndex graph extraction pipeline (via
+    ``llama3.1:8b``).  Unlike chunk nodes, they don't carry ``content_hash``.
+    This query traverses one hop from chunk nodes to find connected entities.
+
+    Args:
+        project_id: Tenant project ID.
+        scope: Optional tenant scope. If empty, counts all scopes.
+
+    Returns:
+        Number of distinct entity nodes, 0 on error.
+    """
+    try:
+        with neo4j_driver() as driver:
+            with driver.session() as session:
+                if scope:
+                    result = session.run(
+                        "MATCH (chunk {project_id: $project_id, tenant_scope: $scope})"
+                        "-[]-(entity) "
+                        "WHERE entity.content_hash IS NULL "
+                        "RETURN COUNT(DISTINCT entity) AS count",
+                        project_id=project_id,
+                        scope=scope,
+                    )
+                else:
+                    result = session.run(
+                        "MATCH (chunk {project_id: $project_id})-[]-(entity) "
+                        "WHERE entity.content_hash IS NULL "
+                        "RETURN COUNT(DISTINCT entity) AS count",
+                        project_id=project_id,
+                    )
+                record = result.single()
+                return int(record["count"]) if record else 0
+    except Exception as e:
+        logger.warning(f"Neo4j entity count error: {e}")
         return 0
