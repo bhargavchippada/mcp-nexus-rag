@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.0
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -27,6 +27,14 @@ DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
 DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
+
+# ---------------------------------------------------------------------------
+# Reranker defaults
+# ---------------------------------------------------------------------------
+DEFAULT_RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
+DEFAULT_RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "5"))
+DEFAULT_RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", "20"))
+RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 
 # ---------------------------------------------------------------------------
 # Allowlist — prevents Cypher key injection in dynamic MATCH clauses

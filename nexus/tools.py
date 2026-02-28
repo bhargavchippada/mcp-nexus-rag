@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.0
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -9,6 +9,7 @@ that imports this module to register the tools on the shared mcp instance.
 from typing import Optional
 
 from llama_index.core import Document
+from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from qdrant_client.http import models as qdrant_models
 
@@ -17,11 +18,14 @@ from nexus.config import (
     mcp,
     DEFAULT_QDRANT_URL,
     DEFAULT_OLLAMA_URL,
+    DEFAULT_RERANKER_CANDIDATE_K,
+    RERANKER_ENABLED,
 )
 from nexus.dedup import content_hash
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
 from nexus.indexes import get_graph_index, get_vector_index
+from nexus.reranker import get_reranker
 
 
 # ---------------------------------------------------------------------------
@@ -185,18 +189,31 @@ async def ingest_graph_documents_batch(
 
 
 @mcp.tool()
-async def get_graph_context(query: str, project_id: str, scope: str) -> str:
+async def get_graph_context(
+    query: str,
+    project_id: str,
+    scope: str,
+    rerank: bool = True,
+) -> str:
     """Retrieve isolated context from the GraphRAG memory.
+
+    Retrieves a candidate set of nodes and optionally reranks them using
+    bge-reranker-v2-m3 before returning the top results.
 
     Args:
         query: The user's query.
         project_id: The target tenant project ID (e.g., 'TRADING_BOT').
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
+        rerank: If True (default) and RERANKER_ENABLED is set, applies the
+            cross-encoder reranker to the candidate set before returning.
 
     Returns:
         Structured context relevant to the specific project and scope.
     """
-    logger.info(f"Graph retrieve: project={project_id} scope={scope} query={query!r}")
+    logger.info(
+        f"Graph retrieve: project={project_id} scope={scope} "
+        f"query={query!r} rerank={rerank}"
+    )
     try:
         index = get_graph_index()
         filters = MetadataFilters(
@@ -205,9 +222,21 @@ async def get_graph_context(query: str, project_id: str, scope: str) -> str:
                 ExactMatchFilter(key="tenant_scope", value=scope),
             ]
         )
-        nodes = index.as_retriever(filters=filters).retrieve(query)
+        nodes = index.as_retriever(
+            filters=filters,
+            similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
+        ).retrieve(query)
         if not nodes:
             return f"No Graph context found for {project_id} in scope {scope} for query: '{query}'"
+        if rerank and RERANKER_ENABLED:
+            try:
+                reranker = get_reranker()
+                nodes = reranker.postprocess_nodes(
+                    nodes, query_bundle=QueryBundle(query_str=query)
+                )
+                logger.info(f"Graph reranked: {len(nodes)} nodes returned")
+            except Exception as rerank_err:
+                logger.warning(f"Reranker failed, using un-reranked results: {rerank_err}")
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
         return (
             f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
@@ -353,18 +382,31 @@ async def ingest_vector_documents_batch(
 
 
 @mcp.tool()
-async def get_vector_context(query: str, project_id: str, scope: str) -> str:
+async def get_vector_context(
+    query: str,
+    project_id: str,
+    scope: str,
+    rerank: bool = True,
+) -> str:
     """Retrieve isolated context from the standard RAG (Vector) memory.
+
+    Retrieves a candidate set of nodes and optionally reranks them using
+    bge-reranker-v2-m3 before returning the top results.
 
     Args:
         query: The user's query.
         project_id: The target tenant project ID (e.g., 'TRADING_BOT').
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
+        rerank: If True (default) and RERANKER_ENABLED is set, applies the
+            cross-encoder reranker to the candidate set before returning.
 
     Returns:
         Structured context relevant to the specific project and scope.
     """
-    logger.info(f"Vector retrieve: project={project_id} scope={scope} query={query!r}")
+    logger.info(
+        f"Vector retrieve: project={project_id} scope={scope} "
+        f"query={query!r} rerank={rerank}"
+    )
     try:
         index = get_vector_index()
         filters = MetadataFilters(
@@ -373,9 +415,21 @@ async def get_vector_context(query: str, project_id: str, scope: str) -> str:
                 ExactMatchFilter(key="tenant_scope", value=scope),
             ]
         )
-        nodes = index.as_retriever(filters=filters).retrieve(query)
+        nodes = index.as_retriever(
+            filters=filters,
+            similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
+        ).retrieve(query)
         if not nodes:
             return f"No Vector context found for {project_id} in scope {scope} for query: '{query}'"
+        if rerank and RERANKER_ENABLED:
+            try:
+                reranker = get_reranker()
+                nodes = reranker.postprocess_nodes(
+                    nodes, query_bundle=QueryBundle(query_str=query)
+                )
+                logger.info(f"Vector reranked: {len(nodes)} nodes returned")
+            except Exception as rerank_err:
+                logger.warning(f"Reranker failed, using un-reranked results: {rerank_err}")
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
         return f"Vector Context retrieved for {project_id} in scope {scope}:\n{context_str}"
     except Exception as e:
