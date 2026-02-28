@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.0
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
 """
@@ -137,6 +137,24 @@ def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
     except Exception as e:
         logger.warning(f"Neo4j dedup check failed (fail-open): {e}")
         return False
+
+
+def delete_all_data() -> None:
+    """Delete ALL nodes from Neo4j across every project and scope.
+
+    This is a destructive, irreversible operation. Use only for full resets.
+
+    Raises:
+        Exception: Propagated from the Neo4j driver on failure.
+    """
+    try:
+        with neo4j_driver() as driver:
+            with driver.session() as session:
+                session.run("MATCH (n) DETACH DELETE n")
+        logger.warning("Neo4j: deleted ALL nodes from the database")
+    except Exception as e:
+        logger.error(f"Neo4j delete_all error: {e}")
+        raise
 
 
 def get_document_count(project_id: str, scope: str = "") -> int:

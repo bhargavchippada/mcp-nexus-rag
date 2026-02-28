@@ -1,4 +1,4 @@
-# Version: v2.0
+# Version: v2.1
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -228,6 +228,16 @@ async def get_graph_context(
         ).aretrieve(query)
         if not nodes:
             return f"No Graph context found for {project_id} in scope {scope} for query: '{query}'"
+        # Post-retrieval dedup: remove nodes with identical content text
+        seen_content: set[str] = set()
+        unique_nodes = []
+        for n in nodes:
+            text = n.node.get_content()
+            if text not in seen_content:
+                seen_content.add(text)
+                unique_nodes.append(n)
+        nodes = unique_nodes
+        logger.info(f"Graph dedup: {len(nodes)} unique nodes after dedup")
         if rerank and RERANKER_ENABLED:
             try:
                 reranker = get_reranker()
@@ -421,6 +431,16 @@ async def get_vector_context(
         ).aretrieve(query)
         if not nodes:
             return f"No Vector context found for {project_id} in scope {scope} for query: '{query}'"
+        # Post-retrieval dedup: remove nodes with identical content text
+        seen_content: set[str] = set()
+        unique_nodes = []
+        for n in nodes:
+            text = n.node.get_content()
+            if text not in seen_content:
+                seen_content.add(text)
+                unique_nodes.append(n)
+        nodes = unique_nodes
+        logger.info(f"Vector dedup: {len(nodes)} unique nodes after dedup")
         if rerank and RERANKER_ENABLED:
             try:
                 reranker = get_reranker()
@@ -596,3 +616,29 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
         "vector_docs": vector_count,
         "total_docs": graph_count + vector_count,
     }
+
+
+@mcp.tool()
+async def delete_all_data() -> str:
+    """Delete ALL data from both GraphRAG (Neo4j) and VectorRAG (Qdrant).
+
+    This is a destructive, irreversible operation that removes every document
+    across ALL project IDs and scopes. Use only for full database resets.
+
+    Returns:
+        Confirmation message, or partial-failure message if a backend failed.
+    """
+    logger.warning("delete_all_data called — wiping ALL data from both backends")
+    errors: list[str] = []
+    try:
+        neo4j_backend.delete_all_data()
+    except Exception as e:
+        errors.append(f"Neo4j: {e}")
+    try:
+        qdrant_backend.delete_all_data()
+    except Exception as e:
+        errors.append(f"Qdrant: {e}")
+
+    if errors:
+        return f"Partial failure deleting all data: {'; '.join(errors)}"
+    return "Successfully deleted ALL data from GraphRAG (Neo4j) and VectorRAG (Qdrant)."

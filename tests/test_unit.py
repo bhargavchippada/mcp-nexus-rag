@@ -1,4 +1,4 @@
-# Version: v2.0
+# Version: v2.1
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -687,3 +687,176 @@ class TestIngestGraphDedup:
             await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
         doc = mock_index.insert.call_args[0][0]
         assert doc.doc_id == "GRAPHHASH"
+
+
+# ---------------------------------------------------------------------------
+# nexus.backends.qdrant — delete_all_data
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteAllQdrant:
+    def test_calls_client_delete_with_empty_filter(self):
+        mock_client = MagicMock()
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            qdrant_backend.delete_all_data()
+        mock_client.delete.assert_called_once()
+        selector = mock_client.delete.call_args[1]["points_selector"]
+        # must= [] means no conditions — deletes everything
+        assert selector.filter.must == []
+
+    def test_propagates_exception(self):
+        with patch.object(
+            qdrant_backend, "get_client", side_effect=Exception("qdrant down")
+        ):
+            with pytest.raises(Exception, match="qdrant down"):
+                qdrant_backend.delete_all_data()
+
+
+# ---------------------------------------------------------------------------
+# nexus.backends.neo4j — delete_all_data
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteAllNeo4j:
+    def test_runs_detach_delete_all_cypher(self):
+        mock_driver, mock_session = _make_neo4j_driver()
+        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+            neo4j_backend.delete_all_data()
+        cypher = mock_session.run.call_args[0][0]
+        assert "MATCH (n)" in cypher
+        assert "DETACH DELETE" in cypher
+        # No project_id or scope filter — deletes everything
+        assert "project_id" not in cypher
+
+    def test_propagates_exception(self):
+        with patch.object(
+            neo4j_backend, "neo4j_driver", side_effect=Exception("bolt down")
+        ):
+            with pytest.raises(Exception, match="bolt down"):
+                neo4j_backend.delete_all_data()
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools.delete_all_data — MCP tool
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteAllDataTool:
+    async def test_calls_both_backends(self):
+        with (
+            patch.object(neo4j_backend, "delete_all_data") as mock_neo4j,
+            patch.object(qdrant_backend, "delete_all_data") as mock_qdrant,
+        ):
+            result = await nexus_tools.delete_all_data()
+        mock_neo4j.assert_called_once()
+        mock_qdrant.assert_called_once()
+        assert "Successfully" in result
+        assert "ALL" in result
+
+    async def test_partial_failure_neo4j(self):
+        with (
+            patch.object(
+                neo4j_backend, "delete_all_data", side_effect=Exception("neo4j down")
+            ),
+            patch.object(qdrant_backend, "delete_all_data"),
+        ):
+            result = await nexus_tools.delete_all_data()
+        assert "Partial failure" in result
+        assert "Neo4j" in result
+
+    async def test_partial_failure_qdrant(self):
+        with (
+            patch.object(neo4j_backend, "delete_all_data"),
+            patch.object(
+                qdrant_backend, "delete_all_data", side_effect=Exception("qdrant down")
+            ),
+        ):
+            result = await nexus_tools.delete_all_data()
+        assert "Partial failure" in result
+        assert "Qdrant" in result
+
+    async def test_both_backends_fail_reports_both(self):
+        with (
+            patch.object(
+                neo4j_backend, "delete_all_data", side_effect=Exception("neo4j err")
+            ),
+            patch.object(
+                qdrant_backend, "delete_all_data", side_effect=Exception("qdrant err")
+            ),
+        ):
+            result = await nexus_tools.delete_all_data()
+        assert "Partial failure" in result
+        assert "Neo4j" in result
+        assert "Qdrant" in result
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — post-retrieval dedup in get_vector_context / get_graph_context
+# ---------------------------------------------------------------------------
+
+
+class TestPostRetrievalDedup:
+    """Verify that duplicate nodes returned by the retriever are collapsed."""
+
+    def _make_node(self, content: str):
+        node = MagicMock()
+        node.node.get_content.return_value = content
+        return node
+
+    def _mock_index(self, nodes):
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=nodes)
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+        return mock_index
+
+    async def test_vector_dedup_removes_duplicate_content(self):
+        """Three nodes with same content → only one bullet in output."""
+        dup_node = self._make_node("same content")
+        nodes = [dup_node, dup_node, dup_node]
+        with patch("nexus.tools.get_vector_index", return_value=self._mock_index(nodes)):
+            result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
+        # Only one occurrence of the content
+        assert result.count("same content") == 1
+
+    async def test_vector_dedup_preserves_unique_content(self):
+        """Two nodes with different content → both appear in output."""
+        node_a = self._make_node("content A")
+        node_b = self._make_node("content B")
+        with patch(
+            "nexus.tools.get_vector_index",
+            return_value=self._mock_index([node_a, node_b]),
+        ):
+            result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
+        assert "content A" in result
+        assert "content B" in result
+
+    async def test_vector_dedup_mixed_duplicates(self):
+        """A, B, A, B → only A and B once each."""
+        node_a = self._make_node("alpha")
+        node_b = self._make_node("beta")
+        nodes = [node_a, node_b, node_a, node_b]
+        with patch("nexus.tools.get_vector_index", return_value=self._mock_index(nodes)):
+            result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
+        assert result.count("alpha") == 1
+        assert result.count("beta") == 1
+
+    async def test_graph_dedup_removes_duplicate_content(self):
+        """Three identical graph nodes → only one bullet in output."""
+        dup_node = self._make_node("graph content")
+        nodes = [dup_node, dup_node, dup_node]
+        with patch("nexus.tools.get_graph_index", return_value=self._mock_index(nodes)):
+            result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
+        assert result.count("graph content") == 1
+
+    async def test_graph_dedup_preserves_unique_content(self):
+        """Two distinct graph nodes → both appear."""
+        node_a = self._make_node("node alpha")
+        node_b = self._make_node("node beta")
+        with patch(
+            "nexus.tools.get_graph_index",
+            return_value=self._mock_index([node_a, node_b]),
+        ):
+            result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
+        assert "node alpha" in result
+        assert "node beta" in result

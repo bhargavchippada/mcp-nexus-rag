@@ -1,4 +1,4 @@
-# Version: v2.1
+# Version: v2.2
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
@@ -200,6 +200,28 @@ def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
     except Exception as e:
         logger.warning(f"Qdrant dedup check failed (fail-open): {e}")
         return False
+
+
+def delete_all_data() -> None:
+    """Delete ALL points from the Qdrant collection across every project and scope.
+
+    This is a destructive, irreversible operation. Use only for full resets.
+
+    Raises:
+        Exception: Propagated from the Qdrant client on failure.
+    """
+    try:
+        client = get_client()
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=qdrant_models.FilterSelector(
+                filter=qdrant_models.Filter(must=[])
+            ),
+        )
+        logger.warning("Qdrant: deleted ALL points from collection '%s'", COLLECTION_NAME)
+    except Exception as e:
+        logger.error(f"Qdrant delete_all error: {e}")
+        raise
 
 
 def get_document_count(project_id: str, scope: str = "") -> int:
