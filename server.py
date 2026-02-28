@@ -1,4 +1,4 @@
-# Version: v1.2
+# Version: v1.3
 """
 Nexus RAG MCP Server
 Provides strict multi-tenant GraphRAG and Standard RAG retrieval isolated by project_id and tenant_scope.
@@ -149,6 +149,38 @@ def delete_data_neo4j(project_id: str, scope: str = "") -> None:
 
 # --- Qdrant helpers ---
 
+def _scroll_qdrant_field(
+    key: str,
+    filter: Optional[qdrant_models.Filter] = None,
+) -> set[str]:
+    """Scroll the entire nexus_rag collection and collect distinct values for *key*.
+
+    Args:
+        key: Payload field name to collect.
+        filter: Optional Qdrant filter to restrict which points are scanned.
+
+    Returns:
+        Set of unique string values found in the payload.
+    """
+    values: set[str] = set()
+    client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
+    offset = None
+    while True:
+        records, offset = client.scroll(
+            collection_name="nexus_rag",
+            scroll_filter=filter,
+            limit=1000,
+            with_payload=[key],
+            offset=offset,
+        )
+        for record in records:
+            if record.payload and key in record.payload:
+                values.add(record.payload[key])
+        if offset is None:
+            break
+    return values
+
+
 def get_distinct_metadata_qdrant(key: str) -> list[str]:
     """Return distinct payload values for *key* across the Qdrant collection.
 
@@ -160,25 +192,11 @@ def get_distinct_metadata_qdrant(key: str) -> list[str]:
     """
     if key not in _ALLOWED_META_KEYS:
         raise ValueError(f"Disallowed metadata key: {key!r}")
-    values: set[str] = set()
     try:
-        client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
-        offset = None
-        while True:
-            records, offset = client.scroll(
-                collection_name="nexus_rag",
-                limit=1000,
-                with_payload=[key],
-                offset=offset,
-            )
-            for record in records:
-                if record.payload and key in record.payload:
-                    values.add(record.payload[key])
-            if offset is None:
-                break
+        return list(_scroll_qdrant_field(key))
     except Exception as e:
         logger.warning(f"Qdrant distinct '{key}' error: {e}")
-    return list(values)
+        return []
 
 
 def delete_data_qdrant(project_id: str, scope: str = "") -> None:
@@ -385,32 +403,21 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
             logger.warning(f"Neo4j scopes error: {e}")
             graph_scopes = []
 
-        vector_scopes: set[str] = set()
         try:
-            client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
-            offset = None
-            while True:
-                records, offset = client.scroll(
-                    collection_name="nexus_rag",
-                    scroll_filter=qdrant_models.Filter(
-                        must=[
-                            qdrant_models.FieldCondition(
-                                key="project_id",
-                                match=qdrant_models.MatchValue(value=project_id),
-                            )
-                        ]
-                    ),
-                    limit=1000,
-                    with_payload=["tenant_scope"],
-                    offset=offset,
-                )
-                for record in records:
-                    if record.payload and "tenant_scope" in record.payload:
-                        vector_scopes.add(record.payload["tenant_scope"])
-                if offset is None:
-                    break
+            vector_scopes = _scroll_qdrant_field(
+                "tenant_scope",
+                filter=qdrant_models.Filter(
+                    must=[
+                        qdrant_models.FieldCondition(
+                            key="project_id",
+                            match=qdrant_models.MatchValue(value=project_id),
+                        )
+                    ]
+                ),
+            )
         except Exception as e:
             logger.warning(f"Qdrant scopes error: {e}")
+            vector_scopes = set()
 
         return sorted(set(graph_scopes) | vector_scopes)
     else:
