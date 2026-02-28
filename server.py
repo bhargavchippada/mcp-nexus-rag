@@ -1,4 +1,4 @@
-# Version: v1.4
+# Version: v1.5
 """
 Nexus RAG MCP Server
 Provides strict multi-tenant GraphRAG and Standard RAG retrieval isolated by project_id and tenant_scope.
@@ -32,6 +32,8 @@ DEFAULT_LLM_MODEL = "llama3.1:8b"
 
 # Allowed metadata keys for safe Cypher queries — prevents key injection
 _ALLOWED_META_KEYS = frozenset({"project_id", "tenant_scope", "source"})
+
+COLLECTION_NAME = "nexus_rag"  # single source-of-truth for the Qdrant collection name
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("mcp-nexus-rag")
@@ -92,12 +94,8 @@ def get_graph_index() -> PropertyGraphIndex:
 def get_vector_index() -> VectorStoreIndex:
     setup_settings()
     client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
-    vector_store = QdrantVectorStore(client=client, collection_name="nexus_rag")
-    try:
-        return VectorStoreIndex.from_vector_store(vector_store=vector_store)
-    except Exception as e:
-        logger.warning(f"Could not load existing Vector index: {e}. Creating empty index.")
-        return VectorStoreIndex.from_documents([], vector_store=vector_store)
+    vector_store = QdrantVectorStore(client=client, collection_name=COLLECTION_NAME)
+    return VectorStoreIndex.from_vector_store(vector_store=vector_store)
 
 
 # --- Neo4j helpers ---
@@ -171,7 +169,7 @@ def _scroll_qdrant_field(
     offset = None
     while True:
         records, offset = client.scroll(
-            collection_name="nexus_rag",
+            collection_name=COLLECTION_NAME,
             scroll_filter=qdrant_filter,
             limit=1000,
             with_payload=[key],
@@ -226,13 +224,14 @@ def delete_data_qdrant(project_id: str, scope: str = "") -> None:
                 )
             )
         client.delete(
-            collection_name="nexus_rag",
+            collection_name=COLLECTION_NAME,
             points_selector=qdrant_models.FilterSelector(
                 filter=qdrant_models.Filter(must=must_conditions)
             ),
         )
     except Exception as e:
         logger.error(f"Qdrant delete error: {e}")
+        raise
 
 
 # --- MCP Tools ---
@@ -441,15 +440,25 @@ async def delete_tenant_data(project_id: str, scope: str = "") -> str:
         scope: Optional. Restricts deletion to this scope. Empty means delete the full project.
 
     Returns:
-        Confirmation message.
+        Confirmation message, or error message if a backend failed.
     """
     logger.info(f"Deleting data for project_id={project_id}, scope={scope!r}")
-    delete_data_neo4j(project_id, scope)
-    delete_data_qdrant(project_id, scope)
-    msg = f"Successfully deleted data for project '{project_id}'"
+    errors: list[str] = []
+    try:
+        delete_data_neo4j(project_id, scope)
+    except Exception as e:
+        errors.append(f"Neo4j: {e}")
+    try:
+        delete_data_qdrant(project_id, scope)
+    except Exception as e:
+        errors.append(f"Qdrant: {e}")
+
+    label = f"project '{project_id}'"
     if scope:
-        msg += f", scope '{scope}'"
-    return msg
+        label += f", scope '{scope}'"
+    if errors:
+        return f"Partial failure deleting {label}: {'; '.join(errors)}"
+    return f"Successfully deleted data for {label}"
 
 
 def main():

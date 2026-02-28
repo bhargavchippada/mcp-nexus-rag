@@ -1,5 +1,4 @@
-# Version: v1.1
-import asyncio
+# Version: v1.2
 import pytest
 from server import get_vector_context
 

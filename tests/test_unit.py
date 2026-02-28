@@ -163,9 +163,10 @@ class TestDeleteQdrant:
         assert len(must) == 2
         assert {c.key for c in must} == {"project_id", "tenant_scope"}
 
-    def test_qdrant_error_is_swallowed(self):
+    def test_qdrant_error_is_propagated(self):
         with patch("qdrant_client.QdrantClient", side_effect=Exception("timeout")):
-            server.delete_data_qdrant("PROJ")  # must not raise
+            with pytest.raises(Exception, match="timeout"):
+                server.delete_data_qdrant("PROJ")
 
 
 # ---------------------------------------------------------------------------
