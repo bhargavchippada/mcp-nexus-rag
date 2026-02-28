@@ -15,7 +15,7 @@ The MCP Nexus RAG codebase is **well-architected, thoroughly tested, and product
 
 | Metric | Value | Assessment |
 |--------|-------|------------|
-| **Test Coverage** | 100% (161/161 tests passing) | ✅ Excellent |
+| **Test Coverage** | 100% (188/188 tests passing) | ✅ Excellent |
 | **Code Quality** | 0 linting issues (ruff) | ✅ Clean |
 | **Type Safety** | ~95% type hints | ✅ Very Good |
 | **Documentation** | Complete docstrings + INSTRUCTIONS.md | ✅ Comprehensive |
@@ -28,35 +28,35 @@ The MCP Nexus RAG codebase is **well-architected, thoroughly tested, and product
 
 ### Strengths ✅
 
-1. **Clean Separation of Concerns**
+1. **Clean Separation of Concerns:**
    - `config.py` — Centralized configuration and constants
    - `backends/` — Database abstraction layer (Neo4j + Qdrant)
    - `tools.py` — MCP tool interface (all `@mcp.tool()` handlers)
    - `indexes.py` — LlamaIndex initialization with singleton caching
    - `dedup.py` — Pure SHA-256 hashing logic, no I/O
 
-2. **Multi-Tenant Design**
+2. **Multi-Tenant Design:**
    - Strict isolation via `(project_id, tenant_scope)` tuple
    - No cross-tenant data leakage possible
    - Enforced at both Neo4j and Qdrant layers
 
-3. **Security First**
+3. **Security First:**
    - `ALLOWED_META_KEYS` frozenset prevents Cypher key injection
    - Input validation on all entry points via `_validate_ingest_inputs()`
    - Fail-open deduplication (availability > consistency)
    - No external API calls — all LLM/embed via local Ollama
 
-4. **Comprehensive Testing**
+4. **Comprehensive Testing:**
    - 121 tests across 5 modules: unit, integration, coverage, isolation, new features
    - Mock-based testing for all external dependencies
    - Edge case coverage: empty inputs, connection failures, partial failures, concurrency
 
-5. **Thread Safety**
+5. **Thread Safety:**
    - Double-checked locking in `setup_settings()` and index factories
    - QdrantClient connection pooling with `threading.Lock`
    - Safe for concurrent MCP requests
 
-6. **Performance**
+6. **Performance:**
    - Index instances cached as singletons (20-50ms saved per call)
    - QdrantClient cached per URL for process lifetime
    - Batch ingestion tools (`ingest_graph_documents_batch`, `ingest_vector_documents_batch`) for 10-50x bulk throughput
@@ -269,14 +269,14 @@ def validate_production_config() -> None:
 
 | Module | Tests | Focus |
 |--------|-------|-------|
-| `test_unit.py` | 67 | Core logic, dedup, backends, tools |
+| `test_unit.py` | 81 | Core logic, dedup, backends, tools, post-retrieval dedup |
 | `test_coverage.py` | 19 | Branch coverage, edge cases |
 | `test_integration.py` | 11 | Live-mock backend interactions |
-| `test_new_features.py` | 23 | Batch tools, stats, health check |
+| `test_new_features.py` | 29 | Batch tools, stats, health check, print_all_stats |
 | `test_isolation.py` | 1 | Cross-tenant isolation |
 | `test_reranker.py` | 27 | Reranker singleton, vector/graph integration, config |
-| Other tests | 13 | Post-retrieval dedup, additional coverage |
-| **Total** | **161** | **100% coverage** |
+| `test_chunking.py` | 20 | Auto-chunking, ingest integration, batch chunking |
+| **Total** | **188** | **100% coverage** |
 
 ### Additional Test Scenarios (Nice to Have)
 

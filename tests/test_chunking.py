@@ -4,7 +4,7 @@ Tests for nexus.chunking — Document chunking utilities.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock
 
 from nexus import chunking
 from nexus.chunking import needs_chunking, chunk_document

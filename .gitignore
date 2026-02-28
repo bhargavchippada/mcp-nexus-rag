@@ -13,3 +13,4 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+.git_disabled/

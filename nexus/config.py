@@ -1,4 +1,4 @@
-# Version: v2.2
+# Version: v2.3
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """

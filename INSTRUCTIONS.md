@@ -2,7 +2,7 @@
 
 This submodule contains the FastMCP server (`server.py`) and supporting tests for Multi-Tenant **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) context retrieval, powered by LlamaIndex + Ollama.
 
-**Current package version:** `v2.2` · **Test coverage:** 100% · **Tests:** 181 passed
+**Current package version:** `v2.3` · **Test coverage:** 100% · **Tests:** 188 passed
 
 ---
 
@@ -59,7 +59,7 @@ poetry run pytest tests/test_integration.py -v
 
 ```bash
 poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
-# Expected: 181 passed, 100% coverage
+# Expected: 188 passed, 100% coverage
 ```
 
 ### Run the MCP server interactively
@@ -96,10 +96,11 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ### Health & Diagnostics
 
-| Tool               | Arguments          | Returns                                                    |
-| ------------------ | ------------------ | ---------------------------------------------------------- |
-| `health_check`     | —                  | Dict with status of Neo4j, Qdrant, Ollama ("ok" or error) |
+| Tool               | Arguments            | Returns                                                            |
+| ------------------ | -------------------- | ------------------------------------------------------------------ |
+| `health_check`     | —                    | Dict with status of Neo4j, Qdrant, Ollama ("ok" or error)          |
 | `get_tenant_stats` | `project_id, scope?` | **v1.9**: Dict with `{graph_docs, vector_docs, total_docs}` counts |
+| `print_all_stats`  | —                    | **v2.3**: ASCII table of all projects, scopes, and doc counts      |
 
 ### Tenant Management
 
@@ -300,6 +301,7 @@ docker-compose logs -f
 ### Reset Procedures
 
 **Soft reset (data only, preserves models)**:
+
 ```bash
 docker-compose down
 docker volume rm mcp-nexus-rag_neo4j_data mcp-nexus-rag_qdrant_data
@@ -307,6 +309,7 @@ docker-compose up -d
 ```
 
 **Full reset (including Ollama models)**:
+
 ```bash
 docker-compose down -v
 docker-compose up -d
