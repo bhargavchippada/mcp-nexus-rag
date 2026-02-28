@@ -15,7 +15,7 @@ No live services required — all backends are mocked.
 asyncio_mode=auto (pyproject.toml) — no @pytest.mark.asyncio needed.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
@@ -138,7 +138,7 @@ class TestGetGraphContextWithResults:
         node = MagicMock()
         node.node.get_content.return_value = content
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = [node]
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
         return mock_index
@@ -168,7 +168,7 @@ class TestGetGraphContextWithResults:
             n.node.get_content.return_value = c
             nodes.append(n)
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes
+        mock_retriever.aretrieve = AsyncMock(return_value=nodes)
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
         with patch("nexus.tools.get_graph_index", return_value=mock_index):

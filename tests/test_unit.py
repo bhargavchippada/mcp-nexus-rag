@@ -7,7 +7,7 @@ asyncio_mode=auto (set in pyproject.toml) removes the need for @pytest.mark.asyn
 
 import threading
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from nexus import config as nexus_config
 from nexus import dedup as nexus_dedup
@@ -348,7 +348,7 @@ class TestIngestErrorPaths:
 class TestContextRetrieval:
     def _mock_index(self, nodes=None):
         mock_retriever = MagicMock()
-        mock_retriever.retrieve.return_value = nodes if nodes is not None else []
+        mock_retriever.aretrieve = AsyncMock(return_value=nodes if nodes is not None else [])
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
         return mock_index
