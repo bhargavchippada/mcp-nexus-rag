@@ -1,4 +1,4 @@
-# Version: v2.5
+# Version: v2.6
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -7,6 +7,9 @@ that imports this module to register the tools on the shared mcp instance.
 """
 
 from typing import Optional
+import os
+from pathlib import Path
+import pathspec
 
 from llama_index.core import Document
 from llama_index.core.schema import QueryBundle
@@ -66,6 +69,7 @@ async def ingest_graph_document(
     scope: str,
     source_identifier: str = "manual",
     auto_chunk: bool = True,
+    file_path: str = "",
 ) -> str:
     """Ingest a document into the Multi-Tenant GraphRAG memory.
 
@@ -121,6 +125,7 @@ async def ingest_graph_document(
                         "tenant_scope": scope,
                         "source": chunk_source,
                         "content_hash": chash,
+                        "file_path": file_path,
                     },
                 )
                 index.insert(doc)
@@ -159,6 +164,7 @@ async def ingest_graph_document(
                 "tenant_scope": scope,
                 "source": source_identifier,
                 "content_hash": chash,
+                "file_path": file_path,
             },
         )
         index.insert(doc)
@@ -213,6 +219,7 @@ async def ingest_graph_documents_batch(
             project_id = doc_dict.get("project_id", "")
             scope = doc_dict.get("scope", "")
             source_identifier = doc_dict.get("source_identifier", "batch")
+            file_path = doc_dict.get("file_path", "")
 
             err = _validate_ingest_inputs(text, project_id, scope)
             if err:
@@ -247,6 +254,7 @@ async def ingest_graph_documents_batch(
                             "tenant_scope": scope,
                             "source": chunk_source,
                             "content_hash": chash,
+                            "file_path": file_path,
                         },
                     )
                     index.insert(doc)
@@ -269,6 +277,7 @@ async def ingest_graph_documents_batch(
                     "tenant_scope": scope,
                     "source": source_identifier,
                     "content_hash": chash,
+                    "file_path": file_path,
                 },
             )
             index.insert(doc)
@@ -365,6 +374,7 @@ async def ingest_vector_document(
     scope: str,
     source_identifier: str = "manual",
     auto_chunk: bool = True,
+    file_path: str = "",
 ) -> str:
     """Ingest a document into the Multi-Tenant standard RAG (Vector) memory.
 
@@ -420,6 +430,7 @@ async def ingest_vector_document(
                         "tenant_scope": scope,
                         "source": chunk_source,
                         "content_hash": chash,
+                        "file_path": file_path,
                     },
                 )
                 index.insert(doc)
@@ -458,6 +469,7 @@ async def ingest_vector_document(
                 "tenant_scope": scope,
                 "source": source_identifier,
                 "content_hash": chash,
+                "file_path": file_path,
             },
         )
         index.insert(doc)
@@ -512,6 +524,7 @@ async def ingest_vector_documents_batch(
             project_id = doc_dict.get("project_id", "")
             scope = doc_dict.get("scope", "")
             source_identifier = doc_dict.get("source_identifier", "batch")
+            file_path = doc_dict.get("file_path", "")
 
             err = _validate_ingest_inputs(text, project_id, scope)
             if err:
@@ -546,6 +559,7 @@ async def ingest_vector_documents_batch(
                             "tenant_scope": scope,
                             "source": chunk_source,
                             "content_hash": chash,
+                            "file_path": file_path,
                         },
                     )
                     index.insert(doc)
@@ -568,6 +582,7 @@ async def ingest_vector_documents_batch(
                     "tenant_scope": scope,
                     "source": source_identifier,
                     "content_hash": chash,
+                    "file_path": file_path,
                 },
             )
             index.insert(doc)
@@ -1166,3 +1181,139 @@ async def delete_all_data() -> str:
     if errors:
         return f"Partial failure deleting all data: {'; '.join(errors)}"
     return "Successfully deleted ALL data from GraphRAG (Neo4j) and VectorRAG (Qdrant)."
+
+
+@mcp.tool()
+async def ingest_project_directory(
+    directory_path: str,
+    project_id: str,
+    scope: str,
+    include_extensions: list[str] = [".py", ".ts", ".js", ".md", ".txt", ".json"],
+    auto_chunk: bool = True,
+) -> str:
+    """Recursively ingest a project directory into both GraphRAG and VectorRAG.
+
+    Respects .gitignore rules using pathspec. This is the recommended way
+    to feed an entire codebase into the system.
+
+    Args:
+        directory_path: Absolute path to the directory.
+        project_id: Tenant project ID.
+        scope: Tenant scope.
+        include_extensions: List of file extensions to include (e.g. ['.py', '.ts']).
+        auto_chunk: Whether to chunk large files.
+    """
+    base_path = Path(directory_path)
+    if not base_path.is_dir():
+        return f"Error: {directory_path} is not a directory."
+
+    # Load gitignore
+    gitignore_path = base_path / ".gitignore"
+    spec = None
+    if gitignore_path.exists():
+        with open(gitignore_path, "r", encoding="utf-8") as f:
+            spec = pathspec.PathSpec.from_lines("gitwildmatch", f)
+
+    count = 0
+    errors = []
+
+    for root, dirs, files in os.walk(directory_path):
+        # Filter directories based on gitignore
+        if spec:
+            rel_root = os.path.relpath(root, directory_path)
+            if rel_root != ".":
+                if spec.match_file(rel_root + os.sep):
+                    dirs[:] = []  # Don't recurse into ignored dirs
+                    continue
+
+        for file in files:
+            file_path = os.path.join(root, file)
+            rel_path = os.path.relpath(file_path, directory_path)
+
+            # Check gitignore
+            if spec and spec.match_file(rel_path):
+                continue
+
+            # Check extension
+            if not any(file.endswith(ext) for ext in include_extensions):
+                continue
+
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                # Ingest into GraphRAG
+                await ingest_graph_document(
+                    text=content,
+                    project_id=project_id,
+                    scope=scope,
+                    source_identifier=rel_path,
+                    auto_chunk=auto_chunk,
+                    file_path=rel_path,
+                )
+
+                # Ingest into VectorRAG
+                await ingest_vector_document(
+                    text=content,
+                    project_id=project_id,
+                    scope=scope,
+                    source_identifier=rel_path,
+                    auto_chunk=auto_chunk,
+                    file_path=rel_path,
+                )
+                count += 1
+            except Exception as e:
+                errors.append(f"{rel_path}: {e}")
+
+    res = f"Successfully ingested {count} files into GraphRAG and VectorRAG."
+    if errors:
+        res += f"\nErrors occurred in {len(errors)} files:\n" + "\n".join(errors[:10])
+    return res
+
+
+@mcp.tool()
+async def sync_deleted_files(
+    directory_path: str,
+    project_id: str,
+    scope: str,
+) -> str:
+    """Synchronize RAG databases by removing files that no longer exist on disk.
+
+    Useful for cleaning up stale data after file deletions or refactorings.
+
+    Args:
+        directory_path: Absolute path to the local project root.
+        project_id: Tenant project ID.
+        scope: Tenant scope.
+    """
+    base_path = Path(directory_path)
+    if not base_path.is_dir():
+        return f"Error: {directory_path} is not a directory."
+
+    # Get all filepaths from Neo4j (assuming it's the source of truth for metadata)
+    stored_paths = neo4j_backend.get_all_filepaths(project_id, scope)
+    if not stored_paths:
+        return "No files found in database to sync."
+
+    removed_count = 0
+    errors = []
+
+    for rel_path in stored_paths:
+        if not rel_path:
+            continue
+        full_path = base_path / rel_path
+        if not full_path.exists():
+            try:
+                # Delete from Neo4j
+                neo4j_backend.delete_by_filepath(project_id, rel_path, scope)
+                # Delete from Qdrant
+                qdrant_backend.delete_by_filepath(project_id, rel_path, scope)
+                removed_count += 1
+                logger.info(f"Sync: Removed stale file {rel_path} from database")
+            except Exception as e:
+                errors.append(f"{rel_path}: {e}")
+
+    res = f"Synchronized databases. Removed {removed_count} stale file entries."
+    if errors:
+        res += f"\nErrors occurred during sync:\n" + "\n".join(errors[:10])
+    return res

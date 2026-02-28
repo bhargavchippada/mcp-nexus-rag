@@ -24,7 +24,7 @@ DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 # LLM & Text processing defaults
 # ---------------------------------------------------------------------------
 DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
-DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
+DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "32768"))
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
 
@@ -48,7 +48,7 @@ RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 # ---------------------------------------------------------------------------
 # Allowlist — prevents Cypher key injection in dynamic MATCH clauses
 # ---------------------------------------------------------------------------
-ALLOWED_META_KEYS = frozenset({"project_id", "tenant_scope", "source", "content_hash"})
+ALLOWED_META_KEYS = frozenset({"project_id", "tenant_scope", "source", "content_hash", "file_path"})
 
 # ---------------------------------------------------------------------------
 # Qdrant collection name — single source of truth

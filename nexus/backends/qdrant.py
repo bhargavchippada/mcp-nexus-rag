@@ -158,6 +158,38 @@ def delete_data(project_id: str, scope: str = "") -> None:
         raise
 
 
+def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
+    """Delete Qdrant points matching project_id, scope, and file_path."""
+    try:
+        client = get_client()
+        must_conditions: list = [
+            qdrant_models.FieldCondition(
+                key="project_id",
+                match=qdrant_models.MatchValue(value=project_id),
+            ),
+            qdrant_models.FieldCondition(
+                key="file_path",
+                match=qdrant_models.MatchValue(value=filepath),
+            )
+        ]
+        if scope:
+            must_conditions.append(
+                qdrant_models.FieldCondition(
+                    key="tenant_scope",
+                    match=qdrant_models.MatchValue(value=scope),
+                )
+            )
+        client.delete(
+            collection_name=COLLECTION_NAME,
+            points_selector=qdrant_models.FilterSelector(
+                filter=qdrant_models.Filter(must=must_conditions)
+            ),
+        )
+    except Exception as e:
+        logger.error(f"Qdrant delete_by_filepath error: {e}")
+        raise
+
+
 def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
     """Return True if this content hash already exists in Qdrant.
 

@@ -1498,6 +1498,21 @@ llama-index-core = ">=0.14.5,<0.15"
 ollama = ">=0.5.3"
 
 [[package]]
+name = "llama-index-postprocessor-flag-embedding-reranker"
+version = "0.4.1"
+description = "llama-index postprocessor flag embedding reranker integration"
+optional = false
+python-versions = "<4.0,>=3.9"
+groups = ["main"]
+files = [
+    {file = "llama_index_postprocessor_flag_embedding_reranker-0.4.1-py3-none-any.whl", hash = "sha256:03b1c76e578ea7bdbe1d026f3be700d75b989aad625930154a915c23ef00cb11"},
+    {file = "llama_index_postprocessor_flag_embedding_reranker-0.4.1.tar.gz", hash = "sha256:e0bae3524dc33f530e8eaec0600844bcbd3515806cd7bf6fac4c13e4332603d5"},
+]
+
+[package.dependencies]
+llama-index-core = ">=0.13.0,<0.15"
+
+[[package]]
 name = "llama-index-vector-stores-qdrant"
 version = "0.9.1"
 description = "llama-index vector_stores qdrant integration"
@@ -2045,6 +2060,24 @@ files = [
     {file = "packaging-26.0-py3-none-any.whl", hash = "sha256:b36f1fef9334a5588b4166f8bcd26a14e521f2b55e6b9de3aaa80d3ff7a37529"},
     {file = "packaging-26.0.tar.gz", hash = "sha256:00243ae351a257117b6a241061796684b084ed1c516a08c48a3f7e147a9d80b4"},
 ]
+
+[[package]]
+name = "pathspec"
+version = "1.0.4"
+description = "Utility library for gitignore style pattern matching of file paths."
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "pathspec-1.0.4-py3-none-any.whl", hash = "sha256:fb6ae2fd4e7c921a165808a552060e722767cfa526f99ca5156ed2ce45a5c723"},
+    {file = "pathspec-1.0.4.tar.gz", hash = "sha256:0210e2ae8a21a9137c0d470578cb0e595af87edaa6ebf12ff176f14a02e0e645"},
+]
+
+[package.extras]
+hyperscan = ["hyperscan (>=0.7)"]
+optional = ["typing-extensions (>=4)"]
+re2 = ["google-re2 (>=1.1)"]
+tests = ["pytest (>=9)", "typing-extensions (>=4.15)"]
 
 [[package]]
 name = "pillow"
@@ -4052,4 +4085,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.14"
-content-hash = "725e2949cc7a96c401f1b4b9d2016335ade46e093bbec1dacdeacf4d3ff45f5f"
+content-hash = "6e356b8a513317fef1a105e2d2b0a32a124825325a0cb53bf9924696f0ab9eb9"

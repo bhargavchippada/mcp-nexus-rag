@@ -108,6 +108,55 @@ def delete_data(project_id: str, scope: str = "") -> None:
         raise
 
 
+def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
+    """Return distinct file_path values for a specific project_id/scope.
+    """
+    try:
+        with neo4j_driver() as driver:
+            with driver.session() as session:
+                if scope:
+                    result = session.run(
+                        "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
+                        "WHERE n.file_path IS NOT NULL RETURN DISTINCT n.file_path AS value",
+                        project_id=project_id,
+                        scope=scope,
+                    )
+                else:
+                    result = session.run(
+                        "MATCH (n {project_id: $project_id}) "
+                        "WHERE n.file_path IS NOT NULL RETURN DISTINCT n.file_path AS value",
+                        project_id=project_id,
+                    )
+                return [record["value"] for record in result]
+    except Exception as e:
+        logger.warning(f"Neo4j get_all_filepaths error: {e}")
+        return []
+
+
+def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
+    """Delete Neo4j nodes matching project_id, scope, and file_path.
+    """
+    try:
+        with neo4j_driver() as driver:
+            with driver.session() as session:
+                if scope:
+                    session.run(
+                        "MATCH (n {project_id: $project_id, tenant_scope: $scope, file_path: $filepath}) DETACH DELETE n",
+                        project_id=project_id,
+                        scope=scope,
+                        filepath=filepath,
+                    )
+                else:
+                    session.run(
+                        "MATCH (n {project_id: $project_id, file_path: $filepath}) DETACH DELETE n",
+                        project_id=project_id,
+                        filepath=filepath,
+                    )
+    except Exception as e:
+        logger.error(f"Neo4j delete_by_filepath error: {e}")
+        raise
+
+
 def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
     """Return True if this content hash already exists in Neo4j.
 

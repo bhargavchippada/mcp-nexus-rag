@@ -4,7 +4,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 100% test coverage (208 tests)
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 197 tests passing
 
 ---
 
@@ -365,6 +365,25 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 ---
 
 ## Recent Updates
+
+### v2.6 (2026-02-28)
+
+- 🐛 **BUGFIX**: Critical silent data loss in `ingest_graph_documents_batch` and `ingest_vector_documents_batch`
+  - `file_path` was referenced but never extracted from `doc_dict`, causing a `NameError` swallowed by the `except` handler
+  - All batch ingestion calls were silently returning `{"ingested": 0, "errors": N}` — zero documents ingested
+  - Fix: added `file_path = doc_dict.get("file_path", "")` to both batch functions
+- ✅ **Tests**: 197 tests passing (11 previously failing now fixed), 83% coverage
+- 📝 **Docs**: Updated CODE_REVIEW.md with v2.6 audit, mutable default arg finding
+
+### v2.5 (2026-02-28)
+
+- 🗂️ **NEW**: `ingest_project_directory` — recursively ingest an entire codebase into both GraphRAG and VectorRAG
+  - Respects `.gitignore` rules via `pathspec`
+  - Configurable file extension filter (default: `.py`, `.ts`, `.js`, `.md`, `.txt`, `.json`)
+  - Stores `file_path` metadata on every ingested document
+- 🔄 **NEW**: `sync_deleted_files` — remove stale database entries for files deleted from disk
+- 🗑️ **NEW**: `delete_all_data` — full database wipe across all projects and scopes
+- 🔧 `file_path` metadata field added to all single-document ingest tools
 
 ### v2.4 (2026-02-28)
 
