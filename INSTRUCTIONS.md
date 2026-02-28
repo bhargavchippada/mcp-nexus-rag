@@ -10,12 +10,12 @@ This submodule contains the FastMCP server (`server.py`) and supporting tests fo
 
 All services are declared in `docker-compose.yml` in this directory:
 
-| Service | Address | Auth |
-|---------|---------|------|
-| **Neo4j** | `bolt://localhost:7687` | `neo4j / password123` |
-| **Qdrant** | `http://localhost:6333` | — |
-| **Ollama** | `http://localhost:11434` | — |
-| **Postgres** | `localhost:5432` | `admin / password123` |
+| Service      | Address                  | Auth                  |
+| ------------ | ------------------------ | --------------------- |
+| **Neo4j**    | `bolt://localhost:7687`  | `neo4j / password123` |
+| **Qdrant**   | `http://localhost:6333`  | —                     |
+| **Ollama**   | `http://localhost:11434` | —                     |
+| **Postgres** | `localhost:5432`         | `admin / password123` |
 
 > Postgres is reserved for future pgvector use. The RAG server currently uses Neo4j + Qdrant only.
 
@@ -73,25 +73,25 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ### Ingestion
 
-| Tool | Arguments | Notes |
-|------|-----------|-------|
-| `ingest_graph_document` | `text, project_id, scope, source_identifier?` | Builds property graph in Neo4j |
+| Tool                     | Arguments                                     | Notes                                               |
+| ------------------------ | --------------------------------------------- | --------------------------------------------------- |
+| `ingest_graph_document`  | `text, project_id, scope, source_identifier?` | Builds property graph in Neo4j                      |
 | `ingest_vector_document` | `text, project_id, scope, source_identifier?` | Stores embedding in Qdrant (`nexus_rag` collection) |
 
 ### Retrieval
 
-| Tool | Arguments | Returns |
-|------|-----------|---------|
-| `get_graph_context` | `query, project_id, scope` | Relevant graph nodes as text |
+| Tool                 | Arguments                  | Returns                        |
+| -------------------- | -------------------------- | ------------------------------ |
+| `get_graph_context`  | `query, project_id, scope` | Relevant graph nodes as text   |
 | `get_vector_context` | `query, project_id, scope` | Relevant vector chunks as text |
 
 ### Tenant Management
 
-| Tool | Arguments | Returns |
-|------|-----------|---------|
-| `get_all_project_ids` | — | Sorted list of all distinct `project_id` values (merged from both DBs) |
-| `get_all_tenant_scopes` | `project_id?` | Sorted list of scopes; if `project_id` is given, only scopes for that project |
-| `delete_tenant_data` | `project_id, scope?` | Deletes all data for the project (or just one scope if `scope` is given). Returns `"Successfully deleted..."` or `"Partial failure deleting ...: Neo4j: ...; Qdrant: ..."` |
+| Tool                    | Arguments            | Returns                                                                                                                                                                    |
+| ----------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_all_project_ids`   | —                    | Sorted list of all distinct `project_id` values (merged from both DBs)                                                                                                     |
+| `get_all_tenant_scopes` | `project_id?`        | Sorted list of scopes; if `project_id` is given, only scopes for that project                                                                                              |
+| `delete_tenant_data`    | `project_id, scope?` | Deletes all data for the project (or just one scope if `scope` is given). Returns `"Successfully deleted..."` or `"Partial failure deleting ...: Neo4j: ...; Qdrant: ..."` |
 
 ---
 
@@ -115,7 +115,7 @@ docker-compose up -d
 
 ### Selective programmatic delete (via MCP tool)
 
-```
+```python
 delete_tenant_data(project_id="TRADING_BOT")              # wipe entire project
 delete_tenant_data(project_id="TRADING_BOT", scope="SYSTEM_LOGS")  # wipe one scope
 ```
@@ -143,22 +143,61 @@ Then open the printed URL in your browser to explore Neo4j relationships interac
 
 ## Helpful Commands
 
+### Development & Formatting
+
+```bash
+# Lint and fix Python code
+poetry run ruff check . --fix
+
+# Format Python code
+poetry run ruff format .
+
+# Check Markdown linting (pymarkdown + markdownlint)
+poetry run pymarkdown scan .
+npx markdownlint-cli .
+
+# Auto-format Markdown
+npx prettier --write .
+```
+
+### Docker Operations
+
 ```bash
 # Live container logs
 docker-compose logs -f
 
-# Check container health
+# Check container health and status
 docker-compose ps
 
+# Force recreate all containers (useful if images or env changed)
+docker-compose up -d --force-recreate
+```
+
+### Ollama Operations
+
+```bash
 # Test Ollama connectivity
 curl -X POST http://localhost:11434/api/generate \
   -d '{"model":"llama3.1:8b","prompt":"ping","stream":false}'
 
-# Inspect Postgres directly
-docker exec -it turiya-postgres psql -U admin -d turiya_memory
+# List downloaded models
+docker exec -it turiya-ollama ollama list
 
+# Manually pull a missing model
+docker exec -it turiya-ollama ollama pull llama3.1:8b
+```
+
+### Database Operations
+
+```bash
 # Inspect Qdrant collection points
 curl http://localhost:6333/collections/nexus_rag/points/count
+
+# Hard delete the entire Qdrant collection natively (bypass MCP tool)
+curl -X DELETE http://localhost:6333/collections/nexus_rag
+
+# Inspect Postgres directly
+docker exec -it turiya-postgres psql -U admin -d turiya_memory
 ```
 
 ---
@@ -186,13 +225,13 @@ Add to `claude_desktop_config.json` or Cursor MCP settings:
 
 ## Security & Design Notes
 
-| Topic | Decision |
-|-------|----------|
-| **Key injection** | Only `project_id`, `tenant_scope`, `source`, `content_hash` are accepted as Neo4j property names (`_ALLOWED_META_KEYS`). All others raise `ValueError`. |
-| **Thread safety** | `setup_settings()` uses a `threading.Lock` with double-checked locking — safe for concurrent MCP requests. |
-| **Collection name** | Hardcoded as `COLLECTION_NAME = "nexus_rag"` constant — single source of truth; no scattered string literals. |
+| Topic                | Decision                                                                                                                                                   |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Key injection**    | Only `project_id`, `tenant_scope`, `source`, `content_hash` are accepted as Neo4j property names (`_ALLOWED_META_KEYS`). All others raise `ValueError`.    |
+| **Thread safety**    | `setup_settings()` uses a `threading.Lock` with double-checked locking — safe for concurrent MCP requests.                                                 |
+| **Collection name**  | Hardcoded as `COLLECTION_NAME = "nexus_rag"` constant — single source of truth; no scattered string literals.                                              |
 | **Delete semantics** | Both Neo4j and Qdrant deletions run independently; partial failures are collected and returned as a descriptive error string rather than silently ignored. |
-| **No external APIs** | All LLM and embedding calls go to `localhost:11434`. Zero data exfiltration. |
+| **No external APIs** | All LLM and embedding calls go to `localhost:11434`. Zero data exfiltration.                                                                               |
 
 ---
 
@@ -208,18 +247,18 @@ Including `project_id` and `scope` in the hash means the same document in differ
 
 ### Per-backend strategy
 
-| Backend | Dedup mechanism | Where hash is stored |
-|---------|----------------|---------------------|
-| **Qdrant** (vector) | Scroll for `content_hash` + `project_id` + `tenant_scope` before embed | Qdrant point payload (`content_hash` field) |
-| **Neo4j** (graph) | Cypher `MATCH (n {content_hash, project_id, tenant_scope})` before LLM extraction | Node properties set by LlamaIndex metadata |
+| Backend             | Dedup mechanism                                                                   | Where hash is stored                        |
+| ------------------- | --------------------------------------------------------------------------------- | ------------------------------------------- |
+| **Qdrant** (vector) | Scroll for `content_hash` + `project_id` + `tenant_scope` before embed            | Qdrant point payload (`content_hash` field) |
+| **Neo4j** (graph)   | Cypher `MATCH (n {content_hash, project_id, tenant_scope})` before LLM extraction | Node properties set by LlamaIndex metadata  |
 
 ### Return values
 
-| Condition | Return string |
-|-----------|---------------|
-| New content | `"Successfully ingested ..."` |
+| Condition       | Return string                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------------ |
+| New content     | `"Successfully ingested ..."`                                                                          |
 | Duplicate found | `"Skipped: duplicate content already exists in [GraphRAG\|VectorRAG] for project '...', scope '...'."` |
-| Ingest error | `"Error ingesting ...: <exception>"` |
+| Ingest error    | `"Error ingesting ...: <exception>"`                                                                   |
 
 ### Fail-open behaviour
 

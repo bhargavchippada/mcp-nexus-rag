@@ -5,6 +5,7 @@ nexus.tools — All @mcp.tool() decorated functions.
 Imports are done from the nexus sub-modules; server.py is a thin wrapper
 that imports this module to register the tools on the shared mcp instance.
 """
+
 from typing import Optional
 
 from llama_index.core import Document
@@ -21,6 +22,7 @@ from nexus.indexes import get_graph_index, get_vector_index
 # ---------------------------------------------------------------------------
 # Input validation
 # ---------------------------------------------------------------------------
+
 
 def _validate_ingest_inputs(text: str, project_id: str, scope: str) -> Optional[str]:
     """Return an error string if any ingest input is empty, None otherwise.
@@ -45,6 +47,7 @@ def _validate_ingest_inputs(text: str, project_id: str, scope: str) -> Optional[
 # ---------------------------------------------------------------------------
 # Graph tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def ingest_graph_document(
@@ -125,7 +128,9 @@ async def get_graph_context(query: str, project_id: str, scope: str) -> str:
         if not nodes:
             return f"No Graph context found for {project_id} in scope {scope} for query: '{query}'"
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
-        return f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        return (
+            f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        )
     except Exception as e:
         logger.error(f"Error retrieving Graph context: {e}")
         return f"Error retrieving Graph context: {e}"
@@ -134,6 +139,7 @@ async def get_graph_context(query: str, project_id: str, scope: str) -> str:
 # ---------------------------------------------------------------------------
 # Vector tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def ingest_vector_document(
@@ -223,6 +229,7 @@ async def get_vector_context(query: str, project_id: str, scope: str) -> str:
 # ---------------------------------------------------------------------------
 # Metadata / admin tools
 # ---------------------------------------------------------------------------
+
 
 @mcp.tool()
 async def get_all_project_ids() -> list[str]:

@@ -10,7 +10,7 @@ All inference runs locally via Ollama — zero data leakage.
 
 ## Architecture
 
-```
+```text
 Agent (MCP Client)
        │
        ▼
@@ -21,19 +21,19 @@ Agent (MCP Client)
 
 ### Dual-Engine Design
 
-| Engine | Backend | Best For |
-|--------|---------|----------|
-| **GraphRAG** | Neo4j | Relationship traversal, architecture queries, entity linkage |
-| **Vector RAG** | Qdrant | Semantic similarity, code snippets, factual Q&A |
+| Engine         | Backend | Best For                                                     |
+| -------------- | ------- | ------------------------------------------------------------ |
+| **GraphRAG**   | Neo4j   | Relationship traversal, architecture queries, entity linkage |
+| **Vector RAG** | Qdrant  | Semantic similarity, code snippets, factual Q&A              |
 
 ### Multi-Tenant Isolation
 
 Every document and query carries two required metadata keys:
 
-| Key | Role | Examples |
-|-----|------|---------|
-| `project_id` | Top-level tenant namespace | `TRADING_BOT`, `WEB_PORTAL` |
-| `tenant_scope` | Domain within a project | `CORE_CODE`, `SYSTEM_LOGS`, `WEB_RESEARCH` |
+| Key            | Role                       | Examples                                   |
+| -------------- | -------------------------- | ------------------------------------------ |
+| `project_id`   | Top-level tenant namespace | `TRADING_BOT`, `WEB_PORTAL`                |
+| `tenant_scope` | Domain within a project    | `CORE_CODE`, `SYSTEM_LOGS`, `WEB_RESEARCH` |
 
 The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in both Neo4j Cypher and Qdrant scroll/delete — zero crosstalk between projects or scopes.
 
@@ -41,15 +41,15 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 
 ## MCP Tools
 
-| Tool | Description |
-|------|-------------|
-| `ingest_graph_document` | Ingest text into GraphRAG (Neo4j) |
-| `ingest_vector_document` | Ingest text into Vector RAG (Qdrant) |
-| `get_graph_context` | Query GraphRAG for a `(project_id, scope)` |
-| `get_vector_context` | Query Vector RAG for a `(project_id, scope)` |
-| `get_all_project_ids` | List all distinct project IDs across both DBs |
-| `get_all_tenant_scopes` | List all scopes (optionally filtered by `project_id`) |
-| `delete_tenant_data` | Delete all data for a `project_id`, or a `(project_id, scope)` |
+| Tool                     | Description                                                    |
+| ------------------------ | -------------------------------------------------------------- |
+| `ingest_graph_document`  | Ingest text into GraphRAG (Neo4j)                              |
+| `ingest_vector_document` | Ingest text into Vector RAG (Qdrant)                           |
+| `get_graph_context`      | Query GraphRAG for a `(project_id, scope)`                     |
+| `get_vector_context`     | Query Vector RAG for a `(project_id, scope)`                   |
+| `get_all_project_ids`    | List all distinct project IDs across both DBs                  |
+| `get_all_tenant_scopes`  | List all scopes (optionally filtered by `project_id`)          |
+| `delete_tenant_data`     | Delete all data for a `project_id`, or a `(project_id, scope)` |
 
 `delete_tenant_data` returns a **partial-failure message** if one backend fails (e.g. `"Partial failure deleting project 'X': Qdrant: timeout"`), never silently succeeding.
 
@@ -59,12 +59,12 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 
 Services are defined in `docker-compose.yml`:
 
-| Service | Address | Purpose |
-|---------|---------|---------|
-| **Neo4j** | `bolt://localhost:7687` | GraphRAG graph store |
-| **Qdrant** | `http://localhost:6333` | Vector store (`nexus_rag` collection) |
-| **Ollama** | `http://localhost:11434` | Local LLM + embeddings |
-| **Postgres** | `localhost:5432` | Reserved (pgvector, future) |
+| Service      | Address                  | Purpose                               |
+| ------------ | ------------------------ | ------------------------------------- |
+| **Neo4j**    | `bolt://localhost:7687`  | GraphRAG graph store                  |
+| **Qdrant**   | `http://localhost:6333`  | Vector store (`nexus_rag` collection) |
+| **Ollama**   | `http://localhost:11434` | Local LLM + embeddings                |
+| **Postgres** | `localhost:5432`         | Reserved (pgvector, future)           |
 
 Models auto-pulled by `ollama-init` on first start:
 

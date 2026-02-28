@@ -5,6 +5,7 @@ tests/conftest.py — Shared fixtures and mock helpers for the Nexus RAG test su
 Centralises the mock-builder functions previously duplicated between
 test_unit.py and test_integration.py so each test module stays lean.
 """
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -12,6 +13,7 @@ from unittest.mock import MagicMock
 # ---------------------------------------------------------------------------
 # Neo4j mock builders — re-usable across all test modules
 # ---------------------------------------------------------------------------
+
 
 def make_neo4j_driver(session_records=None):
     """Build a MagicMock Neo4j driver whose session.run() returns *session_records*.
@@ -54,6 +56,7 @@ def make_neo4j_driver_with_single(single_return):
 # ---------------------------------------------------------------------------
 # Pytest fixtures exposed to all test modules
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def mock_neo4j_driver(monkeypatch):

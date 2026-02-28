@@ -2,6 +2,7 @@
 """
 nexus.indexes — LlamaIndex settings bootstrap and index factories.
 """
+
 import threading
 
 from llama_index.core import PropertyGraphIndex, VectorStoreIndex, Settings
@@ -10,7 +11,6 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-import qdrant_client
 
 from nexus.backends.qdrant import get_client as get_qdrant_client
 
@@ -27,6 +27,7 @@ from nexus.config import (
 )
 
 import nest_asyncio
+
 nest_asyncio.apply()
 
 # ---------------------------------------------------------------------------
@@ -83,7 +84,9 @@ def get_graph_index() -> PropertyGraphIndex:
             llm=Settings.llm,
         )
     except Exception as e:
-        logger.warning(f"Could not load existing Graph index: {e}. Creating empty index.")
+        logger.warning(
+            f"Could not load existing Graph index: {e}. Creating empty index."
+        )
         return PropertyGraphIndex.from_documents(
             [],
             property_graph_store=graph_store,

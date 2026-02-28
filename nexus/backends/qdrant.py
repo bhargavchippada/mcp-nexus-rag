@@ -5,6 +5,7 @@ nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 Bug fix v1.7: QdrantClient is cached per URL via get_client() to avoid
 creating a new connection on every helper call (scroll, delete, dedup).
 """
+
 import logging
 import threading
 from typing import Optional

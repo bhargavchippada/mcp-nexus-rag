@@ -2,6 +2,7 @@
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
 """
+
 import logging
 
 from neo4j import GraphDatabase
@@ -91,7 +92,9 @@ def delete_data(project_id: str, scope: str = "") -> None:
         Exception: Propagated from the Neo4j driver on failure.
     """
     if scope:
-        cypher = "MATCH (n {project_id: $project_id, tenant_scope: $scope}) DETACH DELETE n"
+        cypher = (
+            "MATCH (n {project_id: $project_id, tenant_scope: $scope}) DETACH DELETE n"
+        )
         params = {"project_id": project_id, "scope": scope}
     else:
         cypher = "MATCH (n {project_id: $project_id}) DETACH DELETE n"

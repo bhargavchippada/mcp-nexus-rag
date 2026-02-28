@@ -1,4 +1,5 @@
 # Version: v1.7
+# ruff: noqa: E402
 """
 Nexus RAG MCP Server — entry point.
 
@@ -7,7 +8,9 @@ it imports nexus.tools (which registers all @mcp.tool() handlers on the
 shared FastMCP instance via side-effect) and exposes every public symbol
 for backward-compatible imports by test_rag.py / test_isolation.py.
 """
+
 import nest_asyncio
+
 nest_asyncio.apply()
 
 # Register all MCP tools (side-effect of import)

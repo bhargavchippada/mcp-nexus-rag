@@ -14,19 +14,20 @@ Covers:
 No live services required — all backends are mocked.
 asyncio_mode=auto (pyproject.toml) — no @pytest.mark.asyncio needed.
 """
-import pytest
+
 from unittest.mock import MagicMock, patch
 
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
 from nexus import indexes as nexus_indexes
 from nexus import tools as nexus_tools
-from tests.conftest import make_neo4j_driver, make_neo4j_driver_with_single
+from tests.conftest import make_neo4j_driver
 
 
 # ---------------------------------------------------------------------------
 # nexus.backends.neo4j — get_scopes_for_project
 # ---------------------------------------------------------------------------
+
 
 class TestGetScopesForProject:
     """Covers neo4j.py lines 66-77 (happy path + error branch)."""
@@ -39,7 +40,9 @@ class TestGetScopesForProject:
         assert set(result) == {"CORE_CODE", "SYSTEM_LOGS"}
 
     def test_returns_empty_list_on_connection_error(self):
-        with patch.object(neo4j_backend, "neo4j_driver", side_effect=Exception("bolt closed")):
+        with patch.object(
+            neo4j_backend, "neo4j_driver", side_effect=Exception("bolt closed")
+        ):
             result = neo4j_backend.get_scopes_for_project("ANY_PROJECT")
         assert result == []
 
@@ -62,6 +65,7 @@ class TestGetScopesForProject:
 # nexus.backends.neo4j — neo4j_driver() factory (line 25)
 # ---------------------------------------------------------------------------
 
+
 class TestNeo4jDriverFactory:
     """Exercises the neo4j_driver() function itself (GraphDatabase.driver call)."""
 
@@ -81,6 +85,7 @@ class TestNeo4jDriverFactory:
 # nexus.indexes — get_vector_index body (lines 100-103)
 # ---------------------------------------------------------------------------
 
+
 class TestGetVectorIndex:
     """Covers nexus/indexes.py lines 100-103 — ensure vector store wires correctly."""
 
@@ -89,10 +94,15 @@ class TestGetVectorIndex:
         mock_store = MagicMock()
         mock_index = MagicMock()
 
-        with patch.object(nexus_indexes, "setup_settings"), \
-             patch("nexus.indexes.qdrant_client.QdrantClient", return_value=mock_client), \
-             patch("nexus.indexes.QdrantVectorStore", return_value=mock_store), \
-             patch("nexus.indexes.VectorStoreIndex.from_vector_store", return_value=mock_index) as mock_factory:
+        with (
+            patch.object(nexus_indexes, "setup_settings"),
+            patch("nexus.indexes.get_qdrant_client", return_value=mock_client),
+            patch("nexus.indexes.QdrantVectorStore", return_value=mock_store),
+            patch(
+                "nexus.indexes.VectorStoreIndex.from_vector_store",
+                return_value=mock_index,
+            ) as mock_factory,
+        ):
             result = nexus_indexes.get_vector_index()
 
         mock_factory.assert_called_once_with(vector_store=mock_store)
@@ -101,10 +111,14 @@ class TestGetVectorIndex:
     def test_uses_default_qdrant_url(self):
         """collection_name and URL come from config constants."""
         mock_client = MagicMock()
-        with patch.object(nexus_indexes, "setup_settings"), \
-             patch("nexus.indexes.get_qdrant_client", return_value=mock_client) as mock_cls, \
-             patch("nexus.indexes.QdrantVectorStore"), \
-             patch("nexus.indexes.VectorStoreIndex.from_vector_store"):
+        with (
+            patch.object(nexus_indexes, "setup_settings"),
+            patch(
+                "nexus.indexes.get_qdrant_client", return_value=mock_client
+            ) as mock_cls,
+            patch("nexus.indexes.QdrantVectorStore"),
+            patch("nexus.indexes.VectorStoreIndex.from_vector_store"),
+        ):
             nexus_indexes.get_vector_index()
         _, kwargs = mock_cls.call_args
         assert kwargs["url"] == nexus_indexes.DEFAULT_QDRANT_URL
@@ -113,6 +127,7 @@ class TestGetVectorIndex:
 # ---------------------------------------------------------------------------
 # nexus.tools — get_graph_context result hit path (lines 127-128)
 # ---------------------------------------------------------------------------
+
 
 class TestGetGraphContextWithResults:
     """Covers tools.py lines 127-128: the successful retrieval with non-empty nodes."""
@@ -136,7 +151,9 @@ class TestGetGraphContextWithResults:
     async def test_get_graph_context_includes_project_and_scope(self):
         index = self._mock_index_with_content("data")
         with patch("nexus.tools.get_graph_index", return_value=index):
-            result = await nexus_tools.get_graph_context("query", "MY_PROJECT", "MY_SCOPE")
+            result = await nexus_tools.get_graph_context(
+                "query", "MY_PROJECT", "MY_SCOPE"
+            )
         assert "MY_PROJECT" in result
         assert "MY_SCOPE" in result
 
@@ -162,15 +179,20 @@ class TestGetGraphContextWithResults:
 # nexus.tools — ingest_graph_document metadata integrity
 # ---------------------------------------------------------------------------
 
+
 class TestIngestGraphMetadata:
     """Verifies all required metadata fields are present on inserted graph docs."""
 
     async def test_graph_doc_has_all_metadata_fields(self):
         mock_index = MagicMock()
-        with patch("nexus.tools.content_hash", return_value="GRAPHHASH99"), \
-             patch.object(neo4j_backend, "is_duplicate", return_value=False), \
-             patch("nexus.tools.get_graph_index", return_value=mock_index):
-            await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE", "test_source")
+        with (
+            patch("nexus.tools.content_hash", return_value="GRAPHHASH99"),
+            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_graph_index", return_value=mock_index),
+        ):
+            await nexus_tools.ingest_graph_document(
+                "text", "PROJ", "SCOPE", "test_source"
+            )
         doc = mock_index.insert.call_args[0][0]
         assert doc.metadata["project_id"] == "PROJ"
         assert doc.metadata["tenant_scope"] == "SCOPE"
@@ -179,10 +201,14 @@ class TestIngestGraphMetadata:
 
     async def test_vector_doc_source_identifier_stored(self):
         mock_index = MagicMock()
-        with patch("nexus.tools.content_hash", return_value="VH"), \
-             patch.object(qdrant_backend, "is_duplicate", return_value=False), \
-             patch("nexus.tools.get_vector_index", return_value=mock_index):
-            await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE", "my_source")
+        with (
+            patch("nexus.tools.content_hash", return_value="VH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_vector_index", return_value=mock_index),
+        ):
+            await nexus_tools.ingest_vector_document(
+                "text", "PROJ", "SCOPE", "my_source"
+            )
         doc = mock_index.insert.call_args[0][0]
         assert doc.metadata["source"] == "my_source"
 
@@ -190,6 +216,7 @@ class TestIngestGraphMetadata:
 # ---------------------------------------------------------------------------
 # nexus.tools — _validate_ingest_inputs edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestValidateIngestInputsEdgeCases:
     """Exhaustive whitespace checks not covered in test_unit.py."""
@@ -210,6 +237,7 @@ class TestValidateIngestInputsEdgeCases:
 # ---------------------------------------------------------------------------
 # nexus.backends.qdrant — scroll_field with empty collection
 # ---------------------------------------------------------------------------
+
 
 class TestScrollFieldEdgeCases:
     def test_empty_collection_returns_empty_set(self):
@@ -237,6 +265,7 @@ class TestScrollFieldEdgeCases:
 # nexus.indexes — inner double-checked lock guard (line 49)
 # ---------------------------------------------------------------------------
 
+
 class TestSetupSettingsInnerGuard:
     """Forces the inner ``if _settings_initialized: return`` branch (line 49).
 
@@ -261,20 +290,26 @@ class TestSetupSettingsInnerGuard:
 
         def thread_a():
             with nexus_indexes._settings_lock:
-                t_a_has_lock.set()      # signal B it can proceed
+                t_a_has_lock.set()  # signal B it can proceed
                 t_a_release.wait(timeout=3)  # wait for B to be ready
                 nexus_indexes._settings_initialized = True
             # lock released — B now enters
 
         def thread_b():
             try:
-                with patch("nexus.indexes.Ollama") as mock_llm, \
-                     patch("nexus.indexes.OllamaEmbedding") as mock_embed, \
-                     patch("nexus.indexes.SentenceSplitter"):
+                with (
+                    patch("nexus.indexes.Ollama") as mock_llm,
+                    patch("nexus.indexes.OllamaEmbedding") as mock_embed,
+                    patch("nexus.indexes.SentenceSplitter"),
+                ):
                     nexus_indexes.setup_settings()
                     # Inner guard fired — constructors must be uncalled
-                    assert mock_llm.call_count == 0, "Ollama was called despite inner guard"
-                    assert mock_embed.call_count == 0, "OllamaEmbedding was called despite inner guard"
+                    assert mock_llm.call_count == 0, (
+                        "Ollama was called despite inner guard"
+                    )
+                    assert mock_embed.call_count == 0, (
+                        "OllamaEmbedding was called despite inner guard"
+                    )
             except Exception as exc:
                 errors.append(exc)
 
@@ -289,9 +324,11 @@ class TestSetupSettingsInnerGuard:
 
             tb.start()
             # Give B time to pass the outer check and block on the lock
-            import time; time.sleep(0.05)
+            import time
 
-            t_a_release.set()   # let A set the flag and release
+            time.sleep(0.05)
+
+            t_a_release.set()  # let A set the flag and release
             ta.join(timeout=3)
             tb.join(timeout=3)
 
@@ -301,11 +338,10 @@ class TestSetupSettingsInnerGuard:
         assert not errors, f"thread_b raised: {errors[0]}"
 
 
-
-
 # ---------------------------------------------------------------------------
 # server — __main__ guard (line 54)
 # ---------------------------------------------------------------------------
+
 
 class TestServerMainGuard:
     def test_main_guard_calls_main(self):

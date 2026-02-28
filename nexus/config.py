@@ -2,6 +2,7 @@
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
+
 import logging
 import os
 
