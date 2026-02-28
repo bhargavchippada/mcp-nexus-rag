@@ -155,7 +155,7 @@ class TestDeleteTenantDataErrorReporting:
 class TestDeleteQdrantRaises:
     def test_qdrant_delete_propagates_on_error(self):
         """delete_data now re-raises so delete_tenant_data can catch it."""
-        # Must clear cache so _get_client actually tries to create a new client
+        # Must clear cache so get_client actually tries to create a new client
         qdrant_backend._client_cache.clear()
         with patch("qdrant_client.QdrantClient", side_effect=Exception("down")):
             with pytest.raises(Exception, match="down"):

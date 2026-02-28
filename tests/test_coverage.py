@@ -102,7 +102,7 @@ class TestGetVectorIndex:
         """collection_name and URL come from config constants."""
         mock_client = MagicMock()
         with patch.object(nexus_indexes, "setup_settings"), \
-             patch("nexus.indexes.qdrant_client.QdrantClient", return_value=mock_client) as mock_cls, \
+             patch("nexus.indexes.get_qdrant_client", return_value=mock_client) as mock_cls, \
              patch("nexus.indexes.QdrantVectorStore"), \
              patch("nexus.indexes.VectorStoreIndex.from_vector_store"):
             nexus_indexes.get_vector_index()
@@ -215,7 +215,7 @@ class TestScrollFieldEdgeCases:
     def test_empty_collection_returns_empty_set(self):
         mock_client = MagicMock()
         mock_client.scroll.side_effect = [([], None)]
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             result = qdrant_backend.scroll_field("project_id")
         assert result == set()
 
@@ -225,7 +225,7 @@ class TestScrollFieldEdgeCases:
         record.payload = {"project_id": None}
         mock_client = MagicMock()
         mock_client.scroll.side_effect = [([record], None)]
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             # None values ARE added — they're falsy but scroll_field only checks key presence
             # This test documents current behaviour explicitly
             result = qdrant_backend.scroll_field("project_id")

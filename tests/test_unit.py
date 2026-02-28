@@ -98,7 +98,7 @@ class TestScrollQdrantField:
         mock_client = MagicMock()
         mock_client.scroll.side_effect = [(page1, "cursor"), (page2, None)]
 
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             result = qdrant_backend.scroll_field("project_id")
 
         assert result == {"A", "B", "C"}
@@ -113,7 +113,7 @@ class TestScrollQdrantField:
         mock_client = MagicMock()
         mock_client.scroll.side_effect = [(records, None)]
 
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             result = qdrant_backend.scroll_field("project_id")
 
         assert result == {"FOUND"}
@@ -123,7 +123,7 @@ class TestScrollQdrantField:
         mock_client.scroll.side_effect = [([], None)]
         mock_filter = MagicMock()
 
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             qdrant_backend.scroll_field("project_id", qdrant_filter=mock_filter)
 
         _, kwargs = mock_client.scroll.call_args
@@ -131,7 +131,7 @@ class TestScrollQdrantField:
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — _get_client caching (Bug fix #2)
+# nexus.backends.qdrant — get_client caching (Bug fix #2)
 # ---------------------------------------------------------------------------
 
 class TestQdrantClientCache:
@@ -140,8 +140,8 @@ class TestQdrantClientCache:
         qdrant_backend._client_cache.clear()
         mock_client = MagicMock()
         with patch("qdrant_client.QdrantClient", return_value=mock_client) as mock_cls:
-            c1 = qdrant_backend._get_client("http://fake-qdrant:9999")
-            c2 = qdrant_backend._get_client("http://fake-qdrant:9999")
+            c1 = qdrant_backend.get_client("http://fake-qdrant:9999")
+            c2 = qdrant_backend.get_client("http://fake-qdrant:9999")
         # QdrantClient constructor should only be called once
         assert mock_cls.call_count == 1
         assert c1 is c2
@@ -152,8 +152,8 @@ class TestQdrantClientCache:
         mock_a = MagicMock()
         mock_b = MagicMock()
         with patch("qdrant_client.QdrantClient", side_effect=[mock_a, mock_b]):
-            ca = qdrant_backend._get_client("http://url-a")
-            cb = qdrant_backend._get_client("http://url-b")
+            ca = qdrant_backend.get_client("http://url-a")
+            cb = qdrant_backend.get_client("http://url-b")
         assert ca is mock_a
         assert cb is mock_b
         qdrant_backend._client_cache.clear()
@@ -194,7 +194,7 @@ class TestDeleteNeo4j:
 class TestDeleteQdrant:
     def test_without_scope_single_must_condition(self):
         mock_client = MagicMock()
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             qdrant_backend.delete_data("MY_PROJECT")
         must = mock_client.delete.call_args[1]["points_selector"].filter.must
         assert len(must) == 1
@@ -202,14 +202,14 @@ class TestDeleteQdrant:
 
     def test_with_scope_two_must_conditions(self):
         mock_client = MagicMock()
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             qdrant_backend.delete_data("MY_PROJECT", "MY_SCOPE")
         must = mock_client.delete.call_args[1]["points_selector"].filter.must
         assert len(must) == 2
         assert {c.key for c in must} == {"project_id", "tenant_scope"}
 
     def test_qdrant_error_is_propagated(self):
-        with patch.object(qdrant_backend, "_get_client", side_effect=Exception("timeout")):
+        with patch.object(qdrant_backend, "get_client", side_effect=Exception("timeout")):
             with pytest.raises(Exception, match="timeout"):
                 qdrant_backend.delete_data("PROJ")
 
@@ -468,23 +468,23 @@ class TestIsDuplicateQdrant:
     def test_returns_true_when_record_found(self):
         mock_client = MagicMock()
         mock_client.scroll.return_value = (["fake_record"], None)
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             assert qdrant_backend.is_duplicate("abc", "PROJ", "SCOPE") is True
 
     def test_returns_false_when_no_record(self):
         mock_client = MagicMock()
         mock_client.scroll.return_value = ([], None)
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             assert qdrant_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_fail_open_on_exception(self):
-        with patch.object(qdrant_backend, "_get_client", side_effect=Exception("timeout")):
+        with patch.object(qdrant_backend, "get_client", side_effect=Exception("timeout")):
             assert qdrant_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_scroll_uses_all_three_filters(self):
         mock_client = MagicMock()
         mock_client.scroll.return_value = ([], None)
-        with patch.object(qdrant_backend, "_get_client", return_value=mock_client):
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
             qdrant_backend.is_duplicate("HASH123", "MY_PROJ", "MY_SCOPE")
         _, kwargs = mock_client.scroll.call_args
         keys = {c.key for c in kwargs["scroll_filter"].must}

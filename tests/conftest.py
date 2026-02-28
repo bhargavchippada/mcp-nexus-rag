@@ -70,9 +70,9 @@ def mock_neo4j_driver(monkeypatch):
 
 @pytest.fixture()
 def mock_qdrant_client(monkeypatch):
-    """Fixture that injects a MagicMock QdrantClient into qdrant_backend._get_client."""
+    """Fixture that injects a MagicMock QdrantClient into qdrant_backend.get_client."""
     from nexus.backends import qdrant as qdrant_backend
 
     client = MagicMock()
-    monkeypatch.setattr(qdrant_backend, "_get_client", lambda *a, **kw: client)
+    monkeypatch.setattr(qdrant_backend, "get_client", lambda *a, **kw: client)
     return client

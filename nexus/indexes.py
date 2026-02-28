@@ -10,8 +10,9 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.qdrant import QdrantVectorStore
-
 import qdrant_client
+
+from nexus.backends.qdrant import get_client as get_qdrant_client
 
 from nexus.config import (
     DEFAULT_OLLAMA_URL,
@@ -98,6 +99,6 @@ def get_vector_index() -> VectorStoreIndex:
         VectorStoreIndex instance.
     """
     setup_settings()
-    client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
+    client = get_qdrant_client(url=DEFAULT_QDRANT_URL)
     vector_store = QdrantVectorStore(client=client, collection_name=COLLECTION_NAME)
     return VectorStoreIndex.from_vector_store(vector_store=vector_store)

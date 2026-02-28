@@ -2,7 +2,7 @@
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
-Bug fix v1.7: QdrantClient is cached per URL via _get_client() to avoid
+Bug fix v1.7: QdrantClient is cached per URL via get_client() to avoid
 creating a new connection on every helper call (scroll, delete, dedup).
 """
 import logging
@@ -27,7 +27,7 @@ _client_cache: dict[str, qdrant_client.QdrantClient] = {}
 _client_lock = threading.Lock()
 
 
-def _get_client(url: str = DEFAULT_QDRANT_URL) -> qdrant_client.QdrantClient:
+def get_client(url: str = DEFAULT_QDRANT_URL) -> qdrant_client.QdrantClient:
     """Return a cached QdrantClient for *url*, creating one on first call.
 
     Args:
@@ -57,7 +57,7 @@ def scroll_field(
         Set of unique string values found in the payload.
     """
     values: set[str] = set()
-    client = _get_client()
+    client = get_client()
     offset = None
     while True:
         records, offset = client.scroll(
@@ -107,7 +107,7 @@ def delete_data(project_id: str, scope: str = "") -> None:
         Exception: Propagated from the Qdrant client on failure.
     """
     try:
-        client = _get_client()
+        client = get_client()
         must_conditions: list = [
             qdrant_models.FieldCondition(
                 key="project_id",
@@ -147,7 +147,7 @@ def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
         True if a duplicate was found, False otherwise.
     """
     try:
-        client = _get_client()
+        client = get_client()
         records, _ = client.scroll(
             collection_name=COLLECTION_NAME,
             scroll_filter=qdrant_models.Filter(
