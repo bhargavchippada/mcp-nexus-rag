@@ -1,6 +1,8 @@
 import asyncio
 from server import ingest_graph_document, get_graph_context, ingest_vector_document, get_vector_context
+import pytest
 
+@pytest.mark.asyncio
 async def test_graph_rag():
     print("--- Testing GraphRAG ---")
     print("Testing Graph ingestion for TRADING_BOT...")
@@ -31,6 +33,7 @@ async def test_graph_rag():
     cross_context = await get_graph_context("bullish trends", "WEB_PORTAL", "WEB_RESEARCH")
     print(f"Graph Cross-Contamination Context:\n{cross_context}")
 
+@pytest.mark.asyncio
 async def test_vector_rag():
     print("\n--- Testing VectorRAG ---")
     print("Testing Vector ingestion for TRADING_BOT...")
