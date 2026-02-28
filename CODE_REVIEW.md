@@ -1,6 +1,6 @@
 # MCP Nexus RAG - Code Review Report
 
-**Version**: v1.2.0
+**Version**: v1.3.0
 **Review Date**: 2026-02-28
 **Reviewed By**: Ari (Antigravity AI Architect)
 **Status**: ✅ Production-Ready
@@ -15,12 +15,12 @@ The MCP Nexus RAG codebase is **well-architected, thoroughly tested, and product
 
 | Metric | Value | Assessment |
 |--------|-------|------------|
-| **Test Coverage** | 100% (121/121 tests passing) | ✅ Excellent |
+| **Test Coverage** | 100% (148/148 tests passing) | ✅ Excellent |
 | **Code Quality** | 0 linting issues (ruff) | ✅ Clean |
 | **Type Safety** | ~95% type hints | ✅ Very Good |
 | **Documentation** | Complete docstrings + INSTRUCTIONS.md | ✅ Comprehensive |
 | **Security** | Input validation + allowlists | ✅ Solid |
-| **Lines of Code** | ~800 (excluding tests) | ✅ Concise |
+| **Lines of Code** | ~900 (excluding tests) | ✅ Concise |
 
 ---
 
@@ -61,12 +61,13 @@ The MCP Nexus RAG codebase is **well-architected, thoroughly tested, and product
    - QdrantClient cached per URL for process lifetime
    - Batch ingestion tools (`ingest_graph_documents_batch`, `ingest_vector_documents_batch`) for 10-50x bulk throughput
    - Dedup scroll uses `limit=1, with_payload=False, with_vectors=False` — optimal
+   - Reranker singleton lazy-loaded on first call, FP16 enabled — ~110MB VRAM, amortized across all requests
 
 ---
 
-## Implemented Features (v1.9)
+## Implemented Features (v2.0)
 
-All previously recommended enhancements from v1.1 code review have been implemented:
+All previously recommended enhancements from v1.1 and v1.2 code reviews have been implemented:
 
 | Feature | Status | Location |
 |---------|--------|----------|
@@ -80,6 +81,10 @@ All previously recommended enhancements from v1.1 code review have been implemen
 | Production password warning comment | ✅ Implemented | `nexus/config.py` |
 | Troubleshooting guide | ✅ Implemented | `INSTRUCTIONS.md` |
 | Production deployment checklist | ✅ Implemented | `INSTRUCTIONS.md` |
+| **bge-reranker-v2-m3 cross-encoder reranking** | ✅ Implemented | `nexus/reranker.py`, `nexus/tools.py` |
+| **Configurable reranker env vars** | ✅ Implemented | `nexus/config.py` |
+| **Per-call `rerank` opt-out parameter** | ✅ Implemented | `nexus/tools.py` |
+| **Graceful reranker fallback on error** | ✅ Implemented | `nexus/tools.py` |
 
 ---
 
@@ -170,18 +175,7 @@ results = await asyncio.gather(*[_ingest_one(d, index, skip_duplicates) for d in
 
 ### 2. Configurable Retrieval Parameters ⚡
 
-**Current**: `top_k` and similarity threshold are hardcoded in LlamaIndex defaults.
-
-**Recommendation**: Expose as optional parameters on `get_graph_context` / `get_vector_context`:
-
-```python
-async def get_vector_context(
-    query: str,
-    project_id: str,
-    scope: str,
-    top_k: int = 5,
-) -> str:
-```
+**Status**: ✅ Partially implemented via reranker. `RERANKER_TOP_N` (default 5) and `RERANKER_CANDIDATE_K` (default 20) are now env-configurable. Direct `top_k` parameter on the tool signature remains optional.
 
 ---
 
@@ -243,7 +237,8 @@ def validate_production_config() -> None:
 | `test_integration.py` | 11 | Live-mock backend interactions |
 | `test_new_features.py` | 23 | Batch tools, stats, health check |
 | `test_isolation.py` | 1 | Cross-tenant isolation |
-| **Total** | **121** | **100% coverage** |
+| `test_reranker.py` | 27 | Reranker singleton, vector/graph integration, config |
+| **Total** | **148** | **100% coverage** |
 
 ### Additional Test Scenarios (Nice to Have)
 
@@ -293,7 +288,7 @@ CREATE INDEX IF NOT EXISTS FOR (n:__Node__) ON (n.project_id, n.tenant_scope)
 
 **Overall Grade**: A+ (Production Ready)
 
-The v1.9 codebase has addressed all high-priority recommendations from the v1.1 review. Architecture is clean, tests are comprehensive, and all major performance and observability features are implemented.
+The v2.0 codebase has addressed all high-priority recommendations from the v1.1 and v1.2 reviews. Architecture is clean, tests are comprehensive, and all major performance and observability features are implemented — including cross-encoder reranking via bge-reranker-v2-m3.
 
 **Remaining work** is strictly optional hardening (exception sanitization, input size limits, async batch parallelism) — none are blockers for production use.
 
@@ -302,4 +297,4 @@ The v1.9 codebase has addressed all high-priority recommendations from the v1.1 
 ---
 
 **Review Completed**: 2026-02-28
-**Next Review**: After v2.0 structural changes or new backend additions
+**Next Review**: After v2.1 structural changes or new backend additions

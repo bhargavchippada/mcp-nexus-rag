@@ -2,7 +2,7 @@
 
 This submodule contains the FastMCP server (`server.py`) and supporting tests for Multi-Tenant **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) context retrieval, powered by LlamaIndex + Ollama.
 
-**Current package version:** `v1.9` · **Test coverage:** 100% · **Tests:** 121 passed
+**Current package version:** `v2.0` · **Test coverage:** 100% · **Tests:** 148 passed
 
 ---
 
@@ -35,7 +35,8 @@ poetry install --with dev
 
 # Verify Ollama models are ready
 docker exec -it turiya-ollama ollama list
-# Expected: nomic-embed-text, llama3.1:8b, qllama/bge-reranker-v2-m3
+# Expected: nomic-embed-text, llama3.1:8b
+# Note: bge-reranker-v2-m3 is loaded from HuggingFace Hub at runtime (not via Ollama)
 ```
 
 ---
@@ -58,7 +59,7 @@ poetry run pytest tests/test_integration.py -v
 
 ```bash
 poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
-# Expected: 121 passed, 100% coverage
+# Expected: 148 passed, 100% coverage
 ```
 
 ### Run the MCP server interactively
@@ -84,10 +85,12 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ### Retrieval
 
-| Tool                 | Arguments                  | Returns                        |
-| -------------------- | -------------------------- | ------------------------------ |
-| `get_graph_context`  | `query, project_id, scope` | Relevant graph nodes as text   |
-| `get_vector_context` | `query, project_id, scope` | Relevant vector chunks as text |
+| Tool                 | Arguments                              | Returns                        |
+| -------------------- | -------------------------------------- | ------------------------------ |
+| `get_graph_context`  | `query, project_id, scope, rerank?`    | Relevant graph nodes as text, reranked by bge-reranker-v2-m3 |
+| `get_vector_context` | `query, project_id, scope, rerank?`    | Relevant vector chunks as text, reranked by bge-reranker-v2-m3 |
+
+**Reranker behaviour**: Both retrieval tools fetch `RERANKER_CANDIDATE_K` (default 20) candidates, then apply the `BAAI/bge-reranker-v2-m3` cross-encoder to return the top `RERANKER_TOP_N` (default 5). Pass `rerank=False` to skip reranking for a specific call. Set `RERANKER_ENABLED=false` env var to disable globally.
 
 ### Health & Diagnostics
 
@@ -287,6 +290,8 @@ docker-compose logs -f
 | Slow ingestion | `LLM_TIMEOUT` | 300s | Increase to 600s for large docs |
 | Slow retrieval | `CHUNK_SIZE` | 1024 | Reduce to 512 for faster queries |
 | High memory | `context_window` | 8192 | Reduce to 4096 if Ollama OOMs |
+| Slow reranking | `RERANKER_CANDIDATE_K` | 20 | Reduce to 10 for faster p50 latency |
+| Reranker OOM | `RERANKER_ENABLED` | true | Set `false` on CPU-only machines |
 
 ### Reset Procedures
 
@@ -331,6 +336,10 @@ docker-compose up -d
 | `CHUNK_OVERLAP` | Text splitter overlap | `128` | Keep at ~10% of chunk_size |
 | `EMBED_MODEL` | Ollama embedding model | `nomic-embed-text` | Production-ready ✅ |
 | `LLM_MODEL` | Ollama LLM model | `llama3.1:8b` | Production-ready ✅ |
+| `RERANKER_MODEL` | HuggingFace reranker model | `BAAI/bge-reranker-v2-m3` | Production-ready ✅ |
+| `RERANKER_TOP_N` | Reranker output count | `5` | Increase for broader context |
+| `RERANKER_CANDIDATE_K` | Retrieval candidate pool | `20` | Must be ≥ RERANKER_TOP_N |
+| `RERANKER_ENABLED` | Enable/disable reranker | `true` | Set `false` to skip (CPU-only envs) |
 
 ### Resource Requirements
 
