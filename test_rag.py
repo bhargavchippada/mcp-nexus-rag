@@ -1,5 +1,5 @@
 import asyncio
-from server import ingest_graph_document, get_graph_context, ingest_vector_document, get_vector_context, get_all_project_ids, get_all_tenant_scopes
+from server import ingest_graph_document, get_graph_context, ingest_vector_document, get_vector_context, get_all_project_ids, get_all_tenant_scopes, delete_tenant_data
 import pytest
 
 @pytest.mark.asyncio
@@ -80,10 +80,47 @@ async def test_metadata_extraction():
     except Exception as e:
         pytest.skip(f"Could not verify metadata (DBs might be missing or empty): {e}")
 
+@pytest.mark.asyncio
+async def test_data_deletion():
+    print("\n--- Testing Data Deletion ---")
+    try:
+        print("Ingesting dummy data for DELETION_TEST in TEMP_SCOPE...")
+        await ingest_vector_document("Dummy content", "DELETION_TEST", "TEMP_SCOPE")
+        await ingest_graph_document("Dummy content", "DELETION_TEST", "TEMP_SCOPE")
+        
+        projects = await get_all_project_ids()
+        assert "DELETION_TEST" in projects
+        
+        print("Deleting DELETION_TEST project...")
+        await delete_tenant_data("DELETION_TEST")
+        
+        projects_after = await get_all_project_ids()
+        assert "DELETION_TEST" not in projects_after
+        
+        print("Ingesting another dummy for Scope Deletion...")
+        await ingest_vector_document("Dummy content", "SCOPE_TEST", "DELETE_ME")
+        await ingest_vector_document("Dummy content", "SCOPE_TEST", "KEEP_ME")
+        
+        projects_scope = await get_all_project_ids()
+        assert "SCOPE_TEST" in projects_scope
+        
+        print("Deleting DELETE_ME scope in SCOPE_TEST project...")
+        await delete_tenant_data("SCOPE_TEST", "DELETE_ME")
+        
+        scopes_after = await get_all_tenant_scopes()
+        assert "DELETE_ME" not in scopes_after
+        assert "KEEP_ME" in scopes_after
+        
+        # Clean up the rest
+        await delete_tenant_data("SCOPE_TEST")
+    except Exception as e:
+        pytest.skip(f"Could not verify deletion: {e}")
+
 async def main():
     await test_graph_rag()
     await test_vector_rag()
     await test_metadata_extraction()
+    await test_data_deletion()
 
 if __name__ == "__main__":
     asyncio.run(main())

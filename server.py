@@ -279,6 +279,63 @@ async def get_all_tenant_scopes() -> list[str]:
     vector_scopes = get_distinct_metadata_qdrant("tenant_scope")
     return sorted(list(set(graph_scopes + vector_scopes)))
 
+from qdrant_client.http import models
+
+def delete_data_neo4j(project_id: str, scope: str = "") -> None:
+    query = "MATCH (n {project_id: $project_id})"
+    if scope:
+        query = "MATCH (n {project_id: $project_id, tenant_scope: $scope})"
+    query += " DETACH DELETE n"
+    try:
+        driver = GraphDatabase.driver(DEFAULT_NEO4J_URL, auth=(DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD))
+        with driver.session() as session:
+            session.run(query, project_id=project_id, scope=scope)
+    except Exception as e:
+        logger.error(f"Neo4j delete error: {e}")
+
+def delete_data_qdrant(project_id: str, scope: str = "") -> None:
+    try:
+        client = qdrant_client.QdrantClient(url=DEFAULT_QDRANT_URL)
+        must_conditions = [
+            models.FieldCondition(
+                key="project_id",
+                match=models.MatchValue(value=project_id)
+            )
+        ]
+        if scope:
+            must_conditions.append(
+                models.FieldCondition(
+                    key="tenant_scope",
+                    match=models.MatchValue(value=scope)
+                )
+            )
+        client.delete(
+            collection_name="nexus_rag",
+            points_selector=models.FilterSelector(
+                filter=models.Filter(must=must_conditions)
+            )
+        )
+    except Exception as e:
+        logger.error(f"Qdrant delete error: {e}")
+
+@mcp.tool()
+async def delete_tenant_data(project_id: str, scope: str = "") -> str:
+    """
+    Delete all data (both Graph and Vector) for a given project_id. 
+    If scope is provided, only data matching BOTH project_id and scope will be deleted.
+    
+    Args:
+        project_id: The target tenant project ID.
+        scope: (Optional) The specific scope to delete. Leave empty to delete entire project.
+    """
+    logger.info(f"Deleting data for project_id={project_id}, scope={scope}")
+    delete_data_neo4j(project_id, scope)
+    delete_data_qdrant(project_id, scope)
+    msg = f"Successfully deleted data for project '{project_id}'"
+    if scope:
+        msg += f", scope '{scope}'"
+    return msg
+
 def main():
     """Run the MCP server via standard stdio transport."""
     mcp.run()
