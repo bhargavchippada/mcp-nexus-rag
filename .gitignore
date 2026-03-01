@@ -16,3 +16,4 @@ htmlcov/
 .git_disabled/
 .mypy_cache/
 .ruff_cache/
+.cgr-hash-cache.json

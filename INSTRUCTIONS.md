@@ -418,3 +418,204 @@ If duplicates were ingested before v1.6, delete the project/scope and re-ingest:
 delete_tenant_data(project_id="MY_PROJECT")  # or with scope= for targeted cleanup
 # Then re-ingest — dedup will prevent recurrence
 ```
+
+---
+
+## Code-Graph-RAG Integration (v2.3)
+
+The **Code-Graph-RAG** system (`~/code-graph-rag`) provides AST-based code analysis complementing the semantic RAG in this project. While mcp-nexus-rag stores **semantic knowledge** (documentation, conversations, decisions), Code-Graph-RAG stores **structural code relationships** (function calls, class hierarchies, imports).
+
+### Architecture Overview
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Antigravity Workspace                           │
+├─────────────────────────────┬───────────────────────────────────────────┤
+│   mcp-nexus-rag (Semantic)  │      code-graph-rag (Structural)          │
+├─────────────────────────────┼───────────────────────────────────────────┤
+│ • Neo4j GraphRAG            │ • Memgraph (Cypher-compatible)            │
+│ • Qdrant Vector Store       │ • Tree-sitter AST parsing                 │
+│ • LlamaIndex + Ollama       │ • Function/Class/Module relationships     │
+│ • Semantic similarity       │ • CALLS, CONTAINS, IMPORTS edges          │
+│ • Document ingestion        │ • Real-time file watcher                  │
+└─────────────────────────────┴───────────────────────────────────────────┘
+
+Query Priority:
+1. code-graph-rag → "What functions call X?" (precise AST relationships)
+2. mcp-nexus-rag  → "How does authentication work?" (semantic context)
+```
+
+### Services
+
+| Service         | Address                 | Purpose                           |
+| --------------- | ----------------------- | --------------------------------- |
+| **Memgraph**    | `bolt://localhost:7688` | Code structure graph database     |
+| **Memgraph Lab**| `http://localhost:3000` | Graph visualization UI            |
+
+Start Code-Graph-RAG services:
+
+```bash
+cd ~/code-graph-rag
+docker-compose up -d
+```
+
+### Real-Time File Watcher
+
+The `realtime_updater.py` script watches a repository for file changes and updates the Memgraph database in real-time.
+
+```bash
+# Start watcher for mcp-nexus-rag
+cd ~/code-graph-rag
+source .venv/bin/activate
+python realtime_updater.py ~/antigravity/projects/mcp-nexus-rag --host localhost --port 7688
+```
+
+**Update Algorithm** (5-step process):
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     Real-Time Graph Update Steps                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│ Step 1: Delete all old data from the graph for this file                │
+│         - CYPHER_DELETE_MODULE: Remove Module nodes + children          │
+│         - Delete File nodes: Remove non-code file entries               │
+│                                                                         │
+│ Step 2: Clear in-memory state for the file                              │
+│         - Remove from AST cache and function registry                   │
+│                                                                         │
+│ Step 3: Re-parse the file (if modified/created)                         │
+│         - Build AST via Tree-sitter                                     │
+│         - Extract function/class/method definitions                     │
+│         - Create File node for ALL file types (.py, .md, .json, etc.)   │
+│                                                                         │
+│ Step 4: Reprocess ALL function calls across codebase                    │
+│         - Fixes "island problem" where cross-file references break      │
+│         - Ensures caller→callee relationships stay consistent           │
+│                                                                         │
+│ Step 5: Flush all changes to Memgraph                                   │
+│         - Batch write nodes and relationships                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Known Issues & Fixes
+
+#### Issue 1: Spurious Event Handling (Fixed in PR #405)
+
+**Symptom**: Files mysteriously disappear from the graph after opening them in an IDE.
+
+**Root Cause**: Read-only filesystem events (`opened`, `closed_no_write`) triggered the deletion step but not the recreation step, since Step 3 only runs for `MODIFIED`/`CREATED` events.
+
+**Fix**: Filter events at dispatch entry point:
+
+```python
+relevant_events = {EventType.MODIFIED, EventType.CREATED, "deleted"}
+if event.event_type not in relevant_events:
+    return
+```
+
+#### Issue 2: Non-Code Files Not Indexed in Real-Time (Fixed in PR #405)
+
+**Symptom**: Creating a `.md` or `.json` file doesn't add it to the graph.
+
+**Root Cause**: Step 3 only processed files with recognized language configs (Python, JS, etc.). Non-code files were only indexed during initial full scan.
+
+**Fix**: Added `process_generic_file()` call for ALL file types:
+
+```python
+# Create File node for ALL files (code and non-code)
+self.updater.factory.structure_processor.process_generic_file(path, path.name)
+```
+
+#### Issue 3: Non-Code File Deletion Not Reflected (Fixed in PR #405)
+
+**Symptom**: Deleting a `.md` file leaves a stale entry in the graph.
+
+**Root Cause**: `CYPHER_DELETE_MODULE` only deletes `Module` nodes (for code files). `File` nodes (used for non-code files) were never deleted.
+
+**Fix**: Added explicit File node deletion:
+
+```python
+ingestor.execute_write(
+    "MATCH (f:File {path: $path}) DETACH DELETE f", {KEY_PATH: relative_path_str}
+)
+```
+
+### Hash Cache Behavior
+
+The watcher maintains a hash cache (`.cgr-hash-cache.json`) to skip unchanged files during startup.
+
+**Common issue**: Stale hash cache causes "Found 0 functions/methods" during initial scan.
+
+**Solution**:
+
+```bash
+rm -f ~/antigravity/projects/mcp-nexus-rag/.cgr-hash-cache.json
+# Restart watcher for full re-index
+```
+
+### Configuration
+
+Code-Graph-RAG uses the same port scheme as mcp-nexus-rag for consistency:
+
+| Variable            | Default | Description                          |
+| ------------------- | ------- | ------------------------------------ |
+| `MEMGRAPH_PORT`     | `7688`  | Bolt protocol port (mapped from 7687)|
+| `MEMGRAPH_HTTP_PORT`| `7445`  | HTTP API port                        |
+| `LAB_PORT`          | `3000`  | Memgraph Lab UI port                 |
+
+**docker-compose.yaml** (code-graph-rag):
+
+```yaml
+services:
+  memgraph:
+    image: memgraph/memgraph-mage
+    ports:
+      - "${MEMGRAPH_PORT:-7688}:7687"
+      - "${MEMGRAPH_HTTP_PORT:-7445}:7444"
+  lab:
+    image: memgraph/lab
+    ports:
+      - "${LAB_PORT:-3000}:3000"
+    environment:
+      QUICK_CONNECT_MG_HOST: memgraph
+```
+
+### Cypher Query Examples
+
+```cypher
+-- List all indexed projects
+MATCH (p:Project) RETURN p.name;
+
+-- Find functions in a module
+MATCH (m:Module)-[:CONTAINS]->(f:Function)
+WHERE m.path CONTAINS 'server.py'
+RETURN f.name, f.qualified_name;
+
+-- Find all callers of a function
+MATCH (caller)-[:CALLS]->(f:Function {name: 'ingest_document'})
+RETURN caller.qualified_name;
+
+-- Get function hierarchy for a file
+MATCH (m:Module {path: 'nexus/tools.py'})-[:CONTAINS*]->(n)
+RETURN n.name, labels(n);
+
+-- List all File nodes (including non-code)
+MATCH (f:File) RETURN f.name, f.path ORDER BY f.path;
+```
+
+### Code-Graph-RAG Troubleshooting
+
+| Symptom                            | Cause                    | Solution                                        |
+| ---------------------------------- | ------------------------ | ----------------------------------------------- |
+| "Found 0 functions/methods"        | Stale hash cache         | Delete `.cgr-hash-cache.json` and restart       |
+| Files not appearing after creation | Watcher not running      | Check `ps aux \| grep realtime_updater`         |
+| Graph shows stale deleted files    | Old bug before PR #405   | Update code-graph-rag and re-index              |
+| Connection refused on 7688         | Memgraph not running     | `docker-compose up -d` in code-graph-rag        |
+| IDE triggers false deletions       | Old bug before PR #405   | Update to include event filtering fix           |
+
+### Upstream Contribution
+
+Bug fixes for Code-Graph-RAG are contributed back to the open-source project:
+
+- **Repository**: [vitali87/code-graph-rag](https://github.com/vitali87/code-graph-rag)
+- **PR #405**: fix(realtime): handle non-code files and filter spurious events
