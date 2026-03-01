@@ -14,3 +14,5 @@ logs/
 .coverage
 htmlcov/
 .git_disabled/
+.mypy_cache/
+.ruff_cache/
