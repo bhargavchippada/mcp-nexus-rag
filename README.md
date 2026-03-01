@@ -364,6 +364,139 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ---
 
+## Code-Graph-RAG Integration
+
+The Antigravity workspace also integrates [Code-Graph-RAG](https://github.com/vitali87/code-graph-rag) — a graph-based RAG system for codebase analysis using Memgraph and Tree-sitter parsing.
+
+### Architecture Overview
+
+```text
+┌─────────────────────────────────────────────────────────────────┐
+│                    Antigravity Agent Ecosystem                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   ┌───────────────────┐         ┌───────────────────┐          │
+│   │   MCP Nexus RAG   │         │  Code-Graph-RAG   │          │
+│   │   (Memory/RAG)    │         │  (Code Analysis)  │          │
+│   └────────┬──────────┘         └────────┬──────────┘          │
+│            │                             │                      │
+│   ┌────────┴──────────┐         ┌────────┴──────────┐          │
+│   │ Neo4j   │ Qdrant  │         │     Memgraph      │          │
+│   │ :7687   │ :6333   │         │      :7688        │          │
+│   └─────────┴─────────┘         └───────────────────┘          │
+│            │                             │                      │
+│            └─────────────┬───────────────┘                      │
+│                          │                                      │
+│                    ┌─────┴─────┐                                │
+│                    │  Ollama   │                                │
+│                    │  :11434   │                                │
+│                    └───────────┘                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+| System | Purpose | Port |
+|--------|---------|------|
+| **Nexus RAG** | Semantic memory, knowledge graphs, document retrieval | Neo4j :7687, Qdrant :6333 |
+| **Code-Graph-RAG** | AST-based code analysis, function/class relationships | Memgraph :7688 |
+
+### Setup Code-Graph-RAG for Antigravity
+
+**Prerequisites:**
+- Code-Graph-RAG cloned to `~/code-graph-rag`
+- `uv` package manager installed
+
+**1. Start Memgraph (standalone container):**
+
+```bash
+docker run -d --name memgraph-cgr \
+  -p 7688:7687 -p 7445:7444 \
+  --restart unless-stopped \
+  memgraph/memgraph-mage
+```
+
+**2. Index the Antigravity codebase:**
+
+```bash
+cd ~/code-graph-rag
+MEMGRAPH_PORT=7688 uv run cgr start \
+  --repo-path ~/antigravity \
+  --update-graph --clean
+```
+
+**3. Verify indexing:**
+
+```bash
+MEMGRAPH_PORT=7688 uv run cgr export -o /tmp/graph.json
+# Should show nodes and relationships count
+```
+
+### MCP Configuration
+
+Add to Claude Code (`~/.claude.json`) or Gemini (`~/.gemini/antigravity/mcp_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "code-graph-rag": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/home/turiya/code-graph-rag",
+        "code-graph-rag",
+        "mcp-server"
+      ],
+      "env": {
+        "TARGET_REPO_PATH": "/home/turiya/antigravity",
+        "CYPHER_PROVIDER": "ollama",
+        "CYPHER_MODEL": "llama3.1:8b",
+        "ORCHESTRATOR_PROVIDER": "ollama",
+        "ORCHESTRATOR_MODEL": "llama3.1:8b",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "MEMGRAPH_PORT": "7688"
+      }
+    }
+  }
+}
+```
+
+### Code-Graph-RAG MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_projects` | List all indexed projects |
+| `index_repository` | Re-index the codebase |
+| `query_code_graph` | Natural language queries: *"What functions call X?"* |
+| `get_code_snippet` | Get source code by qualified name |
+| `surgical_replace_code` | Precise code block replacement |
+| `read_file` / `write_file` | File operations |
+
+### Example Queries
+
+```
+> What classes are in the nexus module?
+> Show me functions that handle ingestion
+> Find all methods that call neo4j_driver
+> What does the answer_query function do?
+```
+
+### Quick Startup Script
+
+Use the automation script to start all services after a reboot:
+
+```bash
+# Start all Antigravity AI services
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh
+
+# Check status
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --status
+
+# Re-index antigravity codebase
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --reindex
+```
+
+---
+
 ## Recent Updates
 
 ### v2.6 (2026-02-28)
