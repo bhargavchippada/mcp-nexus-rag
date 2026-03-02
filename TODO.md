@@ -2,18 +2,23 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v1.0
+**Version:** v1.1
 
 ## Hardening
 
 - [ ] Exception message sanitization (return generic errors to client)
-- [ ] Move httpx import to module level
-- [ ] Fix mutable default argument in `ingest_project_directory`
+- [x] Move httpx import to module level (fixed 2026-03-01)
+- [x] Fix mutable default argument in `ingest_project_directory` (fixed 2026-03-01)
 - [ ] Per-tenant rate limiting (optional)
 
 ## Performance
 
 - [ ] Async batch parallelism with `asyncio.gather()`
+
+## Refactoring
+
+- [ ] [MED] Refactor `answer_query` — complexity 21 > 10 (ruff C901)
+- [ ] [LOW] Consider splitting tools.py (1519 lines) into logical modules
 
 ## Features
 

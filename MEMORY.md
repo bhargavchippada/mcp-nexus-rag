@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v2.7
+**Version:** v2.9
 
 ## Known Issues
 
@@ -12,19 +12,19 @@
   - Issue: Exception strings may leak internal paths or library versions
   - Recommendation: Log full exception server-side, return sanitized message to client
 
-- **Late httpx import in health_check()** (tools.py)
-  - Issue: Import inside function body breaks static analysis
-  - Fix: Move to module-level imports
+- **`answer_query` complexity** (C901: 21 > 10)
+  - Issue: Function too complex, hard to maintain
+  - Recommendation: Extract inner `_fetch_graph` and `_fetch_vector` as module-level helpers
 
 ### Low Priority
-
-- **Mutable default argument** in `ingest_project_directory`
-  - Issue: `include_extensions: list[str] = [...]` is a Python anti-pattern
-  - Fix: Use `Optional[list[str]] = None` and assign inside function
 
 - **No per-tenant rate limiting**
   - Issue: Single tenant can flood ingestion pipeline
   - Recommendation: In-memory rate limiter keyed by `project_id`
+
+- **tools.py is 1519 lines**
+  - Issue: Single file contains all MCP tools
+  - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Key Findings
 
@@ -48,7 +48,64 @@
 - Same document in different projects/scopes is never treated as duplicate
 - `doc_id = content_hash` ensures Qdrant upserts rather than appends
 
+### Qdrant Indexing Behavior
+
+- `indexed_vectors_count=0` is **expected** for collections < `full_scan_threshold` (10,000)
+- Qdrant uses linear scan for small collections — faster than HNSW for < 10k points
+- HNSW index builds automatically when collection grows past threshold
+- Vectors are fully stored and searchable regardless of `indexed_vectors_count`
+
+## Lessons Learned (Post-Fix Documentation)
+
+### 2026-03-01 — Late imports anti-pattern (FIXED)
+
+**Root Cause:** `import httpx` placed inside function body instead of module level, breaking static analysis and IDE support.
+
+**Fix Applied:** Moved httpx import to module level (line 14). Removed duplicate imports from `answer_query()` and `health_check()`.
+
+**Prevention Guideline:** All imports at module level. Only use late imports for optional heavy dependencies with clear fallback.
+
+> **Lint Rule:** ruff E402 catches imports not at top of file.
+
+### 2026-03-01 — Mutable default argument (FIXED)
+
+**Root Cause:** `include_extensions: list[str] = [...]` creates a single list object shared across all calls.
+
+**Fix Applied:** Changed to `Optional[list[str]] = None` with explicit copy inside function body.
+
+**Prevention Guideline:** Never use mutable objects (list, dict, set) as default arguments. Use `None` and create inside function.
+
+> **Lint Rule:** ruff B006 catches mutable default arguments.
+
+---
+
 ## Changelog
+
+### v2.9 — 2026-03-01
+
+- **FIXED:** Late httpx imports moved to module level (tools.py:14)
+- **FIXED:** Mutable default argument in `ingest_project_directory`
+- **Added:** `DEFAULT_INCLUDE_EXTENSIONS` constant for code clarity
+- Tests: 197 passed in 2.25s
+
+### v2.8 — 2026-03-01
+
+- **RAG Reset & Rebuild:** Full reset of Neo4j (21,355 nodes) and Qdrant stores
+- **Core Documentation Focus:** Removed SKILL/CHAT scopes, now ingests only:
+  - Project files: README.md, MEMORY.md, AGENTS.md, TODO.md
+  - Persona files: CLAUDE.md, mission.md, .claude/persona/GEMINI.md
+- **New module: nexus/sync.py** — Pattern-based file synchronization
+  - `get_core_doc_files()` — Scan workspace for core docs
+  - `check_file_changed()` — Content-hash based change detection
+  - `get_files_needing_sync()` — Return files needing re-ingestion
+  - `delete_stale_files()` — Remove docs for deleted files
+- **New MCP tools:**
+  - `sync_project_files` — Sync core documentation with dedup
+  - `list_core_doc_files` — List files that would be synced
+  - `cache_stats` — Redis cache statistics
+- **Timestamp support:** `_make_metadata()` helper adds `created_at`/`updated_at`
+- **Qdrant clarification:** `indexed_vectors_count=0` is expected for collections < 10,000 points (uses efficient linear scan)
+- Tests: 197 passed, lint clean
 
 ### v2.7 — 2026-03-01
 

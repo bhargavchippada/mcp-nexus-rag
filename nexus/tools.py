@@ -1,4 +1,4 @@
-# Version: v2.7
+# Version: v2.9
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import pathspec
+import httpx
 
 from llama_index.core import Document
 from llama_index.core.schema import QueryBundle
@@ -31,6 +32,8 @@ from nexus.backends import qdrant as qdrant_backend
 from nexus.indexes import get_graph_index, get_vector_index
 from nexus.reranker import get_reranker
 from nexus.chunking import needs_chunking, chunk_document
+from nexus import sync as sync_module
+from nexus import cache as cache_module
 
 
 # ---------------------------------------------------------------------------
@@ -164,13 +167,9 @@ async def ingest_graph_document(
                 doc = Document(
                     text=chunk,
                     doc_id=chash,
-                    metadata={
-                        "project_id": project_id,
-                        "tenant_scope": scope,
-                        "source": chunk_source,
-                        "content_hash": chash,
-                        "file_path": file_path,
-                    },
+                    metadata=_make_metadata(
+                        project_id, scope, chunk_source, chash, file_path
+                    ),
                 )
                 index.insert(doc)
                 ingested += 1
@@ -203,13 +202,9 @@ async def ingest_graph_document(
         doc = Document(
             text=text,
             doc_id=chash,
-            metadata={
-                "project_id": project_id,
-                "tenant_scope": scope,
-                "source": source_identifier,
-                "content_hash": chash,
-                "file_path": file_path,
-            },
+            metadata=_make_metadata(
+                project_id, scope, source_identifier, chash, file_path
+            ),
         )
         index.insert(doc)
         return f"Successfully ingested Graph document for '{project_id}' in scope '{scope}'."
@@ -295,13 +290,9 @@ async def ingest_graph_documents_batch(
                     doc = Document(
                         text=chunk,
                         doc_id=chash,
-                        metadata={
-                            "project_id": project_id,
-                            "tenant_scope": scope,
-                            "source": chunk_source,
-                            "content_hash": chash,
-                            "file_path": file_path,
-                        },
+                        metadata=_make_metadata(
+                            project_id, scope, chunk_source, chash, file_path
+                        ),
                     )
                     index.insert(doc)
                     ingested += 1
@@ -318,13 +309,9 @@ async def ingest_graph_documents_batch(
             doc = Document(
                 text=text,
                 doc_id=chash,
-                metadata={
-                    "project_id": project_id,
-                    "tenant_scope": scope,
-                    "source": source_identifier,
-                    "content_hash": chash,
-                    "file_path": file_path,
-                },
+                metadata=_make_metadata(
+                    project_id, scope, source_identifier, chash, file_path
+                ),
             )
             index.insert(doc)
             ingested += 1
@@ -479,13 +466,9 @@ async def ingest_vector_document(
                 doc = Document(
                     text=chunk,
                     doc_id=chash,
-                    metadata={
-                        "project_id": project_id,
-                        "tenant_scope": scope,
-                        "source": chunk_source,
-                        "content_hash": chash,
-                        "file_path": file_path,
-                    },
+                    metadata=_make_metadata(
+                        project_id, scope, chunk_source, chash, file_path
+                    ),
                 )
                 index.insert(doc)
                 ingested += 1
@@ -518,13 +501,9 @@ async def ingest_vector_document(
         doc = Document(
             text=text,
             doc_id=chash,
-            metadata={
-                "project_id": project_id,
-                "tenant_scope": scope,
-                "source": source_identifier,
-                "content_hash": chash,
-                "file_path": file_path,
-            },
+            metadata=_make_metadata(
+                project_id, scope, source_identifier, chash, file_path
+            ),
         )
         index.insert(doc)
         return f"Successfully ingested Vector document for '{project_id}' in scope '{scope}'."
@@ -610,13 +589,9 @@ async def ingest_vector_documents_batch(
                     doc = Document(
                         text=chunk,
                         doc_id=chash,
-                        metadata={
-                            "project_id": project_id,
-                            "tenant_scope": scope,
-                            "source": chunk_source,
-                            "content_hash": chash,
-                            "file_path": file_path,
-                        },
+                        metadata=_make_metadata(
+                            project_id, scope, chunk_source, chash, file_path
+                        ),
                     )
                     index.insert(doc)
                     ingested += 1
@@ -635,13 +610,9 @@ async def ingest_vector_documents_batch(
             doc = Document(
                 text=text,
                 doc_id=chash,
-                metadata={
-                    "project_id": project_id,
-                    "tenant_scope": scope,
-                    "source": source_identifier,
-                    "content_hash": chash,
-                    "file_path": file_path,
-                },
+                metadata=_make_metadata(
+                    project_id, scope, source_identifier, chash, file_path
+                ),
             )
             index.insert(doc)
             ingested += 1
@@ -769,7 +740,6 @@ async def answer_query(
         LLM-generated answer string, or an error message if generation fails.
     """
     import asyncio
-    import httpx
 
     from nexus.config import DEFAULT_LLM_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_LLM_TIMEOUT
 
@@ -936,8 +906,6 @@ async def health_check() -> dict[str, str]:
     Returns:
         Dictionary with status of each service: "ok" or error message.
     """
-    import httpx
-
     status = {}
 
     # Check Neo4j
@@ -1284,12 +1252,15 @@ async def delete_all_data() -> str:
     return "Successfully deleted ALL data from GraphRAG (Neo4j) and VectorRAG (Qdrant)."
 
 
+DEFAULT_INCLUDE_EXTENSIONS = [".py", ".ts", ".js", ".md", ".txt", ".json"]
+
+
 @mcp.tool()
 async def ingest_project_directory(
     directory_path: str,
     project_id: str,
     scope: str,
-    include_extensions: list[str] = [".py", ".ts", ".js", ".md", ".txt", ".json"],
+    include_extensions: Optional[list[str]] = None,
     auto_chunk: bool = True,
 ) -> str:
     """Recursively ingest a project directory into both GraphRAG and VectorRAG.
@@ -1302,8 +1273,12 @@ async def ingest_project_directory(
         project_id: Tenant project ID.
         scope: Tenant scope.
         include_extensions: List of file extensions to include (e.g. ['.py', '.ts']).
+            Defaults to ['.py', '.ts', '.js', '.md', '.txt', '.json'].
         auto_chunk: Whether to chunk large files.
     """
+    if include_extensions is None:
+        include_extensions = DEFAULT_INCLUDE_EXTENSIONS.copy()
+
     base_path = Path(directory_path)
     if not base_path.is_dir():
         return f"Error: {directory_path} is not a directory."
@@ -1418,3 +1393,132 @@ async def sync_deleted_files(
     if errors:
         res += "\nErrors occurred during sync:\n" + "\n".join(errors[:10])
     return res
+
+
+@mcp.tool()
+async def sync_project_files(
+    workspace_root: str = "/home/turiya/antigravity",
+    dry_run: bool = False,
+) -> str:
+    """Sync all core documentation files from the workspace into RAG.
+
+    Scans the workspace for core documentation files (README.md, MEMORY.md,
+    AGENTS.md, TODO.md) in each project and persona files at workspace level.
+    Uses content hashing to skip unchanged files.
+
+    Args:
+        workspace_root: Path to antigravity workspace root (default: /home/turiya/antigravity).
+        dry_run: If True, only report what would be synced without actually ingesting.
+
+    Returns:
+        Summary of files synced or needing sync.
+    """
+    files_to_sync = sync_module.get_files_needing_sync(workspace_root)
+
+    if not files_to_sync:
+        return "All core documentation files are up to date. Nothing to sync."
+
+    if dry_run:
+        lines = ["Files needing sync (dry run):"]
+        for f in files_to_sync:
+            lines.append(f"  - {f['source']} ({f['project_id']}/{f['scope']})")
+        return "\n".join(lines)
+
+    # Perform sync
+    ingested = 0
+    errors = []
+
+    for f in files_to_sync:
+        filepath = f["filepath"]
+        try:
+            content = filepath.read_text(encoding="utf-8")
+
+            # Delete old version first (by filepath)
+            try:
+                neo4j_backend.delete_by_filepath(
+                    f["project_id"], str(filepath), f["scope"]
+                )
+                qdrant_backend.delete_by_filepath(
+                    f["project_id"], str(filepath), f["scope"]
+                )
+            except Exception:
+                pass  # Ignore if not exists
+
+            # Ingest to both stores
+            graph_result = await ingest_graph_document(
+                text=content,
+                project_id=f["project_id"],
+                scope=f["scope"],
+                source_identifier=f["source"],
+                file_path=str(filepath),
+            )
+            vector_result = await ingest_vector_document(
+                text=content,
+                project_id=f["project_id"],
+                scope=f["scope"],
+                source_identifier=f["source"],
+                file_path=str(filepath),
+            )
+
+            if "Successfully" in graph_result and "Successfully" in vector_result:
+                ingested += 1
+                logger.info(f"Synced: {f['source']}")
+            else:
+                errors.append(
+                    f"{f['source']}: graph={graph_result[:50]}, vector={vector_result[:50]}"
+                )
+
+        except Exception as e:
+            errors.append(f"{f['source']}: {e}")
+            logger.error(f"Sync error for {f['source']}: {e}")
+
+    result = f"Synced {ingested} of {len(files_to_sync)} files."
+    if errors:
+        result += f"\n\nErrors ({len(errors)}):\n" + "\n".join(errors[:10])
+
+    return result
+
+
+@mcp.tool()
+async def list_core_doc_files(
+    workspace_root: str = "/home/turiya/antigravity",
+) -> str:
+    """List all core documentation files that would be tracked for sync.
+
+    Args:
+        workspace_root: Path to antigravity workspace root.
+
+    Returns:
+        List of files with their project_id and scope.
+    """
+    files = sync_module.get_core_doc_files(workspace_root)
+
+    if not files:
+        return "No core documentation files found."
+
+    lines = [f"Found {len(files)} core documentation files:"]
+    for f in files:
+        lines.append(f"  - {f['source']} ({f['project_id']}/{f['scope']})")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def cache_stats() -> str:
+    """Get Redis cache statistics for the semantic cache.
+
+    Returns:
+        Cache status including key count, memory usage, and TTL settings.
+    """
+    stats = cache_module.cache_stats()
+
+    lines = ["Redis Cache Stats:"]
+    lines.append(f"  Enabled: {stats.get('enabled', False)}")
+    lines.append(f"  TTL: {stats.get('ttl_seconds', 0)} seconds")
+    lines.append(f"  Nexus Keys: {stats.get('nexus_keys', 0)}")
+    lines.append(f"  Memory: {stats.get('used_memory_human', 'unknown')}")
+
+    if "error" in stats:
+        lines.append(f"  Error: {stats['error']}")
+
+    return "\n".join(lines)
