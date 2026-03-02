@@ -1,5 +1,9 @@
 # MCP Nexus RAG
 
+<!-- Executive summary: tech stack, mission, architecture -->
+
+> See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
+
 Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
@@ -347,8 +351,9 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 ## Documentation
 
-- **[INSTRUCTIONS.md](INSTRUCTIONS.md)** - Infrastructure ops, troubleshooting, production deployment
-- **[CODE_REVIEW.md](CODE_REVIEW.md)** - Comprehensive code review, security analysis, improvement recommendations
+- **[AGENTS.md](AGENTS.md)** - Commands for testing, building, and running
+- **[MEMORY.md](MEMORY.md)** - Known bugs, key findings, changelog
+- **[TODO.md](TODO.md)** - Pending tasks and roadmap
 
 ---
 
@@ -356,11 +361,9 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 
 | Resource | Description |
 |----------|-------------|
-| [MCP Tools Reference](INSTRUCTIONS.md#mcp-tools-reference) | All available MCP tools and their usage |
-| [Troubleshooting Guide](INSTRUCTIONS.md#troubleshooting) | Common issues and solutions |
-| [Production Deployment](INSTRUCTIONS.md#production-deployment) | Security checklist, environment variables, monitoring |
-| [Code Review Report](CODE_REVIEW.md) | Architecture analysis, security audit, performance recommendations |
-| [Data Reset Options](INSTRUCTIONS.md#data-reset-options) | Soft/hard reset procedures |
+| [AGENTS.md](AGENTS.md) | Testing, building, reset commands |
+| [MEMORY.md](MEMORY.md) | Known issues, architecture findings, changelog |
+| [TODO.md](TODO.md) | Pending hardening and feature tasks |
 
 ---
 
