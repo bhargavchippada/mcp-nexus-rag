@@ -2,6 +2,8 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
+**Version:** v2.6
+
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
 Strict multi-tenant memory server for the Antigravity agent ecosystem.
