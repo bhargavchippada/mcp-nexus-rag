@@ -2,6 +2,8 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
+**Version:** v2.6
+
 ## Known Issues
 
 ### Medium Priority

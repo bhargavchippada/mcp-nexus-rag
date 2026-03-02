@@ -1315,5 +1315,5 @@ async def sync_deleted_files(
 
     res = f"Synchronized databases. Removed {removed_count} stale file entries."
     if errors:
-        res += f"\nErrors occurred during sync:\n" + "\n".join(errors[:10])
+        res += "\nErrors occurred during sync:\n" + "\n".join(errors[:10])
     return res

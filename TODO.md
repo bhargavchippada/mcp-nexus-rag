@@ -2,6 +2,8 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
+**Version:** v1.0
+
 ## Hardening
 
 - [ ] Exception message sanitization (return generic errors to client)

@@ -56,6 +56,22 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # Semantic Cache for repeated LLM queries
+  redis:
+    image: redis:7-alpine
+    container_name: turiya-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Local LLM Server tuned for RTX 5090
   ollama:
     image: ollama/ollama:latest
@@ -117,4 +133,5 @@ volumes:
   postgres_data:
   neo4j_data:
   qdrant_data:
+  redis_data:
   ollama_data:

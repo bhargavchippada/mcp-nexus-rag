@@ -1,4 +1,4 @@
-# Version: v2.3
+# Version: v2.4
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -17,6 +17,7 @@ DEFAULT_NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
 # WARNING: Default password for development only. Set NEO4J_PASSWORD env var in production.
 DEFAULT_NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password123")
 DEFAULT_QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
 
