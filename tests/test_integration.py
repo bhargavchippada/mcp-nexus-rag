@@ -50,6 +50,9 @@ class TestSetupSettingsLive:
 class TestGraphIndexFallback:
     def test_fallback_creates_empty_index_when_from_existing_fails(self):
         """Force PropertyGraphIndex.from_existing to raise, triggering the fallback."""
+        # Reset the cache so our mocked functions get called
+        nexus_indexes._graph_index_cache = None
+
         mock_graph_store = MagicMock()
         with (
             patch.object(nexus_indexes, "setup_settings"),
@@ -69,6 +72,9 @@ class TestGraphIndexFallback:
 
         mock_from_docs.assert_called_once()
         assert result is not None
+
+        # Restore cache to None so other tests aren't affected
+        nexus_indexes._graph_index_cache = None
 
 
 # ---------------------------------------------------------------------------

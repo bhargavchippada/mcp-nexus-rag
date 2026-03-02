@@ -23,9 +23,15 @@ class TestGetTenantStats:
         """Verify stats are collected from all Neo4j helpers and Qdrant."""
         with patch.object(neo4j_backend, "get_document_count", return_value=5):
             with patch.object(neo4j_backend, "get_chunk_node_count", return_value=3):
-                with patch.object(neo4j_backend, "get_entity_node_count", return_value=2):
-                    with patch.object(qdrant_backend, "get_document_count", return_value=7):
-                        result = await nexus_tools.get_tenant_stats("TEST_PROJECT", "TEST_SCOPE")
+                with patch.object(
+                    neo4j_backend, "get_entity_node_count", return_value=2
+                ):
+                    with patch.object(
+                        qdrant_backend, "get_document_count", return_value=7
+                    ):
+                        result = await nexus_tools.get_tenant_stats(
+                            "TEST_PROJECT", "TEST_SCOPE"
+                        )
                         assert result["graph_nodes_total"] == 5
                         assert result["graph_chunk_nodes"] == 3
                         assert result["graph_entity_nodes"] == 2
@@ -36,8 +42,12 @@ class TestGetTenantStats:
         """Verify stats work without scope (all scopes)."""
         with patch.object(neo4j_backend, "get_document_count", return_value=10):
             with patch.object(neo4j_backend, "get_chunk_node_count", return_value=6):
-                with patch.object(neo4j_backend, "get_entity_node_count", return_value=4):
-                    with patch.object(qdrant_backend, "get_document_count", return_value=15):
+                with patch.object(
+                    neo4j_backend, "get_entity_node_count", return_value=4
+                ):
+                    with patch.object(
+                        qdrant_backend, "get_document_count", return_value=15
+                    ):
                         result = await nexus_tools.get_tenant_stats("TEST_PROJECT")
                         assert result["graph_nodes_total"] == 10
                         assert result["vector_docs"] == 15
@@ -46,6 +56,7 @@ class TestGetTenantStats:
     async def test_rejects_empty_project_id(self):
         """Verify empty project_id raises ValueError."""
         import pytest
+
         with pytest.raises(ValueError, match="project_id must not be empty"):
             await nexus_tools.get_tenant_stats("")
 
@@ -53,9 +64,15 @@ class TestGetTenantStats:
         """Verify zero counts are returned correctly."""
         with patch.object(neo4j_backend, "get_document_count", return_value=0):
             with patch.object(neo4j_backend, "get_chunk_node_count", return_value=0):
-                with patch.object(neo4j_backend, "get_entity_node_count", return_value=0):
-                    with patch.object(qdrant_backend, "get_document_count", return_value=0):
-                        result = await nexus_tools.get_tenant_stats("TEST_PROJECT", "TEST_SCOPE")
+                with patch.object(
+                    neo4j_backend, "get_entity_node_count", return_value=0
+                ):
+                    with patch.object(
+                        qdrant_backend, "get_document_count", return_value=0
+                    ):
+                        result = await nexus_tools.get_tenant_stats(
+                            "TEST_PROJECT", "TEST_SCOPE"
+                        )
                         assert result["graph_nodes_total"] == 0
                         assert result["graph_chunk_nodes"] == 0
                         assert result["graph_entity_nodes"] == 0
@@ -465,7 +482,9 @@ class TestHealthCheck:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
                     mock_http_client = MagicMock()
-                    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+                    mock_http_client.__aenter__ = AsyncMock(
+                        return_value=mock_http_client
+                    )
                     mock_http_client.__aexit__ = AsyncMock(return_value=False)
                     mock_http_client.get = AsyncMock(return_value=mock_response)
                     mock_httpx.return_value = mock_http_client
@@ -490,7 +509,9 @@ class TestHealthCheck:
                     mock_response = MagicMock()
                     mock_response.status_code = 200
                     mock_http_client = MagicMock()
-                    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+                    mock_http_client.__aenter__ = AsyncMock(
+                        return_value=mock_http_client
+                    )
                     mock_http_client.__aexit__ = AsyncMock(return_value=False)
                     mock_http_client.get = AsyncMock(return_value=mock_response)
                     mock_httpx.return_value = mock_http_client
@@ -521,7 +542,9 @@ class TestHealthCheck:
                     mock_response = MagicMock()
                     mock_response.status_code = 500
                     mock_http_client = MagicMock()
-                    mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+                    mock_http_client.__aenter__ = AsyncMock(
+                        return_value=mock_http_client
+                    )
                     mock_http_client.__aexit__ = AsyncMock(return_value=False)
                     mock_http_client.get = AsyncMock(return_value=mock_response)
                     mock_httpx.return_value = mock_http_client
@@ -551,7 +574,9 @@ class TestPrintAllStats:
 
     async def test_returns_table_with_single_project(self):
         """Verify table is generated for single project."""
-        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]):
+        with patch.object(
+            neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]
+        ):
             with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
                 with patch.object(
                     neo4j_backend, "get_scopes_for_project", return_value=["SCOPE1"]
@@ -588,7 +613,9 @@ class TestPrintAllStats:
                     "get_scopes_for_project",
                     side_effect=[["SCOPE1", "SCOPE2"], ["SCOPE3"]],
                 ):
-                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                    with patch.object(
+                        qdrant_backend, "scroll_field", return_value=set()
+                    ):
                         with patch.object(
                             neo4j_backend, "get_document_count", return_value=5
                         ):
@@ -607,12 +634,16 @@ class TestPrintAllStats:
 
     async def test_includes_summary_totals(self):
         """Verify summary row shows correct totals."""
-        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]):
+        with patch.object(
+            neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]
+        ):
             with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
                 with patch.object(
                     neo4j_backend, "get_scopes_for_project", return_value=["SCOPE1"]
                 ):
-                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                    with patch.object(
+                        qdrant_backend, "scroll_field", return_value=set()
+                    ):
                         with patch.object(
                             neo4j_backend, "get_document_count", return_value=20
                         ):
@@ -625,7 +656,6 @@ class TestPrintAllStats:
                                 assert "Graph nodes: 20" in result
                                 assert "Vector docs: 30" in result
                                 assert "Total: 50" in result
-
 
     async def test_handles_projects_in_only_vector_store(self):
         """Verify projects only in Qdrant are included."""
@@ -653,12 +683,16 @@ class TestPrintAllStats:
 
     async def test_handles_project_with_no_scopes(self):
         """Verify project with no scopes shows '(all)' placeholder."""
-        with patch.object(neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]):
+        with patch.object(
+            neo4j_backend, "get_distinct_metadata", return_value=["PROJ1"]
+        ):
             with patch.object(qdrant_backend, "get_distinct_metadata", return_value=[]):
                 with patch.object(
                     neo4j_backend, "get_scopes_for_project", return_value=[]
                 ):
-                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                    with patch.object(
+                        qdrant_backend, "scroll_field", return_value=set()
+                    ):
                         with patch.object(
                             neo4j_backend, "get_document_count", return_value=5
                         ):
@@ -677,7 +711,9 @@ class TestPrintAllStats:
                 with patch.object(
                     neo4j_backend, "get_scopes_for_project", return_value=["S1"]
                 ):
-                    with patch.object(qdrant_backend, "scroll_field", return_value=set()):
+                    with patch.object(
+                        qdrant_backend, "scroll_field", return_value=set()
+                    ):
                         with patch.object(
                             neo4j_backend, "get_document_count", return_value=1
                         ):
@@ -732,7 +768,6 @@ class TestAnswerQuery:
         result = await nexus_tools.answer_query("What is X?", "", "SCOPE")
         assert "Error" in result
         assert "project_id" in result
-
 
     # ── Happy path ────────────────────────────────────────────────────────────
 
@@ -876,7 +911,9 @@ class TestAnswerQuery:
         with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
             with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
                 with patch("nexus.tools.RERANKER_ENABLED", False):
-                    with patch("httpx.AsyncClient", return_value=_ollama_mock("Graph answer.")):
+                    with patch(
+                        "httpx.AsyncClient", return_value=_ollama_mock("Graph answer.")
+                    ):
                         result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
                         assert result == "Graph answer."
 
@@ -896,7 +933,9 @@ class TestAnswerQuery:
         with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
             with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
                 with patch("nexus.tools.RERANKER_ENABLED", False):
-                    with patch("httpx.AsyncClient", return_value=_ollama_mock("Vector answer.")):
+                    with patch(
+                        "httpx.AsyncClient", return_value=_ollama_mock("Vector answer.")
+                    ):
                         result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
                         assert result == "Vector answer."
 
@@ -1042,10 +1081,14 @@ class TestAnswerQuery:
         mock_vector_index = MagicMock()
         mock_vector_index.as_retriever.return_value = mock_vector_retriever
 
-        with patch("nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")):
+        with patch(
+            "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+        ):
             with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
                 with patch("nexus.tools.RERANKER_ENABLED", False):
-                    with patch("httpx.AsyncClient", return_value=_ollama_mock("fallback")):
+                    with patch(
+                        "httpx.AsyncClient", return_value=_ollama_mock("fallback")
+                    ):
                         result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
                         assert result == "fallback"
 
@@ -1080,4 +1123,3 @@ class TestAnswerQuery:
             keys = [f.key for f in filters.filters]
             assert "project_id" in keys
             assert "tenant_scope" not in keys
-

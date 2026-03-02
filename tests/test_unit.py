@@ -348,7 +348,9 @@ class TestIngestErrorPaths:
 class TestContextRetrieval:
     def _mock_index(self, nodes=None):
         mock_retriever = MagicMock()
-        mock_retriever.aretrieve = AsyncMock(return_value=nodes if nodes is not None else [])
+        mock_retriever.aretrieve = AsyncMock(
+            return_value=nodes if nodes is not None else []
+        )
         mock_index = MagicMock()
         mock_index.as_retriever.return_value = mock_retriever
         return mock_index
@@ -814,7 +816,9 @@ class TestPostRetrievalDedup:
         """Three nodes with same content → only one bullet in output."""
         dup_node = self._make_node("same content")
         nodes = [dup_node, dup_node, dup_node]
-        with patch("nexus.tools.get_vector_index", return_value=self._mock_index(nodes)):
+        with patch(
+            "nexus.tools.get_vector_index", return_value=self._mock_index(nodes)
+        ):
             result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
         # Only one occurrence of the content
         assert result.count("same content") == 1
@@ -836,7 +840,9 @@ class TestPostRetrievalDedup:
         node_a = self._make_node("alpha")
         node_b = self._make_node("beta")
         nodes = [node_a, node_b, node_a, node_b]
-        with patch("nexus.tools.get_vector_index", return_value=self._mock_index(nodes)):
+        with patch(
+            "nexus.tools.get_vector_index", return_value=self._mock_index(nodes)
+        ):
             result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
         assert result.count("alpha") == 1
         assert result.count("beta") == 1

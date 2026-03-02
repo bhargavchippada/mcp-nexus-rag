@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v2.6
+**Version:** v2.7
 
 ## Known Issues
 
@@ -49,6 +49,14 @@
 - `doc_id = content_hash` ensures Qdrant upserts rather than appends
 
 ## Changelog
+
+### v2.7 — 2026-03-01
+
+- **Test optimization:** Separated integration tests with `@pytest.mark.integration`
+- Default `pytest` runs 197 unit tests in **2.3s** (was 5+ min)
+- Integration tests run with: `pytest -m integration`
+- Fixed cache reset in `test_fallback_creates_empty_index_when_from_existing_fails`
+- Auto-fix: 11 files reformatted by ruff
 
 ### v2.6 — 2026-02-28
 

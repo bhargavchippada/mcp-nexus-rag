@@ -42,8 +42,9 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+addopts = "-m 'not integration'"
 markers = [
-    "integration: tests that exercise near-live or mocked-live backend interactions",
+    "integration: tests that hit real databases (slow, run with: pytest -m integration)",
 ]
 
 [tool.mypy]

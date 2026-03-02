@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.1
+**Version:** v1.2
 
 ## Setup
 
@@ -20,14 +20,17 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 ## Test
 
 ```bash
-# Unit tests (no live services required)
-poetry run pytest tests/test_unit.py tests/test_coverage.py -v
+# Fast unit tests (2.3s, no live services required)
+poetry run pytest
 
-# Integration tests (requires docker-compose)
-poetry run pytest tests/test_integration.py -v
+# Integration tests (slow, requires docker-compose)
+poetry run pytest -m integration -v
 
-# Full suite + coverage
-poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term-missing
+# All tests including integration
+poetry run pytest -m '' -v
+
+# With coverage
+poetry run pytest --cov=nexus --cov=server --cov-report=term-missing
 ```
 
 ## Lint

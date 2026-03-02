@@ -170,7 +170,7 @@ def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
             qdrant_models.FieldCondition(
                 key="file_path",
                 match=qdrant_models.MatchValue(value=filepath),
-            )
+            ),
         ]
         if scope:
             must_conditions.append(
@@ -250,7 +250,9 @@ def delete_all_data() -> None:
                 filter=qdrant_models.Filter(must=[])
             ),
         )
-        logger.warning("Qdrant: deleted ALL points from collection '%s'", COLLECTION_NAME)
+        logger.warning(
+            "Qdrant: deleted ALL points from collection '%s'", COLLECTION_NAME
+        )
     except Exception as e:
         logger.error(f"Qdrant delete_all error: {e}")
         raise

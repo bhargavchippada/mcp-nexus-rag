@@ -1,4 +1,4 @@
-# Version: v2.6
+# Version: v2.7
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -7,6 +7,7 @@ that imports this module to register the tools on the shared mcp instance.
 """
 
 from typing import Optional
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import pathspec
@@ -30,6 +31,48 @@ from nexus.backends import qdrant as qdrant_backend
 from nexus.indexes import get_graph_index, get_vector_index
 from nexus.reranker import get_reranker
 from nexus.chunking import needs_chunking, chunk_document
+
+
+# ---------------------------------------------------------------------------
+# Metadata helpers
+# ---------------------------------------------------------------------------
+
+
+def _utc_now_iso() -> str:
+    """Return current UTC timestamp in ISO 8601 format."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _make_metadata(
+    project_id: str,
+    scope: str,
+    source: str,
+    content_hash: str,
+    file_path: str = "",
+) -> dict:
+    """Create standard metadata dict with timestamps for all ingestion.
+
+    Args:
+        project_id: Tenant project ID.
+        scope: Tenant scope.
+        source: Source identifier.
+        content_hash: SHA-256 hash of content.
+        file_path: Optional file path.
+
+    Returns:
+        Metadata dict with created_at timestamp.
+    """
+    now = _utc_now_iso()
+    return {
+        "project_id": project_id,
+        "tenant_scope": scope,
+        "scope": scope,  # Duplicate for Qdrant compatibility
+        "source": source,
+        "content_hash": content_hash,
+        "file_path": file_path,
+        "created_at": now,
+        "updated_at": now,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +143,7 @@ async def ingest_graph_document(
     if needs_chunking(text):
         if not auto_chunk:
             from nexus.config import MAX_DOCUMENT_SIZE
+
             return f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit. Set auto_chunk=True to split automatically."
 
         chunks = chunk_document(text)
@@ -109,7 +153,7 @@ async def ingest_graph_document(
 
         for i, chunk in enumerate(chunks):
             chash = content_hash(chunk, project_id, scope)
-            chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+            chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
             if neo4j_backend.is_duplicate(chash, project_id, scope):
                 skipped += 1
@@ -131,7 +175,7 @@ async def ingest_graph_document(
                 index.insert(doc)
                 ingested += 1
             except Exception as e:
-                logger.error(f"Error ingesting Graph chunk {i+1}: {e}")
+                logger.error(f"Error ingesting Graph chunk {i + 1}: {e}")
                 errors += 1
 
         logger.info(
@@ -239,9 +283,11 @@ async def ingest_graph_documents_batch(
 
                 for i, chunk in enumerate(chunks):
                     chash = content_hash(chunk, project_id, scope)
-                    chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+                    chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
-                    if skip_duplicates and neo4j_backend.is_duplicate(chash, project_id, scope):
+                    if skip_duplicates and neo4j_backend.is_duplicate(
+                        chash, project_id, scope
+                    ):
                         skipped += 1
                         continue
 
@@ -291,7 +337,12 @@ async def ingest_graph_documents_batch(
         f"Batch Graph ingest complete: ingested={ingested}, skipped={skipped}, "
         f"errors={errors}, chunks={chunks_created}"
     )
-    return {"ingested": ingested, "skipped": skipped, "errors": errors, "chunks": chunks_created}
+    return {
+        "ingested": ingested,
+        "skipped": skipped,
+        "errors": errors,
+        "chunks": chunks_created,
+    }
 
 
 @mcp.tool()
@@ -352,7 +403,9 @@ async def get_graph_context(
                 )
                 logger.info(f"Graph reranked: {len(nodes)} nodes returned")
             except Exception as rerank_err:
-                logger.warning(f"Reranker failed, using un-reranked results: {rerank_err}")
+                logger.warning(
+                    f"Reranker failed, using un-reranked results: {rerank_err}"
+                )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
         return (
             f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
@@ -405,6 +458,7 @@ async def ingest_vector_document(
     if needs_chunking(text):
         if not auto_chunk:
             from nexus.config import MAX_DOCUMENT_SIZE
+
             return f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit. Set auto_chunk=True to split automatically."
 
         chunks = chunk_document(text)
@@ -414,7 +468,7 @@ async def ingest_vector_document(
 
         for i, chunk in enumerate(chunks):
             chash = content_hash(chunk, project_id, scope)
-            chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+            chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
             if qdrant_backend.is_duplicate(chash, project_id, scope):
                 skipped += 1
@@ -436,7 +490,7 @@ async def ingest_vector_document(
                 index.insert(doc)
                 ingested += 1
             except Exception as e:
-                logger.error(f"Error ingesting Vector chunk {i+1}: {e}")
+                logger.error(f"Error ingesting Vector chunk {i + 1}: {e}")
                 errors += 1
 
         logger.info(
@@ -544,9 +598,11 @@ async def ingest_vector_documents_batch(
 
                 for i, chunk in enumerate(chunks):
                     chash = content_hash(chunk, project_id, scope)
-                    chunk_source = f"{source_identifier}:chunk_{i+1}_of_{len(chunks)}"
+                    chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
-                    if skip_duplicates and qdrant_backend.is_duplicate(chash, project_id, scope):
+                    if skip_duplicates and qdrant_backend.is_duplicate(
+                        chash, project_id, scope
+                    ):
                         skipped += 1
                         continue
 
@@ -569,7 +625,9 @@ async def ingest_vector_documents_batch(
             # Standard single-document path
             chash = content_hash(text, project_id, scope)
 
-            if skip_duplicates and qdrant_backend.is_duplicate(chash, project_id, scope):
+            if skip_duplicates and qdrant_backend.is_duplicate(
+                chash, project_id, scope
+            ):
                 skipped += 1
                 continue
 
@@ -596,7 +654,12 @@ async def ingest_vector_documents_batch(
         f"Batch Vector ingest complete: ingested={ingested}, skipped={skipped}, "
         f"errors={errors}, chunks={chunks_created}"
     )
-    return {"ingested": ingested, "skipped": skipped, "errors": errors, "chunks": chunks_created}
+    return {
+        "ingested": ingested,
+        "skipped": skipped,
+        "errors": errors,
+        "chunks": chunks_created,
+    }
 
 
 @mcp.tool()
@@ -657,7 +720,9 @@ async def get_vector_context(
                 )
                 logger.info(f"Vector reranked: {len(nodes)} nodes returned")
             except Exception as rerank_err:
-                logger.warning(f"Reranker failed, using un-reranked results: {rerank_err}")
+                logger.warning(
+                    f"Reranker failed, using un-reranked results: {rerank_err}"
+                )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
         return f"Vector Context retrieved for {project_id} in scope {scope}:\n{context_str}"
     except Exception as e:
@@ -769,7 +834,9 @@ async def answer_query(
             logger.warning(f"Vector retrieval failed in answer_query: {e}")
             return []
 
-    graph_passages, vector_passages = await asyncio.gather(_fetch_graph(), _fetch_vector())
+    graph_passages, vector_passages = await asyncio.gather(
+        _fetch_graph(), _fetch_vector()
+    )
 
     logger.info(
         f"answer_query: {len(graph_passages)} graph passages, "
@@ -803,7 +870,9 @@ async def answer_query(
     # ── 3. Build prompt ───────────────────────────────────────────────────────
     combined_context = "\n\n".join(context_parts)
     if len(combined_context) > max_context_chars:
-        combined_context = combined_context[:max_context_chars] + "\n...[context truncated]"
+        combined_context = (
+            combined_context[:max_context_chars] + "\n...[context truncated]"
+        )
 
     system_prompt = (
         "You are Ari's core identity processor. Answer the user's question using "
@@ -842,8 +911,7 @@ async def answer_query(
             data = response.json()
             answer: str = data["message"]["content"].strip()
             logger.info(
-                f"answer_query: answer generated ({len(answer)} chars) "
-                f"via {llm_model}"
+                f"answer_query: answer generated ({len(answer)} chars) via {llm_model}"
             )
             return answer
     except httpx.HTTPStatusError as e:
@@ -933,17 +1001,19 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
     if project_id:
         graph_scopes = neo4j_backend.get_scopes_for_project(project_id)
         try:
-            vector_scopes = set(qdrant_backend.scroll_field(
-                "tenant_scope",
-                qdrant_filter=qdrant_models.Filter(
-                    must=[
-                        qdrant_models.FieldCondition(
-                            key="project_id",
-                            match=qdrant_models.MatchValue(value=project_id),
-                        )
-                    ]
-                ),
-            ))
+            vector_scopes = set(
+                qdrant_backend.scroll_field(
+                    "tenant_scope",
+                    qdrant_filter=qdrant_models.Filter(
+                        must=[
+                            qdrant_models.FieldCondition(
+                                key="project_id",
+                                match=qdrant_models.MatchValue(value=project_id),
+                            )
+                        ]
+                    ),
+                )
+            )
         except Exception as e:
             logger.warning(f"Qdrant scopes error: {e}")
             vector_scopes = set()
@@ -1014,10 +1084,10 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
 
     logger.info(f"Getting stats: project_id={project_id!r} scope={scope!r}")
 
-    graph_total   = neo4j_backend.get_document_count(project_id, scope)
-    graph_chunks  = neo4j_backend.get_chunk_node_count(project_id, scope)
+    graph_total = neo4j_backend.get_document_count(project_id, scope)
+    graph_chunks = neo4j_backend.get_chunk_node_count(project_id, scope)
     graph_entities = neo4j_backend.get_entity_node_count(project_id, scope)
-    vector_count  = qdrant_backend.get_document_count(project_id, scope)
+    vector_count = qdrant_backend.get_document_count(project_id, scope)
 
     return {
         "graph_nodes_total": graph_total,
@@ -1026,7 +1096,6 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
         "vector_docs": vector_count,
         "total_docs": graph_total + vector_count,
     }
-
 
 
 @mcp.tool()
@@ -1081,33 +1150,58 @@ async def print_all_stats() -> str:
             graph_chunks = neo4j_backend.get_chunk_node_count(project_id, "")
             graph_entities = neo4j_backend.get_entity_node_count(project_id, "")
             vector_count = qdrant_backend.get_document_count(project_id, "")
-            rows.append((project_id, "(all)", graph_total, graph_chunks, graph_entities, vector_count))
+            rows.append(
+                (
+                    project_id,
+                    "(all)",
+                    graph_total,
+                    graph_chunks,
+                    graph_entities,
+                    vector_count,
+                )
+            )
         else:
             for scope in all_scopes:
                 graph_total = neo4j_backend.get_document_count(project_id, scope)
                 graph_chunks = neo4j_backend.get_chunk_node_count(project_id, scope)
                 graph_entities = neo4j_backend.get_entity_node_count(project_id, scope)
                 vector_count = qdrant_backend.get_document_count(project_id, scope)
-                rows.append((project_id, scope, graph_total, graph_chunks, graph_entities, vector_count))
+                rows.append(
+                    (
+                        project_id,
+                        scope,
+                        graph_total,
+                        graph_chunks,
+                        graph_entities,
+                        vector_count,
+                    )
+                )
 
     # Column widths
-    col_project  = max(len("PROJECT_ID"), max(len(r[0]) for r in rows))
-    col_scope    = max(len("SCOPE"),      max(len(r[1]) for r in rows))
-    col_graph    = max(len("GRAPH"),      max(len(str(r[2])) for r in rows))
-    col_chunks   = max(len("CHUNKS"),     max(len(str(r[3])) for r in rows))
-    col_entities = max(len("ENTITIES"),   max(len(str(r[4])) for r in rows))
-    col_vector   = max(len("VECTOR"),     max(len(str(r[5])) for r in rows))
-    col_total    = max(len("TOTAL"),      max(len(str(r[2] + r[5])) for r in rows))
+    col_project = max(len("PROJECT_ID"), max(len(r[0]) for r in rows))
+    col_scope = max(len("SCOPE"), max(len(r[1]) for r in rows))
+    col_graph = max(len("GRAPH"), max(len(str(r[2])) for r in rows))
+    col_chunks = max(len("CHUNKS"), max(len(str(r[3])) for r in rows))
+    col_entities = max(len("ENTITIES"), max(len(str(r[4])) for r in rows))
+    col_vector = max(len("VECTOR"), max(len(str(r[5])) for r in rows))
+    col_total = max(len("TOTAL"), max(len(str(r[2] + r[5])) for r in rows))
 
     def _sep() -> str:
         return (
-            "+" + "-" * (col_project  + 2)
-            + "+" + "-" * (col_scope    + 2)
-            + "+" + "-" * (col_graph    + 2)
-            + "+" + "-" * (col_chunks   + 2)
-            + "+" + "-" * (col_entities + 2)
-            + "+" + "-" * (col_vector   + 2)
-            + "+" + "-" * (col_total    + 2)
+            "+"
+            + "-" * (col_project + 2)
+            + "+"
+            + "-" * (col_scope + 2)
+            + "+"
+            + "-" * (col_graph + 2)
+            + "+"
+            + "-" * (col_chunks + 2)
+            + "+"
+            + "-" * (col_entities + 2)
+            + "+"
+            + "-" * (col_vector + 2)
+            + "+"
+            + "-" * (col_total + 2)
             + "+"
         )
 
@@ -1122,12 +1216,19 @@ async def print_all_stats() -> str:
 
     total_graph = total_chunks = total_entities = total_vector = 0
 
-    for project_id, scope, graph_total, graph_chunks, graph_entities, vector_count in rows:
+    for (
+        project_id,
+        scope,
+        graph_total,
+        graph_chunks,
+        graph_entities,
+        vector_count,
+    ) in rows:
         row_total = graph_total + vector_count
-        total_graph    += graph_total
-        total_chunks   += graph_chunks
+        total_graph += graph_total
+        total_chunks += graph_chunks
         total_entities += graph_entities
-        total_vector   += vector_count
+        total_vector += vector_count
         line = (
             f"| {project_id:<{col_project}} | {scope:<{col_scope}} | "
             f"{graph_total:>{col_graph}} | {graph_chunks:>{col_chunks}} | "

@@ -109,8 +109,7 @@ def delete_data(project_id: str, scope: str = "") -> None:
 
 
 def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
-    """Return distinct file_path values for a specific project_id/scope.
-    """
+    """Return distinct file_path values for a specific project_id/scope."""
     try:
         with neo4j_driver() as driver:
             with driver.session() as session:
@@ -134,8 +133,7 @@ def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
 
 
 def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
-    """Delete Neo4j nodes matching project_id, scope, and file_path.
-    """
+    """Delete Neo4j nodes matching project_id, scope, and file_path."""
     try:
         with neo4j_driver() as driver:
             with driver.session() as session:

@@ -36,7 +36,9 @@ DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
 MAX_DOCUMENT_SIZE = int(os.environ.get("MAX_DOCUMENT_SIZE", str(512 * 1024)))  # 512KB
 # Chunk size/overlap for large document splitting (uses CHUNK_SIZE/OVERLAP if not set)
 INGEST_CHUNK_SIZE = int(os.environ.get("INGEST_CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE)))
-INGEST_CHUNK_OVERLAP = int(os.environ.get("INGEST_CHUNK_OVERLAP", str(DEFAULT_CHUNK_OVERLAP)))
+INGEST_CHUNK_OVERLAP = int(
+    os.environ.get("INGEST_CHUNK_OVERLAP", str(DEFAULT_CHUNK_OVERLAP))
+)
 
 # ---------------------------------------------------------------------------
 # Reranker defaults
@@ -49,7 +51,9 @@ RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 # ---------------------------------------------------------------------------
 # Allowlist — prevents Cypher key injection in dynamic MATCH clauses
 # ---------------------------------------------------------------------------
-ALLOWED_META_KEYS = frozenset({"project_id", "tenant_scope", "source", "content_hash", "file_path"})
+ALLOWED_META_KEYS = frozenset(
+    {"project_id", "tenant_scope", "source", "content_hash", "file_path"}
+)
 
 # ---------------------------------------------------------------------------
 # Qdrant collection name — single source of truth

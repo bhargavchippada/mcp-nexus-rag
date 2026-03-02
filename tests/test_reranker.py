@@ -57,22 +57,28 @@ class TestGetRerankerSingleton:
         monkeypatch.setattr(
             "nexus.reranker.FlagEmbeddingReranker", mock_cls, raising=False
         )
-        with patch.dict("sys.modules", {
-            "llama_index.postprocessor.flag_reranker": MagicMock(
-                FlagEmbeddingReranker=mock_cls
-            )
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
             result = get_reranker()
         assert result is not None
 
     def test_singleton_same_instance_on_repeat_calls(self, monkeypatch):
         mock_instance = MagicMock()
         mock_cls = MagicMock(return_value=mock_instance)
-        with patch.dict("sys.modules", {
-            "llama_index.postprocessor.flag_reranker": MagicMock(
-                FlagEmbeddingReranker=mock_cls
-            )
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
             first = get_reranker()
             second = get_reranker()
         assert first is second
@@ -82,11 +88,14 @@ class TestGetRerankerSingleton:
         mock_instance_a = MagicMock()
         mock_instance_b = MagicMock()
         mock_cls = MagicMock(side_effect=[mock_instance_a, mock_instance_b])
-        with patch.dict("sys.modules", {
-            "llama_index.postprocessor.flag_reranker": MagicMock(
-                FlagEmbeddingReranker=mock_cls
-            )
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
             first = get_reranker()
             reset_reranker()
             second = get_reranker()
@@ -96,12 +105,16 @@ class TestGetRerankerSingleton:
 
     def test_uses_default_model_name(self, monkeypatch):
         from nexus.config import DEFAULT_RERANKER_MODEL
+
         mock_cls = MagicMock(return_value=MagicMock())
-        with patch.dict("sys.modules", {
-            "llama_index.postprocessor.flag_reranker": MagicMock(
-                FlagEmbeddingReranker=mock_cls
-            )
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
             get_reranker()
         all_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args.kwargs else {}
         if "model" in all_kwargs:
@@ -109,12 +122,16 @@ class TestGetRerankerSingleton:
 
     def test_uses_default_top_n(self, monkeypatch):
         from nexus.config import DEFAULT_RERANKER_TOP_N
+
         mock_cls = MagicMock(return_value=MagicMock())
-        with patch.dict("sys.modules", {
-            "llama_index.postprocessor.flag_reranker": MagicMock(
-                FlagEmbeddingReranker=mock_cls
-            )
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
             get_reranker()
         all_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args.kwargs else {}
         if "top_n" in all_kwargs:
@@ -122,11 +139,14 @@ class TestGetRerankerSingleton:
 
     def test_uses_fp16(self, monkeypatch):
         mock_cls = MagicMock(return_value=MagicMock())
-        with patch.dict("sys.modules", {
-            "llama_index.postprocessor.flag_reranker": MagicMock(
-                FlagEmbeddingReranker=mock_cls
-            )
-        }):
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
             get_reranker()
         all_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args.kwargs else {}
         if "use_fp16" in all_kwargs:
@@ -185,7 +205,9 @@ class TestGetVectorContextReranker:
         monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
 
-        result = await tools.get_vector_context("test query", "PROJ", "SCOPE", rerank=False)
+        result = await tools.get_vector_context(
+            "test query", "PROJ", "SCOPE", rerank=False
+        )
 
         mock_reranker.postprocess_nodes.assert_not_called()
         assert "doc A" in result
@@ -457,20 +479,24 @@ class TestGetGraphContextReranker:
 class TestRerankerConfig:
     def test_default_model_is_bge_v2_m3(self):
         from nexus.config import DEFAULT_RERANKER_MODEL
+
         assert DEFAULT_RERANKER_MODEL == "BAAI/bge-reranker-v2-m3"
 
     def test_default_top_n_is_positive(self):
         from nexus.config import DEFAULT_RERANKER_TOP_N
+
         assert DEFAULT_RERANKER_TOP_N > 0
 
     def test_default_candidate_k_greater_than_top_n(self):
         from nexus.config import DEFAULT_RERANKER_TOP_N, DEFAULT_RERANKER_CANDIDATE_K
+
         assert DEFAULT_RERANKER_CANDIDATE_K >= DEFAULT_RERANKER_TOP_N
 
     def test_reranker_enabled_env_false(self, monkeypatch):
         monkeypatch.setenv("RERANKER_ENABLED", "false")
         import importlib
         import nexus.config as cfg
+
         importlib.reload(cfg)
         assert cfg.RERANKER_ENABLED is False
         importlib.reload(cfg)  # restore
@@ -479,6 +505,7 @@ class TestRerankerConfig:
         monkeypatch.setenv("RERANKER_ENABLED", "true")
         import importlib
         import nexus.config as cfg
+
         importlib.reload(cfg)
         assert cfg.RERANKER_ENABLED is True
         importlib.reload(cfg)  # restore

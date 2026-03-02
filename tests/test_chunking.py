@@ -117,9 +117,7 @@ class TestIngestWithChunking:
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_graph_index")
     @patch("nexus.tools.neo4j_backend")
-    async def test_graph_ingest_chunks_large_document(
-        self, mock_neo4j, mock_get_index
-    ):
+    async def test_graph_ingest_chunks_large_document(self, mock_neo4j, mock_get_index):
         """Large documents should be automatically chunked for GraphRAG."""
         from nexus.tools import ingest_graph_document
 
@@ -216,7 +214,9 @@ class TestIngestWithChunking:
 
     @patch("nexus.tools.get_graph_index")
     @patch("nexus.tools.neo4j_backend")
-    async def test_small_document_not_chunked(self, mock_neo4j, mock_get_index, mock_graph_index):
+    async def test_small_document_not_chunked(
+        self, mock_neo4j, mock_get_index, mock_graph_index
+    ):
         """Small documents should be ingested as single document."""
         from nexus.tools import ingest_graph_document
 
@@ -238,9 +238,7 @@ class TestIngestWithChunking:
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_graph_index")
     @patch("nexus.tools.neo4j_backend")
-    async def test_chunk_source_identifier_format(
-        self, mock_neo4j, mock_get_index
-    ):
+    async def test_chunk_source_identifier_format(self, mock_neo4j, mock_get_index):
         """Chunk source identifiers should include chunk number."""
         from nexus.tools import ingest_graph_document
 
@@ -261,7 +259,7 @@ class TestIngestWithChunking:
         calls = mock_index.insert.call_args_list
         for i, call in enumerate(calls):
             doc = call[0][0]
-            assert f"chunk_{i+1}_of_" in doc.metadata["source"]
+            assert f"chunk_{i + 1}_of_" in doc.metadata["source"]
 
 
 class TestBatchIngestWithChunking:
@@ -285,7 +283,11 @@ class TestBatchIngestWithChunking:
 
         documents = [
             {"text": "Small doc.", "project_id": "TEST", "scope": "CODE"},
-            {"text": "Hello world. " * 50, "project_id": "TEST", "scope": "CODE"},  # Large ~650 bytes
+            {
+                "text": "Hello world. " * 50,
+                "project_id": "TEST",
+                "scope": "CODE",
+            },  # Large ~650 bytes
         ]
 
         result = await ingest_graph_documents_batch(documents)
@@ -309,7 +311,11 @@ class TestBatchIngestWithChunking:
 
         documents = [
             {"text": "Small doc.", "project_id": "TEST", "scope": "CODE"},
-            {"text": "Hello world. " * 50, "project_id": "TEST", "scope": "CODE"},  # Large
+            {
+                "text": "Hello world. " * 50,
+                "project_id": "TEST",
+                "scope": "CODE",
+            },  # Large
         ]
 
         result = await ingest_graph_documents_batch(documents, auto_chunk=False)
@@ -336,7 +342,11 @@ class TestBatchIngestWithChunking:
 
         documents = [
             {"text": "Small doc.", "project_id": "TEST", "scope": "CODE"},
-            {"text": "Hello world. " * 50, "project_id": "TEST", "scope": "CODE"},  # Large ~650 bytes
+            {
+                "text": "Hello world. " * 50,
+                "project_id": "TEST",
+                "scope": "CODE",
+            },  # Large ~650 bytes
         ]
 
         result = await ingest_vector_documents_batch(documents)

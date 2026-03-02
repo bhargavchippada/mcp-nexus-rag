@@ -121,9 +121,7 @@ class TestGetVectorIndex:
             patch(
                 "nexus.indexes.get_qdrant_client", return_value=mock_client
             ) as mock_cls,
-            patch(
-                "nexus.indexes.get_async_qdrant_client", return_value=mock_aclient
-            ),
+            patch("nexus.indexes.get_async_qdrant_client", return_value=mock_aclient),
             patch("nexus.indexes.QdrantVectorStore"),
             patch("nexus.indexes.VectorStoreIndex.from_vector_store"),
         ):
