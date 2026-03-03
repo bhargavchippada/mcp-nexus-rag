@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.0
+**Version:** v3.1
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 290 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 371 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -565,6 +565,24 @@ Use the automation script to start all services after a reboot:
 ---
 
 ## Recent Updates
+
+### v3.1 (2026-03-03) — Deep Code Review Rounds 2–9: 11 Bugs Fixed
+
+- 🐛 **BUGFIX**: `invalidate_cache(project_id, "")` only cleared `__all__` index — per-scope indices not cleared after full-project delete; scoped queries returned stale cached data (`cache.py` v1.5)
+- 🐛 **BUGFIX**: `watcher._sync_changed` — cache not invalidated after `_delete_from_rag`; if both ingest calls failed, stale cache remained for deleted content (`watcher.py` v1.2)
+- 🐛 **BUGFIX**: Batch ingest chunk loops had no per-chunk `try/except` — error on chunk N silently skipped N+1..end; single-doc path was correct (`tools.py` v3.9)
+- 🐛 **BUGFIX**: `delete_stale_files` / `sync_deleted_files` only queried Neo4j — Qdrant-only orphans never cleaned; now unions both stores (`sync.py` v1.2, `qdrant.py` v2.4)
+- 🐛 **BUGFIX**: `neo4j_driver()` created a new connection pool per call — replaced with `get_driver()` singleton (double-checked locking) (`neo4j.py` v2.2)
+- 🐛 **BUGFIX**: `delete_all_data` never invalidated Redis cache — added `invalidate_all_cache()` call (`cache.py` v1.4, `tools.py` v3.6)
+- 🐛 **BUGFIX**: Empty `project_id` silently passed to Neo4j/Qdrant returning empty results with no error (`tools.py` v3.6)
+- 🐛 **BUGFIX**: `scroll_field` in qdrant.py added `None` payload values to `set[str]` — `sorted()` raised `TypeError` in `get_all_tenant_scopes` / `print_all_stats` (`qdrant.py` v2.3)
+- 🐛 **BUGFIX**: `sync_deleted_files`, `sync_project_files`, `watcher._sync_deleted` — backend deletes without Redis cache invalidation; stale cached results persisted (`tools.py` v3.7, `watcher.py` v1.1)
+- 🐛 **BUGFIX**: `http_server.py` fallback scope hardcoded `"CORE_CODE"` instead of `""` (empty = all scopes) (`http_server.py` v1.8)
+- 🐛 **BUGFIX**: Shared `_index_cache_lock` for both graph and vector index init — split into independent locks (`indexes.py` v2.2)
+- ✨ **NEW**: `invalidate_project_cache` MCP tool — targeted cache invalidation without data deletion
+- ✨ **NEW**: `reset_graph_index()` / `reset_vector_index()` in `indexes.py` — symmetric with `reset_reranker()` for test isolation
+- ✅ **Tests**: 371 tests passing (+81 regression tests across rounds 2–9), lint clean (ruff)
+- 🔍 **Verified**: 17 E2E scenarios (new/update/delete/move files, rapid saves, partial ingest recovery, concurrent access, cache invalidation chains)
 
 ### v3.0 (2026-03-03) — Code Review: 4 Bugs Fixed
 

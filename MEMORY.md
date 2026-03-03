@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.5
+**Version:** v4.6
 
 ## Known Issues
 
@@ -346,6 +346,28 @@ Added as `@mcp.tool()` in tools.py. Exposes targeted Redis cache invalidation (b
 > **Rule:** Cache returns must pass through the same output-size guards as fresh results.
 
 ## Changelog
+
+### v3.8 — 2026-03-03 (Deep Code Review Rounds 6–9)
+
+- **FIXED (MEDIUM):** `invalidate_cache(project_id, "")` only cleared `__all__` index — per-scope indices not cleared after full-project delete; scoped queries returned stale data (cache.py v1.4→v1.5)
+- **FIXED (MEDIUM):** `watcher._sync_changed` — cache not invalidated after `_delete_from_rag`; if ingest failed, stale cache remained for deleted content (watcher.py v1.1→v1.2)
+- **Loop 8:** Full review of neo4j.py, qdrant.py, config.py, indexes.py, dedup.py, chunking.py, reranker.py, server.py — no new bugs found
+- **Loop 9:** 17 E2E scenarios verified (new/update/delete/move, rapid saves, partial ingest recovery, concurrent access, cache chains)
+- Tests: 363→371 passed (8 new), lint clean (ruff)
+
+### v3.7 — 2026-03-03 (Deep Code Review Rounds 2–5)
+
+- **FIXED (CRITICAL PERF):** `neo4j_driver()` created new connection pool per call → `get_driver()` singleton (neo4j.py v2.1→v2.2)
+- **FIXED (MEDIUM):** Empty `project_id` silently passed to Neo4j/Qdrant with no error (tools.py v3.5→v3.6)
+- **FIXED (MEDIUM):** `delete_all_data` never invalidated Redis cache; added `invalidate_all_cache()` (cache.py v1.3→v1.4, tools.py v3.5→v3.6)
+- **FIXED (LOW):** Shared `_index_cache_lock` for both graph and vector indexes → split into separate locks (indexes.py v2.1→v2.2)
+- **FIXED (CRASH):** `scroll_field` None payload → `sorted()` TypeError in `get_all_tenant_scopes` / `print_all_stats` (qdrant.py v2.2→v2.3)
+- **FIXED (MEDIUM):** `sync_deleted_files`, `sync_project_files`, `watcher._sync_deleted` — backend deletes without cache invalidation (tools.py v3.6→v3.7, watcher.py v1.0→v1.1)
+- **FIXED (LOW):** `http_server.py` fallback scope hardcoded `"CORE_CODE"` → `""` (all scopes) (http_server.py v1.7→v1.8)
+- **NEW:** `invalidate_project_cache` MCP tool; `reset_graph_index()` + `reset_vector_index()` in indexes.py
+- **FIXED (MEDIUM):** Batch ingest chunk loops had no per-chunk error handling — chunk N failure skipped N+1..end (tools.py v3.8→v3.9)
+- **FIXED (MEDIUM):** `delete_stale_files` / `sync_deleted_files` only queried Neo4j for orphans → now unions Neo4j + Qdrant paths (qdrant.py v2.3→v2.4, sync.py v1.1→v1.2)
+- Tests: 279→363 passed (84 new across rounds 2–5), lint clean (ruff)
 
 ### v3.6 — 2026-03-03
 
