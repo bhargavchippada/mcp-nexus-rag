@@ -2,7 +2,15 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.3
+**Version:** v2.4
+
+## Completed (2026-03-03 — deep review rounds 6–9)
+
+- [x] Fix MEDIUM: `invalidate_cache(project_id, scope="")` only cleared `__all__` index — per-scope indices (e.g., CORE_DOCS) were not cleared; after `delete_tenant_data`, scoped queries returned stale cached data (fixed 2026-03-03)
+- [x] Fix MEDIUM: `_sync_changed` in watcher.py — cache not invalidated after `_delete_from_rag`; if both ingest calls failed, stale cache entries remained referencing deleted data (fixed 2026-03-03)
+- [x] 8 new tests added (363→371 total); ruff clean; cache.py v1.4→v1.5, watcher.py v1.1→v1.2, test_unit.py v2.8→v2.9, test_watcher.py v1.1→v1.2
+- [x] Loop 8 review: all backends (neo4j.py, qdrant.py), config.py, indexes.py, chunking.py, dedup.py, reranker.py, server.py — no new bugs found
+- [x] Loop 9 E2E reasoning: 17 scenarios verified correct (new/update/delete/move, concurrent access, cache invalidation chains, partial ingest recovery)
 
 ## Completed (2026-03-03 — deep review round 5)
 

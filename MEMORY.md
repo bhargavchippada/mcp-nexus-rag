@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.4
+**Version:** v4.5
 
 ## Known Issues
 
@@ -17,6 +17,30 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Rounds 6–9 — 2 Bugs Fixed (cache.py v1.5, watcher.py v1.2, test_unit.py v2.9, test_watcher.py v1.2)
+
+**Bug L3-1 (MEDIUM): `invalidate_cache(project_id, scope="")` only cleared `__all__` index**
+**Root Cause:** `invalidate_cache` in `nexus/cache.py` treated `scope=""` as "clear all-scopes queries only" but not per-scope queries. After `delete_tenant_data("PROJ", "")`, which calls `invalidate_cache("PROJ", "")`, cached results for `get_graph_context(scope="CORE_DOCS")` or `get_vector_context(scope="CORE_DOCS")` remained in Redis. Subsequent queries returned stale (deleted) data from cache until TTL expired.
+**Fix Applied:** When `scope=""`, `invalidate_cache` now scans `nexus:idx:{safe_pid}:*` and clears all per-scope indices in addition to `__all__`.
+**Prevention Guideline:** "Delete all for project" operations must invalidate ALL cache variants — both cross-scope and every per-scope index. Verify `invalidate_cache(project_id, "")` clears everything after any data wipe.
+
+**Bug L7-4 (MEDIUM): `_sync_changed` in watcher.py — cache not invalidated after `_delete_from_rag`**
+**Root Cause:** `nexus/watcher.py:_sync_changed` called `_delete_from_rag` (which removes all chunks for a file from both stores) but only invalidated the cache inside `ingest_graph_document` / `ingest_vector_document`. If both ingest calls raised an exception or returned an error, the cache retained stale entries for data that had already been deleted — queries would return cached results referencing non-existent documents.
+**Fix Applied:** Added `cache_module.invalidate_cache(project_id, scope)` immediately after `_delete_from_rag`, before the ingest calls. This ensures cache is cleared as soon as data is removed, regardless of ingest outcome.
+**Prevention Guideline:** Any delete-then-reingest pattern must invalidate the cache AFTER the delete, not only after the re-ingest. Assume the reingest can fail; the cache must not serve data for deleted content.
+
+### [2026-03-03] Loop 9 E2E Scenario Review — 17 Scenarios Verified
+
+All E2E scenarios for watcher + sync + cache interactions verified correct:
+- New/update/delete/move (tracked→tracked, untracked→tracked, tracked→untracked)
+- Rapid saves (debounce coalesces correctly)
+- Partial ingest recovery (check_file_changed uses AND across both stores — heals partial failures)
+- delete_tenant_data full-project invalidation (Loop 6 fix: all per-scope indices cleared)
+- Concurrent watcher + MCP tool ingest (idempotent upserts: MERGE in Cypher, upsert in Qdrant)
+- Cache key invalidation chain (ingest → invalidate → miss on next query → fresh retrieval)
+
+> **Guideline:** After all fixes in rounds 3–9, the codebase correctly handles all known failure modes. The remaining TODOs are cosmetic/low-priority items (0-chunk success message, rate limiting, tools.py splitting).
 
 ### [2026-03-03] Deep Code Review Round 5 — 1 Bug Fixed (tools.py v3.9, test_unit.py v2.8)
 
