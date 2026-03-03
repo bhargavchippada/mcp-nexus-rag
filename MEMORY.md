@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v3.1
+**Version:** v3.2
 
 ## Known Issues
 
@@ -129,6 +129,14 @@
 ---
 
 ## Changelog
+
+### v3.2 — 2026-03-02
+
+- **RAG Reset & Rebuild:** Full reset of Neo4j + Qdrant volumes; re-ingested 23 core docs with new 4KB chunk threshold
+  - Qdrant `nexus_rag` collection created fresh; initial dedup warnings (404) are expected on empty collection
+  - `sync_project_files` completed: 23/23 files ingested
+- **OPTIMIZED:** Token cost: `MAX_DOCUMENT_SIZE` 512KB→4KB, `max_chars=3000` on retrieval tools, `RERANKER_TOP_N=2`
+- Tests: 201 passed in 2.25s, lint clean
 
 ### v3.0 — 2026-03-02
 
