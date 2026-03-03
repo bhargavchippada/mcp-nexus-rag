@@ -1,9 +1,14 @@
-# Version: v2.1
+# Version: v2.2
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
+
+v2.2: Add get_driver() singleton to avoid creating a new connection pool per
+call. Previously every function did ``with neo4j_driver() as driver:`` which
+called driver.close() on __exit__, destroying the pool on every query.
 """
 
 import logging
+import threading
 
 from neo4j import GraphDatabase
 
@@ -16,12 +21,46 @@ from nexus.config import (
 
 logger = logging.getLogger("mcp-nexus-rag")
 
+# ---------------------------------------------------------------------------
+# Singleton driver — one connection pool for the entire process lifetime
+# ---------------------------------------------------------------------------
+_driver_instance = None
+_driver_lock = threading.Lock()
 
-def neo4j_driver():
-    """Return a new Neo4j driver configured for use as a context manager.
+
+def get_driver():
+    """Return the process-level Neo4j driver singleton (thread-safe).
+
+    Uses double-checked locking so concurrent callers block only on the very
+    first initialisation.  The returned driver must NOT be used as a context
+    manager (that would call close() and destroy the pool).  Acquire sessions
+    via ``get_driver().session()`` instead.
 
     Returns:
-        neo4j.Driver instance.
+        neo4j.Driver instance (shared, long-lived).
+    """
+    global _driver_instance
+    if _driver_instance is None:
+        with _driver_lock:
+            if _driver_instance is None:
+                _driver_instance = GraphDatabase.driver(
+                    DEFAULT_NEO4J_URL,
+                    auth=(DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD),
+                )
+    return _driver_instance
+
+
+def neo4j_driver():
+    """Create a *new* Neo4j driver configured for use as a context manager.
+
+    .. deprecated::
+        Prefer :func:`get_driver` which reuses a process-level singleton and
+        avoids the connection-pool setup/teardown overhead on every query.
+        This function remains for backward compatibility and tests that verify
+        the ``GraphDatabase.driver()`` call signature.
+
+    Returns:
+        neo4j.Driver instance (new, caller-owned).
     """
     return GraphDatabase.driver(
         DEFAULT_NEO4J_URL,
@@ -44,12 +83,11 @@ def get_distinct_metadata(key: str) -> list[str]:
     if key not in ALLOWED_META_KEYS:
         raise ValueError(f"Disallowed metadata key: {key!r}")
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                result = session.run(
-                    f"MATCH (n) WHERE n.{key} IS NOT NULL RETURN DISTINCT n.{key} AS value"
-                )
-                return [record["value"] for record in result]
+        with get_driver().session() as session:
+            result = session.run(
+                f"MATCH (n) WHERE n.{key} IS NOT NULL RETURN DISTINCT n.{key} AS value"
+            )
+            return [record["value"] for record in result]
     except Exception as e:
         logger.warning(f"Neo4j distinct '{key}' error: {e}")
         return []
@@ -65,14 +103,13 @@ def get_scopes_for_project(project_id: str) -> list[str]:
         List of unique scope strings, empty list on connection error.
     """
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                result = session.run(
-                    "MATCH (n {project_id: $project_id}) WHERE n.tenant_scope IS NOT NULL "
-                    "RETURN DISTINCT n.tenant_scope AS value",
-                    project_id=project_id,
-                )
-                return [record["value"] for record in result]
+        with get_driver().session() as session:
+            result = session.run(
+                "MATCH (n {project_id: $project_id}) WHERE n.tenant_scope IS NOT NULL "
+                "RETURN DISTINCT n.tenant_scope AS value",
+                project_id=project_id,
+            )
+            return [record["value"] for record in result]
     except Exception as e:
         logger.warning(f"Neo4j scopes error: {e}")
         return []
@@ -100,9 +137,8 @@ def delete_data(project_id: str, scope: str = "") -> None:
         cypher = "MATCH (n {project_id: $project_id}) DETACH DELETE n"
         params = {"project_id": project_id}
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                session.run(cypher, **params)
+        with get_driver().session() as session:
+            session.run(cypher, **params)
     except Exception as e:
         logger.error(f"Neo4j delete error: {e}")
         raise
@@ -111,22 +147,21 @@ def delete_data(project_id: str, scope: str = "") -> None:
 def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
     """Return distinct file_path values for a specific project_id/scope."""
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                if scope:
-                    result = session.run(
-                        "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
-                        "WHERE n.file_path IS NOT NULL RETURN DISTINCT n.file_path AS value",
-                        project_id=project_id,
-                        scope=scope,
-                    )
-                else:
-                    result = session.run(
-                        "MATCH (n {project_id: $project_id}) "
-                        "WHERE n.file_path IS NOT NULL RETURN DISTINCT n.file_path AS value",
-                        project_id=project_id,
-                    )
-                return [record["value"] for record in result]
+        with get_driver().session() as session:
+            if scope:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
+                    "WHERE n.file_path IS NOT NULL RETURN DISTINCT n.file_path AS value",
+                    project_id=project_id,
+                    scope=scope,
+                )
+            else:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id}) "
+                    "WHERE n.file_path IS NOT NULL RETURN DISTINCT n.file_path AS value",
+                    project_id=project_id,
+                )
+            return [record["value"] for record in result]
     except Exception as e:
         logger.warning(f"Neo4j get_all_filepaths error: {e}")
         return []
@@ -135,21 +170,20 @@ def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
 def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
     """Delete Neo4j nodes matching project_id, scope, and file_path."""
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                if scope:
-                    session.run(
-                        "MATCH (n {project_id: $project_id, tenant_scope: $scope, file_path: $filepath}) DETACH DELETE n",
-                        project_id=project_id,
-                        scope=scope,
-                        filepath=filepath,
-                    )
-                else:
-                    session.run(
-                        "MATCH (n {project_id: $project_id, file_path: $filepath}) DETACH DELETE n",
-                        project_id=project_id,
-                        filepath=filepath,
-                    )
+        with get_driver().session() as session:
+            if scope:
+                session.run(
+                    "MATCH (n {project_id: $project_id, tenant_scope: $scope, file_path: $filepath}) DETACH DELETE n",
+                    project_id=project_id,
+                    scope=scope,
+                    filepath=filepath,
+                )
+            else:
+                session.run(
+                    "MATCH (n {project_id: $project_id, file_path: $filepath}) DETACH DELETE n",
+                    project_id=project_id,
+                    filepath=filepath,
+                )
     except Exception as e:
         logger.error(f"Neo4j delete_by_filepath error: {e}")
         raise
@@ -170,17 +204,16 @@ def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:
         True if a duplicate was found, False otherwise.
     """
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                result = session.run(
-                    "MATCH (n {project_id: $project_id, tenant_scope: $scope, "
-                    "content_hash: $content_hash}) RETURN COUNT(n) > 0 AS exists",
-                    project_id=project_id,
-                    scope=scope,
-                    content_hash=content_hash,
-                )
-                record = result.single()
-                return bool(record["exists"]) if record else False
+        with get_driver().session() as session:
+            result = session.run(
+                "MATCH (n {project_id: $project_id, tenant_scope: $scope, "
+                "content_hash: $content_hash}) RETURN COUNT(n) > 0 AS exists",
+                project_id=project_id,
+                scope=scope,
+                content_hash=content_hash,
+            )
+            record = result.single()
+            return bool(record["exists"]) if record else False
     except Exception as e:
         logger.warning(f"Neo4j dedup check failed (fail-open): {e}")
         return False
@@ -195,9 +228,8 @@ def delete_all_data() -> None:
         Exception: Propagated from the Neo4j driver on failure.
     """
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                session.run("MATCH (n) DETACH DELETE n")
+        with get_driver().session() as session:
+            session.run("MATCH (n) DETACH DELETE n")
         logger.warning("Neo4j: deleted ALL nodes from the database")
     except Exception as e:
         logger.error(f"Neo4j delete_all error: {e}")
@@ -215,22 +247,21 @@ def get_document_count(project_id: str, scope: str = "") -> int:
         Number of nodes matching the criteria, 0 on error.
     """
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                if scope:
-                    result = session.run(
-                        "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
-                        "RETURN COUNT(n) AS count",
-                        project_id=project_id,
-                        scope=scope,
-                    )
-                else:
-                    result = session.run(
-                        "MATCH (n {project_id: $project_id}) RETURN COUNT(n) AS count",
-                        project_id=project_id,
-                    )
-                record = result.single()
-                return int(record["count"]) if record else 0
+        with get_driver().session() as session:
+            if scope:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
+                    "RETURN COUNT(n) AS count",
+                    project_id=project_id,
+                    scope=scope,
+                )
+            else:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id}) RETURN COUNT(n) AS count",
+                    project_id=project_id,
+                )
+            record = result.single()
+            return int(record["count"]) if record else 0
     except Exception as e:
         logger.warning(f"Neo4j document count error: {e}")
         return 0
@@ -250,23 +281,22 @@ def get_chunk_node_count(project_id: str, scope: str = "") -> int:
         Number of chunk nodes, 0 on error.
     """
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                if scope:
-                    result = session.run(
-                        "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
-                        "WHERE n.content_hash IS NOT NULL RETURN COUNT(n) AS count",
-                        project_id=project_id,
-                        scope=scope,
-                    )
-                else:
-                    result = session.run(
-                        "MATCH (n {project_id: $project_id}) "
-                        "WHERE n.content_hash IS NOT NULL RETURN COUNT(n) AS count",
-                        project_id=project_id,
-                    )
-                record = result.single()
-                return int(record["count"]) if record else 0
+        with get_driver().session() as session:
+            if scope:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id, tenant_scope: $scope}) "
+                    "WHERE n.content_hash IS NOT NULL RETURN COUNT(n) AS count",
+                    project_id=project_id,
+                    scope=scope,
+                )
+            else:
+                result = session.run(
+                    "MATCH (n {project_id: $project_id}) "
+                    "WHERE n.content_hash IS NOT NULL RETURN COUNT(n) AS count",
+                    project_id=project_id,
+                )
+            record = result.single()
+            return int(record["count"]) if record else 0
     except Exception as e:
         logger.warning(f"Neo4j chunk count error: {e}")
         return 0
@@ -287,26 +317,25 @@ def get_entity_node_count(project_id: str, scope: str = "") -> int:
         Number of distinct entity nodes, 0 on error.
     """
     try:
-        with neo4j_driver() as driver:
-            with driver.session() as session:
-                if scope:
-                    result = session.run(
-                        "MATCH (chunk {project_id: $project_id, tenant_scope: $scope})"
-                        "-[]-(entity) "
-                        "WHERE entity.content_hash IS NULL "
-                        "RETURN COUNT(DISTINCT entity) AS count",
-                        project_id=project_id,
-                        scope=scope,
-                    )
-                else:
-                    result = session.run(
-                        "MATCH (chunk {project_id: $project_id})-[]-(entity) "
-                        "WHERE entity.content_hash IS NULL "
-                        "RETURN COUNT(DISTINCT entity) AS count",
-                        project_id=project_id,
-                    )
-                record = result.single()
-                return int(record["count"]) if record else 0
+        with get_driver().session() as session:
+            if scope:
+                result = session.run(
+                    "MATCH (chunk {project_id: $project_id, tenant_scope: $scope})"
+                    "-[]-(entity) "
+                    "WHERE entity.content_hash IS NULL "
+                    "RETURN COUNT(DISTINCT entity) AS count",
+                    project_id=project_id,
+                    scope=scope,
+                )
+            else:
+                result = session.run(
+                    "MATCH (chunk {project_id: $project_id})-[]-(entity) "
+                    "WHERE entity.content_hash IS NULL "
+                    "RETURN COUNT(DISTINCT entity) AS count",
+                    project_id=project_id,
+                )
+            record = result.single()
+            return int(record["count"]) if record else 0
     except Exception as e:
         logger.warning(f"Neo4j entity count error: {e}")
         return 0

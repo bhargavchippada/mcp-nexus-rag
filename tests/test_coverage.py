@@ -35,13 +35,13 @@ class TestGetScopesForProject:
     def test_returns_scopes_for_project(self):
         records = [{"value": "CORE_CODE"}, {"value": "SYSTEM_LOGS"}]
         mock_driver, _ = make_neo4j_driver(records)
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             result = neo4j_backend.get_scopes_for_project("TRADING_BOT")
         assert set(result) == {"CORE_CODE", "SYSTEM_LOGS"}
 
     def test_returns_empty_list_on_connection_error(self):
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("bolt closed")
+            neo4j_backend, "get_driver", side_effect=Exception("bolt closed")
         ):
             result = neo4j_backend.get_scopes_for_project("ANY_PROJECT")
         assert result == []
@@ -49,14 +49,14 @@ class TestGetScopesForProject:
     def test_query_filters_by_project_id(self):
         """Verifies the Cypher uses a project_id parameter (not a literal)."""
         mock_driver, mock_session = make_neo4j_driver([])
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             neo4j_backend.get_scopes_for_project("MY_PROJECT")
         _, kwargs = mock_session.run.call_args
         assert kwargs.get("project_id") == "MY_PROJECT"
 
     def test_returns_empty_when_no_scopes(self):
         mock_driver, _ = make_neo4j_driver([])
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             result = neo4j_backend.get_scopes_for_project("EMPTY_PROJECT")
         assert result == []
 
@@ -141,6 +141,7 @@ class TestGetGraphContextWithResults:
     def _mock_index_with_content(self, content: str):
         node = MagicMock()
         node.node.get_content.return_value = content
+        node.score = 0.95  # Score is required for formatting
         mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=[node])
         mock_index = MagicMock()
@@ -167,9 +168,10 @@ class TestGetGraphContextWithResults:
         """Multiple retrieved nodes should each appear as a bullet line."""
         contents = ["node A content", "node B content", "node C content"]
         nodes = []
-        for c in contents:
+        for i, c in enumerate(contents):
             n = MagicMock()
             n.node.get_content.return_value = c
+            n.score = 0.9 - i * 0.1  # Descending scores: 0.9, 0.8, 0.7
             nodes.append(n)
         mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=nodes)

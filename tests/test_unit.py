@@ -1,4 +1,4 @@
-# Version: v2.4
+# Version: v2.5
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -84,12 +84,12 @@ class TestAllowedMetaKeys:
         mock_driver, _ = _make_neo4j_driver(
             [{"value": "SCOPE_A"}, {"value": "SCOPE_B"}]
         )
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             result = neo4j_backend.get_distinct_metadata("tenant_scope")
         assert set(result) == {"SCOPE_A", "SCOPE_B"}
 
     def test_get_distinct_neo4j_returns_empty_on_error(self):
-        with patch.object(neo4j_backend, "neo4j_driver", side_effect=Exception("down")):
+        with patch.object(neo4j_backend, "get_driver", side_effect=Exception("down")):
             result = neo4j_backend.get_distinct_metadata("project_id")
         assert result == []
 
@@ -186,7 +186,7 @@ class TestQdrantClientCache:
 class TestDeleteNeo4j:
     def test_without_scope_uses_project_only_cypher(self):
         mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             neo4j_backend.delete_data("MY_PROJECT")
         cypher, kwargs = mock_session.run.call_args
         assert "tenant_scope" not in cypher[0]
@@ -194,7 +194,7 @@ class TestDeleteNeo4j:
 
     def test_with_scope_includes_tenant_scope_in_cypher(self):
         mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             neo4j_backend.delete_data("MY_PROJECT", "MY_SCOPE")
         cypher, kwargs = mock_session.run.call_args
         assert "tenant_scope" in cypher[0]
@@ -203,7 +203,7 @@ class TestDeleteNeo4j:
     def test_neo4j_error_is_re_raised(self):
         """Bug fix #1: delete_data_neo4j now re-raises instead of swallowing."""
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("connection refused")
+            neo4j_backend, "get_driver", side_effect=Exception("connection refused")
         ):
             with pytest.raises(Exception, match="connection refused"):
                 neo4j_backend.delete_data("PROJ")
@@ -802,22 +802,22 @@ class TestIsDuplicateQdrant:
 class TestIsDuplicateNeo4j:
     def test_returns_true_when_exists(self):
         driver = _make_neo4j_driver_with_single({"exists": True})
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=driver):
             assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is True
 
     def test_returns_false_when_not_exists(self):
         driver = _make_neo4j_driver_with_single({"exists": False})
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=driver):
             assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_returns_false_when_no_record(self):
         driver = _make_neo4j_driver_with_single(None)
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=driver):
             assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_fail_open_on_exception(self):
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("bolt down")
+            neo4j_backend, "get_driver", side_effect=Exception("bolt down")
         ):
             assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
@@ -943,7 +943,7 @@ class TestDeleteAllQdrant:
 class TestDeleteAllNeo4j:
     def test_runs_detach_delete_all_cypher(self):
         mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             neo4j_backend.delete_all_data()
         cypher = mock_session.run.call_args[0][0]
         assert "MATCH (n)" in cypher
@@ -953,7 +953,7 @@ class TestDeleteAllNeo4j:
 
     def test_propagates_exception(self):
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("bolt down")
+            neo4j_backend, "get_driver", side_effect=Exception("bolt down")
         ):
             with pytest.raises(Exception, match="bolt down"):
                 neo4j_backend.delete_all_data()
@@ -1958,3 +1958,215 @@ class TestSyncProjectFilesSuccessCheck:
 
         assert "Synced 0 of 1" in result
         assert "Errors" in result
+
+
+# ---------------------------------------------------------------------------
+# nexus.backends.neo4j — get_driver() singleton (Fix: v2.2 — connection pool)
+# ---------------------------------------------------------------------------
+
+
+class TestNeo4jGetDriverSingleton:
+    """Verify get_driver() initialises the driver exactly once (singleton)."""
+
+    def test_get_driver_returns_same_instance_on_repeated_calls(self):
+        import nexus.backends.neo4j as _neo4j_mod
+
+        mock_driver = MagicMock()
+        original = _neo4j_mod._driver_instance
+        try:
+            _neo4j_mod._driver_instance = None  # reset singleton for this test
+            with patch("nexus.backends.neo4j.GraphDatabase") as mock_gdb:
+                mock_gdb.driver.return_value = mock_driver
+                d1 = _neo4j_mod.get_driver()
+                d2 = _neo4j_mod.get_driver()
+            assert d1 is d2
+            assert mock_gdb.driver.call_count == 1
+        finally:
+            _neo4j_mod._driver_instance = original  # restore
+
+    def test_get_driver_uses_configured_url_and_auth(self):
+        import nexus.backends.neo4j as _neo4j_mod
+
+        mock_driver = MagicMock()
+        original = _neo4j_mod._driver_instance
+        try:
+            _neo4j_mod._driver_instance = None
+            with patch("nexus.backends.neo4j.GraphDatabase") as mock_gdb:
+                mock_gdb.driver.return_value = mock_driver
+                _neo4j_mod.get_driver()
+            call_args = mock_gdb.driver.call_args
+            assert call_args[0][0] == _neo4j_mod.DEFAULT_NEO4J_URL
+        finally:
+            _neo4j_mod._driver_instance = original
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — project_id validation in get_graph_context / get_vector_context
+# (Fix: v3.6 — missing validation allowed empty project_id through to Neo4j)
+# ---------------------------------------------------------------------------
+
+
+class TestProjectIdValidation:
+    """Verify get_graph_context and get_vector_context reject empty project_id."""
+
+    async def test_graph_context_rejects_empty_project_id(self):
+        result = await nexus_tools.get_graph_context(query="test", project_id="")
+        assert result.startswith("Error:")
+        assert "project_id" in result
+
+    async def test_graph_context_rejects_whitespace_project_id(self):
+        result = await nexus_tools.get_graph_context(query="test", project_id="   ")
+        assert result.startswith("Error:")
+        assert "project_id" in result
+
+    async def test_vector_context_rejects_empty_project_id(self):
+        result = await nexus_tools.get_vector_context(query="test", project_id="")
+        assert result.startswith("Error:")
+        assert "project_id" in result
+
+    async def test_vector_context_rejects_whitespace_project_id(self):
+        result = await nexus_tools.get_vector_context(query="test", project_id="  ")
+        assert result.startswith("Error:")
+        assert "project_id" in result
+
+    async def test_graph_context_accepts_valid_project_id(self):
+        """Valid project_id does NOT trigger the project_id error."""
+        with patch("nexus.tools.get_graph_index") as mock_idx:
+            mock_retriever = AsyncMock()
+            mock_retriever.aretrieve = AsyncMock(return_value=[])
+            mock_idx.return_value.as_retriever.return_value = mock_retriever
+            result = await nexus_tools.get_graph_context(
+                query="test", project_id="MY_PROJECT"
+            )
+        assert "project_id" not in result or "Error" not in result
+
+    async def test_vector_context_accepts_valid_project_id(self):
+        """Valid project_id does NOT trigger the project_id error."""
+        with patch("nexus.tools.get_vector_index") as mock_idx:
+            mock_retriever = AsyncMock()
+            mock_retriever.aretrieve = AsyncMock(return_value=[])
+            mock_idx.return_value.as_retriever.return_value = mock_retriever
+            result = await nexus_tools.get_vector_context(
+                query="test", project_id="MY_PROJECT"
+            )
+        assert "project_id" not in result or "Error" not in result
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — delete_all_data calls invalidate_all_cache
+# (Fix: v3.6 — cache was never cleared after full wipe)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteAllDataCacheInvalidation:
+    """Verify delete_all_data invalidates the entire Redis cache."""
+
+    async def test_invalidate_all_cache_called_on_success(self):
+        with (
+            patch("nexus.tools.neo4j_backend.delete_all_data"),
+            patch("nexus.tools.qdrant_backend.delete_all_data"),
+            patch.object(nexus_tools.cache_module, "invalidate_all_cache") as mock_inv,
+        ):
+            result = await nexus_tools.delete_all_data()
+        mock_inv.assert_called_once()
+        assert "Successfully" in result
+
+    async def test_invalidate_all_cache_called_even_when_neo4j_fails(self):
+        with (
+            patch(
+                "nexus.tools.neo4j_backend.delete_all_data",
+                side_effect=Exception("neo4j down"),
+            ),
+            patch("nexus.tools.qdrant_backend.delete_all_data"),
+            patch.object(nexus_tools.cache_module, "invalidate_all_cache") as mock_inv,
+        ):
+            result = await nexus_tools.delete_all_data()
+        mock_inv.assert_called_once()
+        assert "Partial failure" in result
+
+    async def test_invalidate_all_cache_called_even_when_qdrant_fails(self):
+        with (
+            patch("nexus.tools.neo4j_backend.delete_all_data"),
+            patch(
+                "nexus.tools.qdrant_backend.delete_all_data",
+                side_effect=Exception("qdrant down"),
+            ),
+            patch.object(nexus_tools.cache_module, "invalidate_all_cache") as mock_inv,
+        ):
+            result = await nexus_tools.delete_all_data()
+        mock_inv.assert_called_once()
+        assert "Partial failure" in result
+
+
+# ---------------------------------------------------------------------------
+# nexus.cache — invalidate_all_cache (Fix: v1.4 — new function)
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidateAllCache:
+    """Verify invalidate_all_cache deletes all nexus:* keys."""
+
+    def test_deletes_all_nexus_keys(self):
+        mock_redis = MagicMock()
+        mock_redis.scan_iter.return_value = [
+            "nexus:abc123",
+            "nexus:def456",
+            "nexus:idx:PROJ:SCOPE",
+        ]
+        mock_redis.delete.return_value = 3
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                deleted = _nexus_cache.invalidate_all_cache()
+        assert deleted == 3
+        mock_redis.delete.assert_called_once()
+
+    def test_returns_zero_when_no_nexus_keys(self):
+        mock_redis = MagicMock()
+        mock_redis.scan_iter.return_value = []
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                deleted = _nexus_cache.invalidate_all_cache()
+        assert deleted == 0
+        mock_redis.delete.assert_not_called()
+
+    def test_returns_zero_when_cache_disabled(self):
+        with patch("nexus.cache.CACHE_ENABLED", False):
+            deleted = _nexus_cache.invalidate_all_cache()
+        assert deleted == 0
+
+    def test_returns_zero_on_redis_error(self):
+        mock_redis = MagicMock()
+        mock_redis.scan_iter.side_effect = __import__("redis").RedisError(
+            "conn refused"
+        )
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                deleted = _nexus_cache.invalidate_all_cache()
+        assert deleted == 0
+
+
+# ---------------------------------------------------------------------------
+# nexus.indexes — separate graph/vector locks (Fix: v2.2)
+# ---------------------------------------------------------------------------
+
+
+class TestSeparateIndexLocks:
+    """Verify graph and vector indexes use independent locks."""
+
+    def test_graph_and_vector_locks_are_different_objects(self):
+        from nexus import indexes as nexus_indexes_mod
+
+        assert (
+            nexus_indexes_mod._graph_index_lock
+            is not nexus_indexes_mod._vector_index_lock
+        )
+
+    def test_graph_lock_is_threading_lock(self):
+        from nexus import indexes as nexus_indexes_mod
+
+        assert isinstance(nexus_indexes_mod._graph_index_lock, type(threading.Lock()))
+
+    def test_vector_lock_is_threading_lock(self):
+        from nexus import indexes as nexus_indexes_mod
+
+        assert isinstance(nexus_indexes_mod._vector_index_lock, type(threading.Lock()))

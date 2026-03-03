@@ -101,7 +101,7 @@ class TestNeo4jGetDocumentCount:
         mock_driver.session.return_value.__enter__ = lambda s: mock_session
         mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             count = neo4j_backend.get_document_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 42
             assert mock_session.run.called
@@ -119,14 +119,14 @@ class TestNeo4jGetDocumentCount:
         mock_driver.session.return_value.__enter__ = lambda s: mock_session
         mock_driver.session.return_value.__exit__ = MagicMock(return_value=False)
 
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             count = neo4j_backend.get_document_count("TEST_PROJECT")
             assert count == 100
 
     def test_returns_zero_on_error(self):
         """Verify errors return 0 instead of raising."""
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("Connection failed")
+            neo4j_backend, "get_driver", side_effect=Exception("Connection failed")
         ):
             count = neo4j_backend.get_document_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 0
@@ -155,21 +155,21 @@ class TestNeo4jGetChunkNodeCount:
     def test_counts_chunk_nodes_with_scope(self):
         """Verify chunk count returns correct count with scope filter."""
         mock_driver = self._mock_driver(7)
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             count = neo4j_backend.get_chunk_node_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 7
 
     def test_counts_chunk_nodes_without_scope(self):
         """Verify chunk count works across all scopes."""
         mock_driver = self._mock_driver(20)
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             count = neo4j_backend.get_chunk_node_count("TEST_PROJECT")
             assert count == 20
 
     def test_returns_zero_on_error(self):
         """Verify errors return 0 instead of raising."""
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("Connection failed")
+            neo4j_backend, "get_driver", side_effect=Exception("Connection failed")
         ):
             count = neo4j_backend.get_chunk_node_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 0
@@ -198,21 +198,21 @@ class TestNeo4jGetEntityNodeCount:
     def test_counts_entity_nodes_with_scope(self):
         """Verify entity count traverses from chunk to adjacent nodes."""
         mock_driver = self._mock_driver(150)
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             count = neo4j_backend.get_entity_node_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 150
 
     def test_counts_entity_nodes_without_scope(self):
         """Verify entity count works across all scopes."""
         mock_driver = self._mock_driver(300)
-        with patch.object(neo4j_backend, "neo4j_driver", return_value=mock_driver):
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
             count = neo4j_backend.get_entity_node_count("TEST_PROJECT")
             assert count == 300
 
     def test_returns_zero_on_error(self):
         """Verify errors return 0 instead of raising."""
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("Connection failed")
+            neo4j_backend, "get_driver", side_effect=Exception("Connection failed")
         ):
             count = neo4j_backend.get_entity_node_count("TEST_PROJECT", "TEST_SCOPE")
             assert count == 0
@@ -464,7 +464,7 @@ class TestHealthCheck:
 
     async def test_all_services_healthy(self):
         """Verify health check returns 'ok' when all services are healthy."""
-        with patch.object(neo4j_backend, "neo4j_driver") as mock_driver_factory:
+        with patch.object(neo4j_backend, "get_driver") as mock_driver_factory:
             mock_driver = MagicMock()
             mock_session = MagicMock()
             mock_driver.__enter__ = lambda s: mock_driver
@@ -498,7 +498,7 @@ class TestHealthCheck:
     async def test_neo4j_connection_error(self):
         """Verify Neo4j connection errors are captured."""
         with patch.object(
-            neo4j_backend, "neo4j_driver", side_effect=Exception("Connection refused")
+            neo4j_backend, "get_driver", side_effect=Exception("Connection refused")
         ):
             with patch.object(qdrant_backend, "get_client") as mock_qdrant:
                 mock_client = MagicMock()
@@ -524,7 +524,7 @@ class TestHealthCheck:
 
     async def test_ollama_http_error(self):
         """Verify Ollama HTTP errors are captured."""
-        with patch.object(neo4j_backend, "neo4j_driver") as mock_driver_factory:
+        with patch.object(neo4j_backend, "get_driver") as mock_driver_factory:
             mock_driver = MagicMock()
             mock_session = MagicMock()
             mock_driver.__enter__ = lambda s: mock_driver

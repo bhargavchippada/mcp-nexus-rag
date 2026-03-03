@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.0
+**Version:** v4.1
 
 ## Known Issues
 
@@ -17,6 +17,28 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Round 2 — 4 Bugs Fixed (tools.py v3.6, neo4j.py v2.2, cache.py v1.4, indexes.py v2.2)
+
+**Bug 1 (CRITICAL PERF): `neo4j_driver()` created a new connection pool per call**
+**Root Cause:** Every function in `nexus/backends/neo4j.py` called `with neo4j_driver() as driver:`. The `with` statement invokes `driver.__exit__()` which calls `driver.close()` — destroying the entire connection pool on every single query. This caused constant pool setup/teardown overhead at Neo4j ingestion/query rate.
+**Fix Applied:** Added `get_driver()` singleton with `_driver_instance`/`_driver_lock` (double-checked locking). All 10 internal functions changed from `with neo4j_driver() as driver: with driver.session() as session:` to `with get_driver().session() as session:`. Updated `health_check` in tools.py from `neo4j_backend.neo4j_driver()` to `neo4j_backend.get_driver()`. Kept `neo4j_driver()` as deprecated backward-compat function.
+**Prevention Guideline:** Never use `GraphDatabase.driver()` as a context manager for short-lived calls — it's expensive to create and the `with` block destroys the pool on exit. Use a process-level singleton accessed via `get_driver()`. The Qdrant backend already had this pattern right.
+
+**Bug 2 (MEDIUM): Empty `project_id` silently passed through to Neo4j/Qdrant**
+**Root Cause:** `get_graph_context` and `get_vector_context` validated `query` but not `project_id`. An empty string `project_id=""` passed through to Neo4j filters and returned empty results without any error indication — callers had no signal that the request was malformed.
+**Fix Applied:** Added `if not project_id or not project_id.strip(): return "Error: 'project_id' must not be empty."` in both functions, symmetric with the query validation already present.
+**Prevention Guideline:** Validate all required string parameters at the entry of every public tool. Check both `query` and `project_id` together when both are required.
+
+**Bug 3 (MEDIUM): `delete_all_data` never invalidated Redis cache**
+**Root Cause:** `delete_all_data` wiped Neo4j and Qdrant but never called any cache invalidation. After a full wipe, `get_vector_context`/`get_graph_context` could serve stale cached results from before the wipe.
+**Fix Applied:** Added `invalidate_all_cache()` to `cache.py` (scans/deletes all `nexus:*` keys via `scan_iter`). Added `cache_module.invalidate_all_cache()` call in `delete_all_data` in tools.py after both backend deletes.
+**Prevention Guideline:** Any operation that modifies data must invalidate the cache. `delete_all_data` is more destructive than `delete_tenant_data` — use `invalidate_all_cache()` for global wipes, `invalidate_cache(project_id, scope)` for targeted wipes.
+
+**Bug 4 (LOW): Shared `_index_cache_lock` for both graph and vector index init**
+**Root Cause:** `nexus/indexes.py` used a single `_index_cache_lock` for both `get_graph_index()` and `get_vector_index()`. If two coroutines tried to initialise both indexes concurrently, one would block waiting for the other's lock even though the two are fully independent.
+**Fix Applied:** Split into `_graph_index_lock` and `_vector_index_lock`.
+**Prevention Guideline:** Use per-resource locks, not shared locks, unless there is a true dependency between the resources. Independent singletons need independent locks.
 
 ### [2026-03-03] Deep Code Review — 11 Bugs Fixed (v3.5/v1.2/v1.7)
 

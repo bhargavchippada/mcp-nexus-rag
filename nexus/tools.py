@@ -1,4 +1,4 @@
-# Version: v3.5
+# Version: v3.6
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -385,6 +385,8 @@ async def get_graph_context(
     """
     if not query or not query.strip():
         return "Error: 'query' must not be empty."
+    if not project_id or not project_id.strip():
+        return "Error: 'project_id' must not be empty."
     scope_label = scope if scope else "all scopes"
     logger.info(
         f"Graph retrieve: project={project_id} scope={scope_label} "
@@ -709,6 +711,8 @@ async def get_vector_context(
     """
     if not query or not query.strip():
         return "Error: 'query' must not be empty."
+    if not project_id or not project_id.strip():
+        return "Error: 'project_id' must not be empty."
     scope_label = scope if scope else "all scopes"
     logger.info(
         f"Vector retrieve: project={project_id} scope={scope_label} "
@@ -1011,9 +1015,8 @@ async def health_check() -> dict[str, str]:
 
     # Check Neo4j
     try:
-        with neo4j_backend.neo4j_driver() as driver:
-            with driver.session() as session:
-                session.run("RETURN 1")
+        with neo4j_backend.get_driver().session() as session:
+            session.run("RETURN 1")
         status["neo4j"] = "ok"
     except Exception as e:
         status["neo4j"] = f"error: {str(e)[:100]}"
@@ -1351,6 +1354,9 @@ async def delete_all_data() -> str:
         qdrant_backend.delete_all_data()
     except Exception as e:
         errors.append(f"Qdrant: {e}")
+
+    # Invalidate the entire Redis cache — all entries are now stale
+    cache_module.invalidate_all_cache()
 
     if errors:
         return f"Partial failure deleting all data: {'; '.join(errors)}"

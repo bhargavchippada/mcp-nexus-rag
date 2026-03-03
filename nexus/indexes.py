@@ -1,4 +1,4 @@
-# Version: v2.1
+# Version: v2.2
 """
 nexus.indexes — LlamaIndex settings bootstrap and index factories.
 """
@@ -48,7 +48,10 @@ _settings_lock = threading.Lock()
 # ---------------------------------------------------------------------------
 _graph_index_cache = None
 _vector_index_cache = None
-_index_cache_lock = threading.Lock()
+# Separate locks so graph and vector index initialisation can proceed in
+# parallel; a shared lock would serialise them unnecessarily.
+_graph_index_lock = threading.Lock()
+_vector_index_lock = threading.Lock()
 
 
 def setup_settings() -> None:
@@ -93,7 +96,7 @@ def get_graph_index() -> PropertyGraphIndex:
     if _graph_index_cache is not None:
         return _graph_index_cache
 
-    with _index_cache_lock:
+    with _graph_index_lock:
         if _graph_index_cache is not None:
             return _graph_index_cache
 
@@ -134,7 +137,7 @@ def get_vector_index() -> VectorStoreIndex:
     if _vector_index_cache is not None:
         return _vector_index_cache
 
-    with _index_cache_lock:
+    with _vector_index_lock:
         if _vector_index_cache is not None:
             return _vector_index_cache
 

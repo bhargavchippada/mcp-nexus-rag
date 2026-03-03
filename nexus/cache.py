@@ -1,4 +1,4 @@
-# Version: v1.3
+# Version: v1.4
 """
 nexus.cache — Semantic caching for repeated LLM queries.
 
@@ -207,6 +207,29 @@ def invalidate_cache(project_id: str, scope: str = "") -> int:
     except redis.RedisError as e:
         logger.warning(f"Redis invalidate error: {e}")
 
+    return 0
+
+
+def invalidate_all_cache() -> int:
+    """Invalidate the entire Nexus cache across all projects and scopes.
+
+    Used by destructive operations that wipe all data (e.g., ``delete_all_data``).
+    Scans and deletes every Redis key with the ``nexus:`` prefix.
+
+    Returns:
+        Number of Redis keys deleted, 0 if cache is disabled or on error.
+    """
+    if not CACHE_ENABLED:
+        return 0
+    try:
+        r = get_redis()
+        keys = list(r.scan_iter(match="nexus:*", count=1000))
+        if keys:
+            deleted = r.delete(*keys)
+            logger.warning(f"Cache: invalidated ALL nexus keys ({deleted} deleted)")
+            return deleted
+    except redis.RedisError as e:
+        logger.warning(f"Redis invalidate_all error: {e}")
     return 0
 
 

@@ -2,7 +2,16 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v1.9
+**Version:** v2.0
+
+## Completed (2026-03-03 — deep review round 2)
+
+- [x] Fix CRITICAL PERF: `neo4j_driver()` created new connection pool per call — replaced with `get_driver()` singleton (double-checked locking); all 10 functions in neo4j.py updated; health_check in tools.py updated (fixed 2026-03-03)
+- [x] Fix MEDIUM: Missing `project_id` validation in `get_graph_context` / `get_vector_context` — empty/whitespace project_id passed through to Neo4j returning empty results with no error (fixed 2026-03-03)
+- [x] Fix MEDIUM: `delete_all_data` never invalidated Redis cache — added `cache_module.invalidate_all_cache()` after backend wipes (fixed 2026-03-03)
+- [x] Fix LOW: Shared `_index_cache_lock` for both graph and vector index init in indexes.py — split into `_graph_index_lock` and `_vector_index_lock` to allow parallel init (fixed 2026-03-03)
+- [x] Add `invalidate_all_cache()` to cache.py (v1.3→v1.4) — scans and deletes all `nexus:*` keys; used by `delete_all_data`
+- [x] 18 new tests added (306→324 total); ruff clean; neo4j.py v2.1→v2.2, cache.py v1.3→v1.4, indexes.py v2.1→v2.2, tools.py v3.5→v3.6, test_unit.py v2.4→v2.5
 
 ## Hardening
 

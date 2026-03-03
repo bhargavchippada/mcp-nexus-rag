@@ -73,12 +73,12 @@ def disable_cache(monkeypatch):
 
 @pytest.fixture()
 def mock_neo4j_driver(monkeypatch):
-    """Fixture that returns a helper that patches neo4j_backend.neo4j_driver."""
+    """Fixture that returns a helper that patches neo4j_backend.get_driver."""
     from nexus.backends import neo4j as neo4j_backend
 
     def _factory(session_records=None):
         driver, session = make_neo4j_driver(session_records)
-        monkeypatch.setattr(neo4j_backend, "neo4j_driver", lambda: driver)
+        monkeypatch.setattr(neo4j_backend, "get_driver", lambda: driver)
         return driver, session
 
     return _factory
