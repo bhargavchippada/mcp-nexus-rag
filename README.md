@@ -310,18 +310,56 @@ EOF
 
 ## MCP Client Configuration
 
-Add to `claude_desktop_config.json` or your Cursor MCP settings (replace the path):
+For the Antigravity workspace the active config lives at `~/antigravity/.mcp.json`.
+Both `nexus` and `code-graph-rag` are auto-started by Claude Code on session init.
+
+**Nexus RAG** entry (uses venv Python for dependency isolation):
 
 ```json
 {
   "mcpServers": {
-    "nexus-rag": {
+    "nexus": {
+      "command": "/home/turiya/antigravity/projects/mcp-nexus-rag/.venv/bin/python",
+      "args": ["/home/turiya/antigravity/projects/mcp-nexus-rag/server.py"],
+      "env": {
+        "OLLAMA_URL": "http://localhost:11434",
+        "NEO4J_URL": "bolt://localhost:7687",
+        "QDRANT_URL": "http://localhost:6333",
+        "REDIS_URL": "redis://localhost:6379"
+      }
+    }
+  }
+}
+```
+
+**Code-Graph-RAG** entry (uses `uv run` from the code-graph-rag repo):
+
+```json
+{
+  "mcpServers": {
+    "code-graph-rag": {
+      "command": "/home/turiya/.local/bin/uv",
+      "args": ["run", "--directory", "/home/turiya/code-graph-rag", "code-graph-rag", "mcp-server"],
+      "env": {
+        "TARGET_REPO_PATH": "/home/turiya/antigravity",
+        "CYPHER_PROVIDER": "ollama",
+        "CYPHER_MODEL": "llama3.1:8b",
+        "OLLAMA_BASE_URL": "http://localhost:11434",
+        "MEMGRAPH_PORT": "7688"
+      }
+    }
+  }
+}
+```
+
+**Other clients** (Cursor, Claude Desktop — replace the path):
+
+```json
+{
+  "mcpServers": {
+    "nexus": {
       "command": "poetry",
-      "args": [
-        "run",
-        "python",
-        "/absolute/path/to/projects/mcp-nexus-rag/server.py"
-      ]
+      "args": ["run", "python", "/absolute/path/to/mcp-nexus-rag/server.py"]
     }
   }
 }
@@ -494,15 +532,23 @@ Add to Claude Code (`~/.claude.json`) or Gemini (`~/.gemini/antigravity/mcp_conf
 Use the automation script to start all services after a reboot:
 
 ```bash
-# Start all Antigravity AI services
+# Start all Antigravity AI services (Neo4j, Qdrant, Redis, Ollama, Postgres, Memgraph)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh
+
+# Start Code-Graph-RAG realtime watcher (keeps Memgraph in sync with code changes)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --watcher
 
 # Check status
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --status
 
-# Re-index antigravity codebase
+# Run health checks on all services (Neo4j, Qdrant, Ollama, Redis, Memgraph)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --health
+
+# Re-index antigravity codebase into Memgraph
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --reindex
 ```
+
+> **MCP Servers**: Both `nexus` and `code-graph-rag` MCP servers are **automatically started by Claude Code** on session init using `~/antigravity/.mcp.json` — no manual action needed. See [AGENTS.md](AGENTS.md) → *Services — Full Startup* for the complete service map and after-reboot checklist.
 
 ---
 
