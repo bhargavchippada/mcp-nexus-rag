@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.3
+**Version:** v4.4
 
 ## Known Issues
 
@@ -17,6 +17,13 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Round 5 — 1 Bug Fixed (tools.py v3.9, test_unit.py v2.8)
+
+**Bug L2-1 (MEDIUM): Batch ingest chunk loops had no per-chunk error handling**
+**Root Cause:** `ingest_graph_documents_batch` and `ingest_vector_documents_batch` in `nexus/tools.py` had no `try/except` around individual chunk inserts in the batch chunk loop. An exception on chunk N (e.g., Neo4j/Qdrant connection failure mid-batch) would propagate to the outer document-level `try/except`, causing: (1) remaining chunks N+1..end to be silently skipped, (2) error count incremented by 1 for the entire document even though multiple chunks failed, (3) `invalidation_keys` not updated for partially-succeeded documents. The single-doc ingest path already had per-chunk try/except — the batch path was inconsistently missing it.
+**Fix Applied:** Added per-chunk `try/except Exception as chunk_err` in both batch chunk loops, symmetric with the single-doc path.
+**Prevention Guideline:** When copying logic from a single-item path to a batch path, always verify exception granularity. Batch paths should fail at the same level as single-item paths — typically per-item (or per-chunk for chunked items), not per-batch.
 
 ### [2026-03-03] Deep Code Review Round 4 — 2 Bugs Fixed + 2 Enhancements (qdrant.py v2.4, sync.py v1.2, tools.py v3.8, indexes.py v2.3)
 

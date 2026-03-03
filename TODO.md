@@ -2,7 +2,12 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.2
+**Version:** v2.3
+
+## Completed (2026-03-03 — deep review round 5)
+
+- [x] Fix MEDIUM: Batch ingest chunk loops had no per-chunk try/except — error on chunk N silently skipped chunks N+1..end; single-doc ingest had per-chunk error handling but batch did not (fixed 2026-03-03)
+- [x] 6 new tests added (357→363 total); ruff clean; tools.py v3.8→v3.9, test_unit.py v2.7→v2.8
 
 ## Completed (2026-03-03 — deep review round 4)
 

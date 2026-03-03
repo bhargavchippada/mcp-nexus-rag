@@ -1,4 +1,4 @@
-# Version: v3.8
+# Version: v3.9
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -305,17 +305,23 @@ async def ingest_graph_documents_batch(
                         skipped += 1
                         continue
 
-                    index = get_graph_index()
-                    doc = Document(
-                        text=chunk,
-                        doc_id=chash,
-                        metadata=_make_metadata(
-                            project_id, scope, chunk_source, chash, file_path
-                        ),
-                    )
-                    index.insert(doc)
-                    ingested += 1
-                    invalidation_keys.add((project_id, scope))
+                    try:
+                        index = get_graph_index()
+                        doc = Document(
+                            text=chunk,
+                            doc_id=chash,
+                            metadata=_make_metadata(
+                                project_id, scope, chunk_source, chash, file_path
+                            ),
+                        )
+                        index.insert(doc)
+                        ingested += 1
+                        invalidation_keys.add((project_id, scope))
+                    except Exception as chunk_err:
+                        logger.error(
+                            f"Error in batch Graph chunk {i + 1}/{len(chunks)}: {chunk_err}"
+                        )
+                        errors += 1
                 continue
 
             # Standard single-document path
@@ -629,17 +635,23 @@ async def ingest_vector_documents_batch(
                         skipped += 1
                         continue
 
-                    index = get_vector_index()
-                    doc = Document(
-                        text=chunk,
-                        doc_id=chash,
-                        metadata=_make_metadata(
-                            project_id, scope, chunk_source, chash, file_path
-                        ),
-                    )
-                    index.insert(doc)
-                    ingested += 1
-                    invalidation_keys.add((project_id, scope))
+                    try:
+                        index = get_vector_index()
+                        doc = Document(
+                            text=chunk,
+                            doc_id=chash,
+                            metadata=_make_metadata(
+                                project_id, scope, chunk_source, chash, file_path
+                            ),
+                        )
+                        index.insert(doc)
+                        ingested += 1
+                        invalidation_keys.add((project_id, scope))
+                    except Exception as chunk_err:
+                        logger.error(
+                            f"Error in batch Vector chunk {i + 1}/{len(chunks)}: {chunk_err}"
+                        )
+                        errors += 1
                 continue
 
             # Standard single-document path

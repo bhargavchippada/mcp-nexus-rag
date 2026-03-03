@@ -1,4 +1,4 @@
-# Version: v2.7
+# Version: v2.8
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -2582,3 +2582,150 @@ class TestIndexResetFunctions:
         nexus_indexes.reset_vector_index()
         nexus_indexes.reset_vector_index()
         assert nexus_indexes._vector_index_cache is None
+
+
+# ---------------------------------------------------------------------------
+# TestBatchChunkErrorRecovery (Loop 5 — Bug L2-1)
+# ---------------------------------------------------------------------------
+
+
+class TestBatchChunkErrorRecovery:
+    """Per-chunk try/except in batch ingest — errors on one chunk don't skip siblings."""
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk_a", "chunk_b", "chunk_c"])
+    @patch("nexus.tools.get_graph_index")
+    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.cache_module")
+    async def test_graph_batch_chunk_error_continues_remaining_chunks(
+        self, mock_cache, mock_neo4j, mock_get_index, _mock_chunk, _mock_needs
+    ):
+        """A chunk insert error must not abort remaining chunks of the same document."""
+        mock_neo4j.is_duplicate.return_value = False
+
+        call_count = 0
+
+        def failing_insert(doc):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("simulated chunk insert failure")
+
+        mock_index = MagicMock()
+        mock_index.insert.side_effect = failing_insert
+        mock_get_index.return_value = mock_index
+
+        result = await nexus_tools.ingest_graph_documents_batch(
+            [{"text": "x" * 100, "project_id": "P", "scope": "S"}]
+        )
+
+        # First chunk errored, remaining 2 were still attempted
+        assert result["errors"] >= 1
+        assert result["ingested"] >= 1  # At least 2 of 3 succeeded
+        assert mock_index.insert.call_count == 3  # All 3 chunks were attempted
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk_a", "chunk_b", "chunk_c"])
+    @patch("nexus.tools.get_vector_index")
+    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.cache_module")
+    async def test_vector_batch_chunk_error_continues_remaining_chunks(
+        self, mock_cache, mock_qdrant, mock_get_index, _mock_chunk, _mock_needs
+    ):
+        """A chunk insert error must not abort remaining chunks (vector batch)."""
+        mock_qdrant.is_duplicate.return_value = False
+
+        call_count = 0
+
+        def failing_insert(doc):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("simulated chunk insert failure")
+
+        mock_index = MagicMock()
+        mock_index.insert.side_effect = failing_insert
+        mock_get_index.return_value = mock_index
+
+        result = await nexus_tools.ingest_vector_documents_batch(
+            [{"text": "x" * 100, "project_id": "P", "scope": "S"}]
+        )
+
+        assert result["errors"] >= 1
+        assert result["ingested"] >= 1  # Remaining chunks succeeded
+        assert mock_index.insert.call_count == 3  # All 3 chunks attempted
+
+    @patch("nexus.tools.get_graph_index")
+    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.cache_module")
+    async def test_graph_batch_empty_documents_returns_zeros(
+        self, mock_cache, mock_neo4j, mock_get_index
+    ):
+        """Empty document list returns all-zero counts."""
+        result = await nexus_tools.ingest_graph_documents_batch([])
+        assert result == {"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0}
+
+    @patch("nexus.tools.get_vector_index")
+    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.cache_module")
+    async def test_vector_batch_empty_documents_returns_zeros(
+        self, mock_cache, mock_qdrant, mock_get_index
+    ):
+        """Empty document list returns all-zero counts."""
+        result = await nexus_tools.ingest_vector_documents_batch([])
+        assert result == {"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0}
+
+
+# ---------------------------------------------------------------------------
+# TestAnswerQueryBothBackendsFail (Loop 5)
+# ---------------------------------------------------------------------------
+
+
+class TestAnswerQueryBothBackendsFail:
+    """answer_query gracefully handles concurrent failures from both backends."""
+
+    async def test_both_fail_returns_no_context_message(self):
+        """When graph and vector both fail, returns 'No context found' (not an exception)."""
+        with (
+            patch("nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")),
+            patch("nexus.tools.get_vector_index", side_effect=RuntimeError("qdrant down")),
+            patch("nexus.tools.cache_module") as mock_cache,
+        ):
+            mock_cache.get_cached.return_value = None
+            result = await nexus_tools.answer_query("any query", "PROJ")
+
+        assert "No context found" in result
+        assert "PROJ" in result
+
+    async def test_graph_fails_vector_succeeds_still_answers(self):
+        """When graph fails but vector has results, answer is generated from vector only."""
+        mock_vector_node = MagicMock()
+        mock_vector_node.node.get_content.return_value = "vector passage"
+        mock_vector_node.score = 0.9
+
+        mock_vector_index = MagicMock()
+        mock_vector_retriever = MagicMock()
+        mock_vector_retriever.aretrieve = AsyncMock(return_value=[mock_vector_node])
+        mock_vector_index.as_retriever.return_value = mock_vector_retriever
+
+        with (
+            patch("nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")),
+            patch("nexus.tools.get_vector_index", return_value=mock_vector_index),
+            patch("nexus.tools.cache_module") as mock_cache,
+            patch("nexus.tools.RERANKER_ENABLED", False),
+            patch("nexus.tools.httpx.AsyncClient") as mock_http,
+        ):
+            mock_cache.get_cached.return_value = None
+            mock_http_instance = AsyncMock()
+            mock_http.return_value.__aenter__.return_value = mock_http_instance
+            mock_response = MagicMock()
+            mock_response.raise_for_status = MagicMock()
+            mock_response.json.return_value = {
+                "message": {"content": "answer from vector"}
+            }
+            mock_http_instance.post = AsyncMock(return_value=mock_response)
+
+            await nexus_tools.answer_query("query", "PROJ")
+
+        # Should have tried the LLM with the vector context
+        assert mock_http_instance.post.called
