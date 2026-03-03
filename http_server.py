@@ -1,4 +1,4 @@
-# Version: v1.7
+# Version: v1.8
 """
 HTTP API server for Nexus RAG.
 
@@ -235,7 +235,7 @@ async def http_query(request: QueryRequest):
     scopes_to_query = [scope] if scope else []
     if not scopes_to_query:
         all_scopes = await get_all_tenant_scopes(project_id=project_id)
-        scopes_to_query = list(all_scopes) if all_scopes else ["CORE_CODE"]
+        scopes_to_query = list(all_scopes) if all_scopes else [""]
 
     # Query all scopes concurrently
     # max_chars=0 disables truncation since we parse into structured results

@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 Tests for nexus.watcher — RAG sync daemon.
 """
@@ -286,7 +286,9 @@ class TestSyncChanged:
         f.write_text("no change")
         with (
             patch("nexus.watcher.check_file_changed", return_value=False),
-            patch("nexus.tools.ingest_graph_document", new_callable=AsyncMock) as mock_g,
+            patch(
+                "nexus.tools.ingest_graph_document", new_callable=AsyncMock
+            ) as mock_g,
         ):
             await _sync_changed([str(f)], workspace)
             mock_g.assert_not_called()
@@ -411,8 +413,34 @@ class TestSyncDeleted:
         with (
             patch("nexus.watcher.neo4j_backend") as mock_neo4j,
             patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module"),
         ):
             await _sync_deleted([str(f)], workspace)
             mock_neo4j.delete_by_filepath.assert_called_once_with(
                 "MISSION_CONTROL", str(f), "CORE_DOCS"
             )
+
+    async def test_cache_invalidated_after_delete(self, tmp_path):
+        """_sync_deleted must invalidate cache so stale results are not served."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module") as mock_cache,
+        ):
+            await _sync_deleted([str(f)], workspace)
+        mock_cache.invalidate_cache.assert_called_once_with("AGENT", "PERSONA")
+
+    async def test_cache_not_invalidated_for_unclassified_path(self, tmp_path):
+        """Unclassified paths must not trigger cache invalidation."""
+        untracked = str(tmp_path / "some_random_file.txt")
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module") as mock_cache,
+        ):
+            await _sync_deleted([untracked], tmp_path)
+        mock_cache.invalidate_cache.assert_not_called()

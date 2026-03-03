@@ -322,8 +322,10 @@ class TestGetVectorContextReranker:
         result = await tools.get_vector_context("test query", "PROJ", "SCOPE")
 
         lines = [line for line in result.split("\n") if line.startswith("- ")]
-        assert lines[0] == "- high relevance"
-        assert lines[1] == "- low relevance"
+        # Format: - [score: X.XXXX] content
+        assert "high relevance" in lines[0]
+        assert "low relevance" in lines[1]
+        assert "[score:" in lines[0]  # Verify score is included
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +469,10 @@ class TestGetGraphContextReranker:
         result = await tools.get_graph_context("test query", "PROJ", "SCOPE")
 
         lines = [line for line in result.split("\n") if line.startswith("- ")]
-        assert lines[0] == "- high graph"
-        assert lines[1] == "- low graph"
+        # Format: - [score: X.XXXX] content
+        assert "high graph" in lines[0]
+        assert "low graph" in lines[1]
+        assert "[score:" in lines[0]  # Verify score is included
 
 
 # ---------------------------------------------------------------------------

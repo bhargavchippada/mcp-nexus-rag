@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -36,6 +36,7 @@ from nexus.sync import (
 )
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
+from nexus import cache as cache_module
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -113,9 +114,7 @@ class CoreDocEventHandler(FileSystemEventHandler):
         now = time.monotonic()
         with self._lock:
             ready_changed = [
-                p
-                for p, t in self._pending_changed.items()
-                if now - t >= debounce
+                p for p, t in self._pending_changed.items() if now - t >= debounce
             ]
             for p in ready_changed:
                 del self._pending_changed[p]
@@ -208,6 +207,7 @@ async def _sync_deleted(paths: list[str], workspace_root: Path) -> None:
             continue
         project_id, scope = classification
         _delete_from_rag(project_id, abs_path_str, scope)
+        cache_module.invalidate_cache(project_id, scope)
         logger.info(f"Watcher: removed deleted file from RAG: {abs_path_str}")
 
 
@@ -277,7 +277,9 @@ def main() -> None:
         help=f"Seconds after last file event before syncing (default: {DEBOUNCE_SECONDS})",
     )
     args = parser.parse_args()
-    asyncio.run(run_watcher(workspace_root=Path(args.workspace), debounce=args.debounce))
+    asyncio.run(
+        run_watcher(workspace_root=Path(args.workspace), debounce=args.debounce)
+    )
 
 
 if __name__ == "__main__":

@@ -2,7 +2,17 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.0
+**Version:** v2.1
+
+## Completed (2026-03-03 — deep review round 3)
+
+- [x] Fix CRASH: `scroll_field` in qdrant.py added None payload values to `set[str]` — `sorted()` raised `TypeError` in `get_all_tenant_scopes` / `print_all_stats`; added `is not None` guard (fixed 2026-03-03)
+- [x] Fix MEDIUM: `sync_deleted_files` MCP tool — deleted from backends without Redis cache invalidation; stale cached results persisted (fixed 2026-03-03)
+- [x] Fix MEDIUM: `sync_project_files` stale cleanup — `delete_stale_files` removed backend data without cache invalidation; added per-scope `invalidate_cache` call when stale files are deleted (fixed 2026-03-03)
+- [x] Fix MEDIUM: `watcher._sync_deleted` — `_delete_from_rag` removed backend data without cache invalidation; added `cache_module.invalidate_cache` after each deletion (fixed 2026-03-03)
+- [x] Fix LOW: `http_server.py` fallback scope was hardcoded `["CORE_CODE"]` — should be `[""]` (empty = all scopes) when no scopes found for a project (fixed 2026-03-03)
+- [x] Add `invalidate_project_cache` MCP tool — exposes cache invalidation without data deletion; useful for forcing fresh results after external modifications (fixed 2026-03-03)
+- [x] 15 new tests added (324→339 total); ruff clean; qdrant.py v2.2→v2.3, tools.py v3.6→v3.7, watcher.py v1.0→v1.1, http_server.py v1.7→v1.8, test_unit.py v2.5→v2.6, test_watcher.py v1.0→v1.1
 
 ## Completed (2026-03-03 — deep review round 2)
 

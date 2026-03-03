@@ -1,4 +1,4 @@
-# Version: v3.6
+# Version: v3.7
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -1500,6 +1500,10 @@ async def sync_deleted_files(
             except Exception as e:
                 errors.append(f"{rel_path}: {e}")
 
+    # Invalidate cache for this project/scope if any files were removed
+    if removed_count > 0:
+        cache_module.invalidate_cache(project_id, scope)
+
     res = f"Synchronized databases. Removed {removed_count} stale file entries."
     if errors:
         res += "\nErrors occurred during sync:\n" + "\n".join(errors[:10])
@@ -1592,6 +1596,8 @@ async def sync_project_files(
         try:
             deleted = sync_module.delete_stale_files(workspace_root, project_id, scope)
             stale_deleted.extend(deleted)
+            if deleted:
+                cache_module.invalidate_cache(project_id, scope)
         except Exception as e:
             logger.warning(f"Stale cleanup error for {project_id}/{scope}: {e}")
 
@@ -1626,6 +1632,33 @@ async def list_core_doc_files(
         lines.append(f"  - {f['source']} ({f['project_id']}/{f['scope']})")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def invalidate_project_cache(project_id: str, scope: str = "") -> str:
+    """Invalidate Redis cache entries for a specific project without deleting data.
+
+    Clears cached query results (get_vector_context, get_graph_context, answer_query)
+    for the given project/scope. Use after external data modifications or when you
+    need to force fresh retrieval results.
+
+    Args:
+        project_id: Tenant project ID. Must not be empty.
+        scope: Optional tenant scope. If empty, invalidates cached cross-scope
+            (all-scopes) queries. If provided, also invalidates cross-scope queries
+            since scoped additions make them stale.
+
+    Returns:
+        Confirmation message with count of cache keys cleared.
+    """
+    if not project_id or not project_id.strip():
+        return "Error: 'project_id' must not be empty."
+
+    count = cache_module.invalidate_cache(project_id, scope)
+    label = f"project '{project_id}'"
+    if scope:
+        label += f", scope '{scope}'"
+    return f"Invalidated {count} cache key(s) for {label}."
 
 
 @mcp.tool()

@@ -1,4 +1,4 @@
-# Version: v2.2
+# Version: v2.3
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
@@ -95,7 +95,9 @@ def scroll_field(
         )
         for record in records:
             if record.payload and key in record.payload:
-                values.add(record.payload[key])
+                val = record.payload[key]
+                if val is not None:
+                    values.add(val)
         if offset is None:
             break
     return values

@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.1
+**Version:** v4.2
 
 ## Known Issues
 
@@ -17,6 +17,36 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Round 3 — 5 Bugs Fixed + New Tool (qdrant.py v2.3, tools.py v3.7, watcher.py v1.1, http_server.py v1.8)
+
+**Bug 1 (CRASH): `scroll_field` None values crash `sorted()`**
+**Root Cause:** `nexus/backends/qdrant.py scroll_field()` added `record.payload[key]` directly to `set[str]` without checking for `None`. When any record has a `None` payload value, the resulting set contains `None`. Callers like `get_all_tenant_scopes` and `print_all_stats` then call `sorted(graph_scopes | vector_scopes)` which raises `TypeError: '<' not supported between instances of 'str' and 'NoneType'` — a complete crash.
+**Fix Applied:** Added `if val is not None: values.add(val)` guard in `scroll_field`.
+**Prevention Guideline:** External data can always have unexpected None values. Always filter None before adding to typed collections, and before calling `sorted()` on mixed-type sets.
+
+**Bug 2 (MEDIUM): `sync_deleted_files` no cache invalidation after deletion**
+**Root Cause:** The `sync_deleted_files` MCP tool called `neo4j_backend.delete_by_filepath` / `qdrant_backend.delete_by_filepath` directly (bypassing the tool layer), so `cache_module.invalidate_cache` was never called. Cached results for queries served stale content from deleted files.
+**Fix Applied:** Added `cache_module.invalidate_cache(project_id, scope)` after the deletion loop when `removed_count > 0`.
+**Prevention Guideline:** Any code path that calls backend delete functions directly (not via ingest tools) must explicitly call `cache_module.invalidate_cache` — the tool-layer ingest functions handle this, but raw backend calls do not.
+
+**Bug 3 (MEDIUM): `sync_project_files` stale cleanup no cache invalidation**
+**Root Cause:** `sync_project_files` called `sync_module.delete_stale_files()` which removes documents from Neo4j and Qdrant backends but has no knowledge of the Redis cache. The deletion left stale cache entries for the affected project/scope.
+**Fix Applied:** After `delete_stale_files` returns non-empty `deleted`, call `cache_module.invalidate_cache(project_id, scope)` for that pair.
+**Prevention Guideline:** Same as Bug 2 — anytime data is removed from backends outside the ingest tool layer, the cache must be manually invalidated.
+
+**Bug 4 (MEDIUM): `watcher._sync_deleted` no cache invalidation after backend deletion**
+**Root Cause:** `watcher.py _sync_deleted` called `_delete_from_rag()` which deletes directly from Neo4j/Qdrant. After a file is deleted from disk and its RAG entries removed, the Redis cache still held the old retrieval results. Future queries within the TTL window would return content from deleted files.
+**Fix Applied:** Added `from nexus import cache as cache_module` import to watcher.py. Added `cache_module.invalidate_cache(project_id, scope)` after each successful `_delete_from_rag` call.
+**Prevention Guideline:** All watcher delete paths (file deletions, moves) must mirror the cache invalidation done by the ingest tool layer.
+
+**Bug 5 (LOW): `http_server.py` fallback scope hardcoded to `"CORE_CODE"`**
+**Root Cause:** When no scopes were found for a project in the HTTP `/query` endpoint, the code fell back to `["CORE_CODE"]` instead of `[""]`. An empty scope string passed to `get_vector_context`/`get_graph_context` means "query all scopes" — but `"CORE_CODE"` would only match that specific scope, returning no results for projects with different scope names.
+**Fix Applied:** Changed fallback from `["CORE_CODE"]` to `[""]` in `http_server.py`.
+**Prevention Guideline:** Scope `""` is the "all scopes" sentinel in this system. Never hardcode a specific scope as a fallback — use `""` to let the system search everything.
+
+**New Tool: `invalidate_project_cache`**
+Added as `@mcp.tool()` in tools.py. Exposes targeted Redis cache invalidation (by project_id + optional scope) without deleting any backend data. Useful for forcing fresh results after external data modifications or debugging cache issues.
 
 ### [2026-03-03] Deep Code Review Round 2 — 4 Bugs Fixed (tools.py v3.6, neo4j.py v2.2, cache.py v1.4, indexes.py v2.2)
 

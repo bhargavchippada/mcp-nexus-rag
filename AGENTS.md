@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.5
+**Version:** v1.6
 
 ## Services — Full Startup
 
@@ -62,9 +62,9 @@ uv run --directory /home/turiya/code-graph-rag code-graph-rag mcp-server
 # Env: TARGET_REPO_PATH=~/antigravity, MEMGRAPH_PORT=7688, CYPHER_MODEL=llama3.1:8b
 ```
 
-**All 13 MCP servers** are defined in `~/antigravity/.mcp.json`:
-`nexus`, `code-graph-rag`, `github-mcp-server`, `puppeteer`, `sequential-thinking`,
-`notion`, `fetch`, `filesystem`, `postgres`, `redis`, `git`, `time`, `docker`
+**All 15 MCP servers** are defined in `~/antigravity/.mcp.json`:
+`nexus`, `code-graph-rag`, `github-mcp-server`, `puppeteer`, `playwright`, `chrome-devtools`,
+`sequential-thinking`, `notion`, `fetch`, `filesystem`, `postgres`, `redis`, `git`, `time`, `docker`
 
 To reload MCP servers after editing `.mcp.json`, restart the Claude Code session.
 
@@ -174,7 +174,10 @@ curl -X POST http://localhost:11434/api/generate \
 
 # Test Redis cache
 redis-cli ping                        # Expected: PONG
-redis-cli keys "nexus:*" | wc -l     # Count cached RAG queries
+redis-cli --scan --pattern "nexus:*" | wc -l     # Count cached RAG queries
+
+# Clear Redis cache (all nexus keys — safe to run after code changes)
+redis-cli --scan --pattern "nexus:*" | xargs -r redis-cli del && echo "Cache cleared"
 
 # Test reranker loads without errors
 poetry run python -c "from nexus.reranker import get_reranker; r = get_reranker(); print('Reranker OK:', type(r).__name__)"

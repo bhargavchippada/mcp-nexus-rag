@@ -1,4 +1,4 @@
-# Version: v2.5
+# Version: v2.6
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -2170,3 +2170,165 @@ class TestSeparateIndexLocks:
         from nexus import indexes as nexus_indexes_mod
 
         assert isinstance(nexus_indexes_mod._vector_index_lock, type(threading.Lock()))
+
+
+# ---------------------------------------------------------------------------
+# nexus.backends.qdrant — scroll_field None-value filtering (Bug fix v2.3)
+# ---------------------------------------------------------------------------
+
+
+class TestScrollFieldNoneFiltering:
+    """scroll_field must not add None payload values to the result set.
+
+    A None payload value would cause sorted() to raise TypeError when mixed
+    with strings in get_all_tenant_scopes and print_all_stats.
+    """
+
+    def test_none_value_not_added_to_set(self):
+        record = MagicMock()
+        record.payload = {"tenant_scope": None}
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = [([record], None)]
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            result = qdrant_backend.scroll_field("tenant_scope")
+        assert None not in result
+        assert result == set()
+
+    def test_valid_value_still_added(self):
+        record = MagicMock()
+        record.payload = {"tenant_scope": "CORE_CODE"}
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = [([record], None)]
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            result = qdrant_backend.scroll_field("tenant_scope")
+        assert result == {"CORE_CODE"}
+
+    def test_mixed_none_and_valid_filters_none(self):
+        r1, r2 = MagicMock(), MagicMock()
+        r1.payload = {"tenant_scope": "CORE_CODE"}
+        r2.payload = {"tenant_scope": None}
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = [([r1, r2], None)]
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            result = qdrant_backend.scroll_field("tenant_scope")
+        assert result == {"CORE_CODE"}
+        assert None not in result
+
+    def test_sorted_does_not_crash_after_fix(self):
+        """sorted() must succeed on scroll_field results even with None payloads."""
+        records = [MagicMock(), MagicMock()]
+        records[0].payload = {"project_id": None}
+        records[1].payload = {"project_id": "MY_PROJECT"}
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = [(records, None)]
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            result = qdrant_backend.scroll_field("project_id")
+        # This must not raise TypeError
+        assert sorted(result) == ["MY_PROJECT"]
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — sync_deleted_files cache invalidation (Bug fix v3.7)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncDeletedFilesCache:
+    """sync_deleted_files must invalidate cache when stale files are removed."""
+
+    async def test_cache_invalidated_after_stale_deletion(self, tmp_path):
+        # Create a file so base_path.is_dir() passes
+        base_path = tmp_path / "project"
+        base_path.mkdir()
+
+        with (
+            patch.object(
+                neo4j_backend,
+                "get_all_filepaths",
+                return_value=["stale_file.md"],
+            ),
+            patch.object(neo4j_backend, "delete_by_filepath"),
+            patch.object(qdrant_backend, "delete_by_filepath"),
+            patch("nexus.tools.cache_module") as mock_cache,
+        ):
+            result = await nexus_tools.sync_deleted_files(
+                str(base_path), "MY_PROJECT", "CORE_CODE"
+            )
+
+        # stale_file.md does not exist on disk → should be removed
+        assert "1 stale" in result
+        mock_cache.invalidate_cache.assert_called_once_with("MY_PROJECT", "CORE_CODE")
+
+    async def test_cache_not_invalidated_when_nothing_deleted(self, tmp_path):
+        base_path = tmp_path / "project"
+        base_path.mkdir()
+        existing = base_path / "exists.md"
+        existing.write_text("content")
+
+        with (
+            patch.object(
+                neo4j_backend,
+                "get_all_filepaths",
+                return_value=["exists.md"],
+            ),
+            patch("nexus.tools.cache_module") as mock_cache,
+        ):
+            await nexus_tools.sync_deleted_files(
+                str(base_path), "MY_PROJECT", "CORE_CODE"
+            )
+
+        mock_cache.invalidate_cache.assert_not_called()
+
+    async def test_cache_not_invalidated_when_no_stored_files(self, tmp_path):
+        base_path = tmp_path / "project"
+        base_path.mkdir()
+
+        with (
+            patch.object(neo4j_backend, "get_all_filepaths", return_value=[]),
+            patch("nexus.tools.cache_module") as mock_cache,
+        ):
+            await nexus_tools.sync_deleted_files(
+                str(base_path), "MY_PROJECT", "CORE_CODE"
+            )
+
+        mock_cache.invalidate_cache.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — invalidate_project_cache (new tool v3.7)
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidateProjectCache:
+    async def test_returns_count_message(self):
+        with patch("nexus.tools.cache_module") as mock_cache:
+            mock_cache.invalidate_cache.return_value = 5
+            result = await nexus_tools.invalidate_project_cache("MY_PROJECT", "SCOPE")
+        assert "5" in result
+        assert "MY_PROJECT" in result
+
+    async def test_empty_project_id_returns_error(self):
+        result = await nexus_tools.invalidate_project_cache("")
+        assert "Error" in result
+
+    async def test_whitespace_project_id_returns_error(self):
+        result = await nexus_tools.invalidate_project_cache("   ")
+        assert "Error" in result
+
+    async def test_calls_invalidate_cache_with_correct_args(self):
+        with patch("nexus.tools.cache_module") as mock_cache:
+            mock_cache.invalidate_cache.return_value = 3
+            await nexus_tools.invalidate_project_cache("PROJ", "SCOPE")
+        mock_cache.invalidate_cache.assert_called_once_with("PROJ", "SCOPE")
+
+    async def test_no_scope_calls_with_empty_scope(self):
+        with patch("nexus.tools.cache_module") as mock_cache:
+            mock_cache.invalidate_cache.return_value = 0
+            result = await nexus_tools.invalidate_project_cache("PROJ")
+        mock_cache.invalidate_cache.assert_called_once_with("PROJ", "")
+        assert "0" in result
+
+    async def test_scope_included_in_message(self):
+        with patch("nexus.tools.cache_module") as mock_cache:
+            mock_cache.invalidate_cache.return_value = 2
+            result = await nexus_tools.invalidate_project_cache("PROJ", "MY_SCOPE")
+        assert "MY_SCOPE" in result
