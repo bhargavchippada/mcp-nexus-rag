@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v1.2
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -169,8 +169,11 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
             except ValueError:
                 source_id = abs_path_str
 
-            # Delete old chunks (by file_path metadata) before re-ingesting
+            # Delete old chunks (by file_path metadata) before re-ingesting.
+            # Invalidate cache immediately so stale results aren't served if
+            # either ingest call below fails (fail-open: empty > stale).
             _delete_from_rag(project_id, abs_path_str, scope)
+            cache_module.invalidate_cache(project_id, scope)
 
             graph_result = await ingest_graph_document(
                 text=content,

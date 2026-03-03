@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v1.2
 """
 Tests for nexus.watcher — RAG sync daemon.
 """
@@ -443,4 +443,83 @@ class TestSyncDeleted:
             patch("nexus.watcher.cache_module") as mock_cache,
         ):
             await _sync_deleted([untracked], tmp_path)
+        mock_cache.invalidate_cache.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestSyncChangedCacheInvalidation (Loop 7)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncChangedCacheInvalidation:
+    """_sync_changed must invalidate cache right after _delete_from_rag,
+    before ingest, so stale cached results aren't served if ingest fails."""
+
+    async def test_cache_invalidated_before_ingest_on_ingest_failure(self, tmp_path):
+        """If both ingest calls fail, cache is still invalidated after delete."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+        f.write_text("some content")
+
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module") as mock_cache,
+            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                AsyncMock(side_effect=RuntimeError("neo4j down")),
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                AsyncMock(side_effect=RuntimeError("qdrant down")),
+            ),
+        ):
+            await _sync_changed([str(f)], workspace)
+
+        # Cache should be invalidated even though both ingests failed
+        mock_cache.invalidate_cache.assert_called_with("AGENT", "PERSONA")
+
+    async def test_cache_invalidated_before_ingest_on_ingest_success(self, tmp_path):
+        """On successful ingest, cache is invalidated (at least once) after delete."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+        f.write_text("updated content")
+
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module") as mock_cache,
+            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                AsyncMock(return_value="Successfully ingested"),
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                AsyncMock(return_value="Successfully ingested"),
+            ),
+        ):
+            await _sync_changed([str(f)], workspace)
+
+        # At minimum the pre-ingest invalidation must have fired
+        assert mock_cache.invalidate_cache.call_count >= 1
+
+    async def test_unchanged_file_does_not_invalidate_cache(self, tmp_path):
+        """If check_file_changed returns False, cache must not be invalidated."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+        f.write_text("same content")
+
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module") as mock_cache,
+            patch("nexus.watcher.check_file_changed", return_value=False),
+        ):
+            await _sync_changed([str(f)], workspace)
+
         mock_cache.invalidate_cache.assert_not_called()
