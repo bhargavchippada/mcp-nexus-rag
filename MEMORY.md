@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v3.2
+**Version:** v3.4
 
 ## Known Issues
 
@@ -129,6 +129,27 @@
 ---
 
 ## Changelog
+
+### v3.4 — 2026-03-02
+
+- **Added:** `nexus/watcher.py` — background RAG sync daemon using `watchdog`
+  - `CoreDocEventHandler` — thread-safe event queue with 3s debounce
+  - `_classify_file()` in `sync.py` — path-only classification (works for deleted files)
+  - `_sync_changed()` — delete old chunks → re-ingest updated content
+  - `_sync_deleted()` — remove RAG documents on file deletion
+  - Started via: `poetry run python -m nexus.watcher` or `start-services.sh --rag-sync`
+- **Fixed:** `sync.py` — removed deleted `.claude/persona/GEMINI.md` from `PERSONA_FILES`
+- **Fixed:** `sync.py` — added `agentic-trader → AGENTIC_TRADER` to `PROJECT_MAPPINGS`
+- **Fixed:** `sync_project_files` — now calls `delete_stale_files` after sync to prune removed files
+- **Added:** `watchdog>=4.0.0,<5.0.0` to pyproject.toml
+- **Added:** `start-services.sh --rag-sync` option (v1.1→v1.2)
+- Tests: 238 passed (37 new watcher tests), lint clean
+
+### v3.3 — 2026-03-03
+
+- **http_server.py v1.1:** Added `/scopes` endpoint to expose `get_all_tenant_scopes` MCP tool via HTTP
+- Supports optional `?project_id=X` query param to filter scopes by project
+- Used by mission-control Nexus Query interface for dynamic scope dropdown
 
 ### v3.2 — 2026-03-02
 

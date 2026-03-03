@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v1.3
+**Version:** v1.4
 
 ## Hardening
 
@@ -10,6 +10,16 @@
 - [x] Move httpx import to module level (fixed 2026-03-01)
 - [x] Fix mutable default argument in `ingest_project_directory` (fixed 2026-03-01)
 - [ ] Per-tenant rate limiting (optional)
+
+## Completed (2026-03-02 — RAG sync watcher)
+
+- [x] Create `nexus/watcher.py` background daemon (watchdog, debounce, thread-safe queue)
+- [x] Fix `sync.py` — remove stale GEMINI.md from PERSONA_FILES, add agentic-trader mapping
+- [x] Fix `sync.py` — add `_classify_file()` helper for path-only classification
+- [x] Fix `sync_project_files` — call `delete_stale_files` after sync
+- [x] Add `watchdog>=4.0.0,<5.0.0` to pyproject.toml
+- [x] Add `--rag-sync` option to `start-services.sh` v1.2
+- [x] Write 37 watcher tests (all passing)
 
 ## Completed (2026-03-02 — token optimization)
 

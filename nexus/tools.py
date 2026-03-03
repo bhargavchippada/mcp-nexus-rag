@@ -1499,7 +1499,21 @@ async def sync_project_files(
             errors.append(f"{f['source']}: {e}")
             logger.error(f"Sync error for {f['source']}: {e}")
 
+    # Delete stale RAG documents (files deleted from disk since last sync)
+    stale_deleted: list[str] = []
+    stale_scopes = [("AGENT", "PERSONA")] + [
+        (pid, "CORE_DOCS") for pid in sync_module.PROJECT_MAPPINGS.values()
+    ]
+    for project_id, scope in stale_scopes:
+        try:
+            deleted = sync_module.delete_stale_files(workspace_root, project_id, scope)
+            stale_deleted.extend(deleted)
+        except Exception as e:
+            logger.warning(f"Stale cleanup error for {project_id}/{scope}: {e}")
+
     result = f"Synced {ingested} of {len(files_to_sync)} files."
+    if stale_deleted:
+        result += f"\nDeleted {len(stale_deleted)} stale document(s) for removed files."
     if errors:
         result += f"\n\nErrors ({len(errors)}):\n" + "\n".join(errors[:10])
 

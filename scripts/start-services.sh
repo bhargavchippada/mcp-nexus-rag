@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v1.1
+# Version: v1.2
 # Antigravity AI Services Startup Script
 # Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG
 
@@ -198,6 +198,29 @@ start_watcher() {
     fi
 }
 
+start_rag_sync_watcher() {
+    log_info "Starting Nexus RAG sync watcher..."
+
+    # Kill any existing rag sync watcher
+    pkill -f "nexus.watcher" 2>/dev/null || true
+    sleep 1
+
+    cd "$NEXUS_RAG_DIR"
+    nohup .venv/bin/python -m nexus.watcher \
+        --workspace "$ANTIGRAVITY_DIR" \
+        > /tmp/rag-sync-watcher.log 2>&1 &
+
+    local pid=$!
+    sleep 2
+
+    if kill -0 "$pid" 2>/dev/null; then
+        log_success "RAG sync watcher started (PID: $pid). Log: /tmp/rag-sync-watcher.log"
+    else
+        log_error "RAG sync watcher failed to start. Check /tmp/rag-sync-watcher.log"
+        return 1
+    fi
+}
+
 stop_services() {
     log_info "Stopping all Antigravity AI services..."
 
@@ -209,6 +232,9 @@ stop_services() {
 
     # Stop Memgraph
     docker stop memgraph-cgr 2>/dev/null || true
+
+    # Stop RAG sync watcher
+    pkill -f "nexus.watcher" 2>/dev/null || true
 
     log_success "All services stopped"
 }
@@ -291,6 +317,7 @@ usage() {
     echo "  --restart     Restart all services"
     echo "  --reindex     Re-index antigravity codebase"
     echo "  --watcher     Start/restart Code-Graph-RAG realtime watcher"
+    echo "  --rag-sync    Start/restart Nexus RAG sync watcher (auto-ingests core docs)"
     echo "  --help        Show this help"
     echo ""
     echo "Examples:"
@@ -323,6 +350,9 @@ main() {
             ;;
         --watcher)
             start_watcher
+            ;;
+        --rag-sync)
+            start_rag_sync_watcher
             ;;
         --help|-h)
             usage

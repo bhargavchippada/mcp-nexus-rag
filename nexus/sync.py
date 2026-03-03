@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 nexus.sync — File synchronization for core documentation.
 
@@ -33,6 +33,7 @@ PROJECT_MAPPINGS = {
     "gravity-claw": "GRAVITY_CLAW",
     "mission-control": "MISSION_CONTROL",
     "web-scrapers": "WEB_SCRAPERS",
+    "agentic-trader": "AGENTIC_TRADER",
 }
 
 # Workspace-level persona files (relative to antigravity root)
@@ -40,9 +41,47 @@ PERSONA_FILES = [
     "CLAUDE.md",
     "mission.md",
     "MEMORY.md",
-    ".claude/persona/GEMINI.md",
     ".claude/rules/rules.md",
 ]
+
+
+def _classify_file(filepath: Path, workspace_root: Path) -> Optional[tuple[str, str]]:
+    """Return (project_id, scope) if filepath is a tracked core doc, else None.
+
+    Works for both existing and deleted files — no filesystem I/O.
+
+    Args:
+        filepath: Absolute (or workspace-relative) path to the file.
+        workspace_root: Antigravity workspace root.
+
+    Returns:
+        (project_id, scope) tuple, or None if the file is not tracked.
+    """
+    try:
+        rel = filepath.relative_to(workspace_root)
+    except ValueError:
+        return None  # Outside workspace root
+
+    rel_str = str(rel)
+
+    # Persona files (CLAUDE.md, rules.md, MEMORY.md, mission.md, …)
+    if rel_str in PERSONA_FILES:
+        return ("AGENT", "PERSONA")
+
+    # Project core docs: projects/<name>/README.md | MEMORY.md | AGENTS.md | TODO.md
+    parts = rel.parts
+    if (
+        len(parts) == 3
+        and parts[0] == "projects"
+        and filepath.name in CORE_DOC_PATTERNS
+    ):
+        project_dir = parts[1]
+        project_id = PROJECT_MAPPINGS.get(
+            project_dir, project_dir.upper().replace("-", "_")
+        )
+        return (project_id, "CORE_DOCS")
+
+    return None
 
 
 def _read_file_content(filepath: Path) -> Optional[str]:
