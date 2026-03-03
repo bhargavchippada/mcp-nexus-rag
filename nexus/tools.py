@@ -1,4 +1,4 @@
-# Version: v3.0
+# Version: v3.3
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -24,6 +24,7 @@ from nexus.config import (
     DEFAULT_QDRANT_URL,
     DEFAULT_OLLAMA_URL,
     DEFAULT_RERANKER_CANDIDATE_K,
+    MAX_CONTEXT_CHARS,
     RERANKER_ENABLED,
 )
 from nexus.dedup import content_hash
@@ -44,6 +45,18 @@ from nexus import cache as cache_module
 def _utc_now_iso() -> str:
     """Return current UTC timestamp in ISO 8601 format."""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _apply_cap(text: str, max_chars: int) -> str:
+    """Truncate text to max_chars characters (0 = no cap).
+
+    Applied to BOTH cache hits and fresh retrieval results so that the
+    max_chars parameter is always honoured regardless of what is stored
+    in the Redis cache.
+    """
+    if max_chars > 0 and len(text) > max_chars:
+        return text[:max_chars] + "… [truncated]"
+    return text
 
 
 def _make_metadata(
@@ -181,6 +194,8 @@ async def ingest_graph_document(
             f"Chunked Graph ingest: {len(chunks)} chunks, ingested={ingested}, "
             f"skipped={skipped}, errors={errors}"
         )
+        if ingested > 0:
+            cache_module.invalidate_cache(project_id, scope)
         return (
             f"Successfully ingested {ingested} chunks into GraphRAG for "
             f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
@@ -207,10 +222,11 @@ async def ingest_graph_document(
             ),
         )
         index.insert(doc)
+        cache_module.invalidate_cache(project_id, scope)
         return f"Successfully ingested Graph document for '{project_id}' in scope '{scope}'."
     except Exception as e:
         logger.error(f"Error ingesting Graph document: {e}")
-        return f"Error ingesting Graph document: {e}"
+        return "Error: Graph document ingestion failed. Check server logs for details."
 
 
 @mcp.tool()
@@ -336,9 +352,9 @@ async def ingest_graph_documents_batch(
 async def get_graph_context(
     query: str,
     project_id: str,
-    scope: str,
+    scope: str = "",
     rerank: bool = True,
-    max_chars: int = 3000,
+    max_chars: int = MAX_CONTEXT_CHARS,
 ) -> str:
     """Retrieve isolated context from the GraphRAG memory.
 
@@ -349,6 +365,7 @@ async def get_graph_context(
         query: The user's query.
         project_id: The target tenant project ID (e.g., 'TRADING_BOT').
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
+            If empty or omitted, retrieves from ALL scopes for the project.
         rerank: If True (default) and RERANKER_ENABLED is set, applies the
             cross-encoder reranker to the candidate set before returning.
         max_chars: Truncate the combined context string to this many characters
@@ -357,28 +374,27 @@ async def get_graph_context(
     Returns:
         Structured context relevant to the specific project and scope.
     """
+    scope_label = scope if scope else "all scopes"
     logger.info(
-        f"Graph retrieve: project={project_id} scope={scope} "
+        f"Graph retrieve: project={project_id} scope={scope_label} "
         f"query={query!r} rerank={rerank}"
     )
-    cached = cache_module.get_cached(query, project_id, scope)
+    cached = cache_module.get_cached(query, project_id, scope, tool_type="graph")
     if cached is not None:
-        logger.info(f"Graph cache hit: project={project_id} scope={scope}")
-        return cached
+        logger.info(f"Graph cache hit: project={project_id} scope={scope_label}")
+        return _apply_cap(cached, max_chars)
     try:
         index = get_graph_index()
-        filters = MetadataFilters(
-            filters=[
-                ExactMatchFilter(key="project_id", value=project_id),
-                ExactMatchFilter(key="tenant_scope", value=scope),
-            ]
-        )
+        filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
+        if scope:
+            filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
+        filters = MetadataFilters(filters=filters_list)
         nodes = await index.as_retriever(
             filters=filters,
             similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
         ).aretrieve(query)
         if not nodes:
-            return f"No Graph context found for {project_id} in scope {scope} for query: '{query}'"
+            return f"No Graph context found for {project_id} in scope {scope_label} for query: '{query}'"
         # Post-retrieval dedup: remove nodes with identical content text
         seen_content: set[str] = set()
         unique_nodes = []
@@ -400,17 +416,17 @@ async def get_graph_context(
                 logger.warning(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
-        context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
+        context_str = "\n".join(
+            [f"- [score: {n.score:.4f}] {n.node.get_content()}" for n in nodes]
+        )
         if max_chars > 0 and len(context_str) > max_chars:
             context_str = context_str[:max_chars] + "… [truncated]"
-        result = (
-            f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
-        )
-        cache_module.set_cached(query, project_id, scope, result)
+        result = f"Graph Context retrieved for {project_id} in scope {scope_label}:\n{context_str}"
+        cache_module.set_cached(query, project_id, scope, result, tool_type="graph")
         return result
     except Exception as e:
         logger.error(f"Error retrieving Graph context: {e}")
-        return f"Error retrieving Graph context: {e}"
+        return "Error: Graph context retrieval failed. Check server logs for details."
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +507,8 @@ async def ingest_vector_document(
             f"Chunked Vector ingest: {len(chunks)} chunks, ingested={ingested}, "
             f"skipped={skipped}, errors={errors}"
         )
+        if ingested > 0:
+            cache_module.invalidate_cache(project_id, scope)
         return (
             f"Successfully ingested {ingested} chunks into VectorRAG for "
             f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
@@ -517,10 +535,11 @@ async def ingest_vector_document(
             ),
         )
         index.insert(doc)
+        cache_module.invalidate_cache(project_id, scope)
         return f"Successfully ingested Vector document for '{project_id}' in scope '{scope}'."
     except Exception as e:
         logger.error(f"Error ingesting Vector document: {e}")
-        return f"Error ingesting Vector document: {e}"
+        return "Error: Vector document ingestion failed. Check server logs for details."
 
 
 @mcp.tool()
@@ -648,9 +667,9 @@ async def ingest_vector_documents_batch(
 async def get_vector_context(
     query: str,
     project_id: str,
-    scope: str,
+    scope: str = "",
     rerank: bool = True,
-    max_chars: int = 3000,
+    max_chars: int = MAX_CONTEXT_CHARS,
 ) -> str:
     """Retrieve isolated context from the standard RAG (Vector) memory.
 
@@ -661,6 +680,7 @@ async def get_vector_context(
         query: The user's query.
         project_id: The target tenant project ID (e.g., 'TRADING_BOT').
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
+            If empty or omitted, retrieves from ALL scopes for the project.
         rerank: If True (default) and RERANKER_ENABLED is set, applies the
             cross-encoder reranker to the candidate set before returning.
         max_chars: Truncate the combined context string to this many characters
@@ -669,28 +689,27 @@ async def get_vector_context(
     Returns:
         Structured context relevant to the specific project and scope.
     """
+    scope_label = scope if scope else "all scopes"
     logger.info(
-        f"Vector retrieve: project={project_id} scope={scope} "
+        f"Vector retrieve: project={project_id} scope={scope_label} "
         f"query={query!r} rerank={rerank}"
     )
-    cached = cache_module.get_cached(query, project_id, scope)
+    cached = cache_module.get_cached(query, project_id, scope, tool_type="vector")
     if cached is not None:
-        logger.info(f"Vector cache hit: project={project_id} scope={scope}")
-        return cached
+        logger.info(f"Vector cache hit: project={project_id} scope={scope_label}")
+        return _apply_cap(cached, max_chars)
     try:
         index = get_vector_index()
-        filters = MetadataFilters(
-            filters=[
-                ExactMatchFilter(key="project_id", value=project_id),
-                ExactMatchFilter(key="tenant_scope", value=scope),
-            ]
-        )
+        filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
+        if scope:
+            filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
+        filters = MetadataFilters(filters=filters_list)
         nodes = await index.as_retriever(
             filters=filters,
             similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
         ).aretrieve(query)
         if not nodes:
-            return f"No Vector context found for {project_id} in scope {scope} for query: '{query}'"
+            return f"No Vector context found for {project_id} in scope {scope_label} for query: '{query}'"
         # Post-retrieval dedup: remove nodes with identical content text
         seen_content: set[str] = set()
         unique_nodes = []
@@ -712,15 +731,109 @@ async def get_vector_context(
                 logger.warning(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
-        context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
+        context_str = "\n".join(
+            [f"- [score: {n.score:.4f}] {n.node.get_content()}" for n in nodes]
+        )
         if max_chars > 0 and len(context_str) > max_chars:
             context_str = context_str[:max_chars] + "… [truncated]"
-        result = f"Vector Context retrieved for {project_id} in scope {scope}:\n{context_str}"
-        cache_module.set_cached(query, project_id, scope, result)
+        result = f"Vector Context retrieved for {project_id} in scope {scope_label}:\n{context_str}"
+        cache_module.set_cached(query, project_id, scope, result, tool_type="vector")
         return result
     except Exception as e:
         logger.error(f"Error retrieving Vector context: {e}")
-        return f"Error retrieving Vector context: {e}"
+        return "Error: Vector context retrieval failed. Check server logs for details."
+
+
+# ---------------------------------------------------------------------------
+# answer_query helpers (module-level to keep answer_query under C901 limit)
+# ---------------------------------------------------------------------------
+
+
+async def _fetch_graph_passages(
+    query: str, project_id: str, scope: str, rerank: bool
+) -> list[str]:
+    """Retrieve graph RAG passages for answer_query.
+
+    Returns a list of content strings, or an empty list on any error.
+    """
+    import asyncio  # noqa: F401 (asyncio already imported at call site)
+
+    try:
+        index = get_graph_index()
+        filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
+        if scope and scope.strip():
+            filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
+        filters = MetadataFilters(filters=filters_list)
+        nodes = await index.as_retriever(
+            filters=filters,
+            similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
+        ).aretrieve(query)
+        if rerank and RERANKER_ENABLED and nodes:
+            try:
+                reranker = get_reranker()
+                nodes = reranker.postprocess_nodes(
+                    nodes, query_bundle=QueryBundle(query_str=query)
+                )
+            except Exception as e:
+                logger.warning(f"Graph reranker failed: {e}")
+        return [n.node.get_content() for n in nodes]
+    except Exception as e:
+        logger.warning(f"Graph retrieval failed in answer_query: {e}")
+        return []
+
+
+async def _fetch_vector_passages(
+    query: str, project_id: str, scope: str, rerank: bool
+) -> list[str]:
+    """Retrieve vector RAG passages for answer_query.
+
+    Returns a list of content strings, or an empty list on any error.
+    """
+    try:
+        index = get_vector_index()
+        filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
+        if scope and scope.strip():
+            filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
+        filters = MetadataFilters(filters=filters_list)
+        nodes = await index.as_retriever(
+            filters=filters,
+            similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
+        ).aretrieve(query)
+        if rerank and RERANKER_ENABLED and nodes:
+            try:
+                reranker = get_reranker()
+                nodes = reranker.postprocess_nodes(
+                    nodes, query_bundle=QueryBundle(query_str=query)
+                )
+            except Exception as e:
+                logger.warning(f"Vector reranker failed: {e}")
+        return [n.node.get_content() for n in nodes]
+    except Exception as e:
+        logger.warning(f"Vector retrieval failed in answer_query: {e}")
+        return []
+
+
+def _dedup_cross_source(
+    graph_passages: list[str], vector_passages: list[str]
+) -> list[str]:
+    """Deduplicate passages across graph and vector sources, preserving attribution.
+
+    Each unique passage is prefixed with its origin: ``[graph]`` or ``[vector]``.
+    Passages that appear in both sources are attributed to graph (first seen).
+    """
+    seen: set[str] = set()
+    parts: list[str] = []
+    for passage in graph_passages:
+        key = passage.strip()
+        if key and key not in seen:
+            seen.add(key)
+            parts.append(f"[graph] {passage.strip()}")
+    for passage in vector_passages:
+        key = passage.strip()
+        if key and key not in seen:
+            seen.add(key)
+            parts.append(f"[vector] {passage.strip()}")
+    return parts
 
 
 # ---------------------------------------------------------------------------
@@ -776,62 +889,17 @@ async def answer_query(
         f"answer_query: project={project_id} scope={scope_msg} "
         f"model={llm_model} query={query!r}"
     )
-    cached = cache_module.get_cached(f"answer:{query}", project_id, scope)
+    cached = cache_module.get_cached(
+        f"answer:{query}", project_id, scope, tool_type="answer"
+    )
     if cached is not None:
         logger.info(f"answer_query cache hit: project={project_id} scope={scope_msg}")
-        return cached
+        return _apply_cap(cached, max_context_chars)
 
     # ── 1. Retrieve from both backends concurrently ──────────────────────────
-    async def _fetch_graph() -> list[str]:
-        try:
-            index = get_graph_index()
-            filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
-            if scope and scope.strip():
-                filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
-            filters = MetadataFilters(filters=filters_list)
-            nodes = await index.as_retriever(
-                filters=filters,
-                similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
-            ).aretrieve(query)
-            if rerank and RERANKER_ENABLED and nodes:
-                try:
-                    reranker = get_reranker()
-                    nodes = reranker.postprocess_nodes(
-                        nodes, query_bundle=QueryBundle(query_str=query)
-                    )
-                except Exception as e:
-                    logger.warning(f"Graph reranker failed: {e}")
-            return [n.node.get_content() for n in nodes]
-        except Exception as e:
-            logger.warning(f"Graph retrieval failed in answer_query: {e}")
-            return []
-
-    async def _fetch_vector() -> list[str]:
-        try:
-            index = get_vector_index()
-            filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
-            if scope and scope.strip():
-                filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
-            filters = MetadataFilters(filters=filters_list)
-            nodes = await index.as_retriever(
-                filters=filters,
-                similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
-            ).aretrieve(query)
-            if rerank and RERANKER_ENABLED and nodes:
-                try:
-                    reranker = get_reranker()
-                    nodes = reranker.postprocess_nodes(
-                        nodes, query_bundle=QueryBundle(query_str=query)
-                    )
-                except Exception as e:
-                    logger.warning(f"Vector reranker failed: {e}")
-            return [n.node.get_content() for n in nodes]
-        except Exception as e:
-            logger.warning(f"Vector retrieval failed in answer_query: {e}")
-            return []
-
     graph_passages, vector_passages = await asyncio.gather(
-        _fetch_graph(), _fetch_vector()
+        _fetch_graph_passages(query, project_id, scope, rerank),
+        _fetch_vector_passages(query, project_id, scope, rerank),
     )
 
     logger.info(
@@ -840,20 +908,7 @@ async def answer_query(
     )
 
     # ── 2. Deduplicate across both sources, preserve attribution ─────────────
-    seen: set[str] = set()
-    context_parts: list[str] = []
-
-    for passage in graph_passages:
-        key = passage.strip()
-        if key and key not in seen:
-            seen.add(key)
-            context_parts.append(f"[graph] {passage.strip()}")
-
-    for passage in vector_passages:
-        key = passage.strip()
-        if key and key not in seen:
-            seen.add(key)
-            context_parts.append(f"[vector] {passage.strip()}")
+    context_parts = _dedup_cross_source(graph_passages, vector_passages)
 
     if not context_parts:
         return (
@@ -909,16 +964,18 @@ async def answer_query(
             logger.info(
                 f"answer_query: answer generated ({len(answer)} chars) via {llm_model}"
             )
-            cache_module.set_cached(f"answer:{query}", project_id, scope, answer)
+            cache_module.set_cached(
+                f"answer:{query}", project_id, scope, answer, tool_type="answer"
+            )
             return answer
     except httpx.HTTPStatusError as e:
-        err = f"Ollama HTTP error {e.response.status_code}: {e.response.text[:200]}"
-        logger.error(err)
-        return err
+        logger.error(
+            f"Ollama HTTP error {e.response.status_code}: {e.response.text[:200]}"
+        )
+        return f"Error: LLM service returned HTTP {e.response.status_code}. Check server logs."
     except Exception as e:
-        err = f"Error generating answer: {e}"
-        logger.error(err)
-        return err
+        logger.error(f"Error generating answer: {e}")
+        return "Error: Answer generation failed. Check server logs for details."
 
 
 # ---------------------------------------------------------------------------

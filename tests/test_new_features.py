@@ -1012,7 +1012,7 @@ class TestAnswerQuery:
                 with patch("nexus.tools.RERANKER_ENABLED", False):
                     with patch("httpx.AsyncClient", return_value=mock_http_client):
                         result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
-                        assert "Ollama HTTP error 503" in result
+                        assert "HTTP 503" in result and "Error" in result
 
     async def test_handles_ollama_connection_error(self):
         """Verify connection errors are returned as error strings."""
@@ -1035,7 +1035,7 @@ class TestAnswerQuery:
                 with patch("nexus.tools.RERANKER_ENABLED", False):
                     with patch("httpx.AsyncClient", return_value=mock_http_client):
                         result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
-                        assert "Error generating answer" in result
+                        assert "Answer generation failed" in result or "Error" in result
 
     # ── Model override ────────────────────────────────────────────────────────
 

@@ -1,4 +1,4 @@
-# Version: v1.8
+# Version: v1.9
 # ruff: noqa: E402
 """
 Nexus RAG MCP Server — entry point.
@@ -17,7 +17,7 @@ nest_asyncio.apply()
 import nexus.tools  # noqa: F401
 
 # Shared FastMCP application
-from nexus.config import mcp
+from nexus.config import mcp, logger, validate_config
 
 # ---------------------------------------------------------------------------
 # Backward-compatible re-exports (test_rag.py / test_isolation.py)
@@ -51,6 +51,8 @@ from nexus.config import COLLECTION_NAME, ALLOWED_META_KEYS as _ALLOWED_META_KEY
 
 def main() -> None:
     """Run the MCP server via standard stdio transport."""
+    for warning in validate_config():
+        logger.warning(f"[CONFIG] {warning}")
     mcp.run()
 
 

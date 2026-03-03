@@ -1,4 +1,4 @@
-# Version: v2.5
+# Version: v2.7
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -52,6 +52,15 @@ DEFAULT_RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", "20"))
 RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 
 # ---------------------------------------------------------------------------
+# Context retrieval output size limit
+# ---------------------------------------------------------------------------
+# Server-side hard cap on chars returned by get_vector_context / get_graph_context.
+# Applied to BOTH fresh retrievals AND cache hits.
+# 1500 chars ≈ 375 tokens — keeps retrieval tool responses small.
+# Set to 0 to disable (not recommended in production).
+MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", "1500"))
+
+# ---------------------------------------------------------------------------
 # Allowlist — prevents Cypher key injection in dynamic MATCH clauses
 # ---------------------------------------------------------------------------
 ALLOWED_META_KEYS = frozenset(
@@ -73,3 +82,48 @@ logger = logging.getLogger("mcp-nexus-rag")
 # Shared FastMCP application instance
 # ---------------------------------------------------------------------------
 mcp = FastMCP("mcp-nexus-rag")
+
+
+# ---------------------------------------------------------------------------
+# Startup config validation
+# ---------------------------------------------------------------------------
+_PROD_ENVS = {"production", "prod"}
+
+
+def validate_config() -> list[str]:
+    """Return a list of configuration warnings for operator review.
+
+    Checks for obviously unsafe defaults that should be changed before
+    deploying in production. Issues are logged at WARNING level by the
+    server entry point at startup.
+
+    In strict mode (``NEXUS_ENV=production``), the server will raise
+    ``RuntimeError`` on the first critical issue rather than just logging.
+
+    Returns:
+        List of human-readable warning strings (empty = config is clean).
+    """
+    warnings: list[str] = []
+
+    # Detect default Neo4j password — most likely misconfiguration in production
+    if DEFAULT_NEO4J_PASSWORD == "password123":  # nosec B105
+        warnings.append(
+            "NEO4J_PASSWORD is using the insecure default value 'password123'. "
+            "Set a strong password via the NEO4J_PASSWORD environment variable."
+        )
+
+    # Localhost service URLs in a production-flagged environment
+    is_production = os.environ.get("NEXUS_ENV", "").lower() in _PROD_ENVS
+    if is_production:
+        for label, url in [
+            ("NEO4J_URL", DEFAULT_NEO4J_URL),
+            ("QDRANT_URL", DEFAULT_QDRANT_URL),
+            ("OLLAMA_URL", DEFAULT_OLLAMA_URL),
+        ]:
+            if "localhost" in url or "127.0.0.1" in url:
+                warnings.append(
+                    f"{label}={url!r} points to localhost — "
+                    "production deployments should use remote service URLs."
+                )
+
+    return warnings

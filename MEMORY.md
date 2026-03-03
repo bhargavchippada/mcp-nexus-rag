@@ -2,19 +2,9 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v3.4
+**Version:** v3.7
 
 ## Known Issues
-
-### Medium Priority
-
-- **Raw exception messages exposed to MCP client** (tools.py)
-  - Issue: Exception strings may leak internal paths or library versions
-  - Recommendation: Log full exception server-side, return sanitized message to client
-
-- **`answer_query` complexity** (C901: 21 > 10)
-  - Issue: Function too complex, hard to maintain
-  - Recommendation: Extract inner `_fetch_graph` and `_fetch_vector` as module-level helpers
 
 ### Low Priority
 
@@ -22,9 +12,40 @@
   - Issue: Single tenant can flood ingestion pipeline
   - Recommendation: In-memory rate limiter keyed by `project_id`
 
-- **tools.py is 1519 lines**
+- **tools.py is 1600+ lines**
   - Issue: Single file contains all MCP tools
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
+
+## Lessons Learned
+
+### [2026-03-03] Exception Sanitization — Raw Exceptions No Longer Exposed to MCP Clients (FIXED)
+**Root Cause:** `except Exception as e: return f"Error: {e}"` in `get_graph_context`, `get_vector_context`, `ingest_graph_document`, `ingest_vector_document`, and `answer_query` returned raw exception strings to MCP clients, potentially leaking internal paths, service addresses, or credentials.
+**Fix Applied:** All public tool exception handlers now log the full error via `logger.error(...)` and return a generic client-safe message (e.g., `"Error: Vector context retrieval failed. Check server logs for details."`). Internal detail is preserved in server logs only.
+**Prevention Guideline:** Any new `@mcp.tool()` function MUST follow this pattern: log full exception, return a generic string. Never `return f"Error: {e}"` directly from a public tool.
+
+### [2026-03-03] Cache Invalidation on Ingest — Secondary Index Added to cache.py (FIXED)
+**Root Cause:** `invalidate_cache()` in `cache.py` used a hash-prefix pattern scan (`nexus:{hash[:8]}*`) which can never match, because cache keys are full 16-char SHA-256 hashes of the complete key string. No existing cache keys could ever be invalidated, and ingest tools never called `invalidate_cache` anyway.
+**Fix Applied:** Added secondary Redis Set index: on `set_cached`, `SADD nexus:idx:{project_id}:{scope_sentinel}` → full cache key. On `invalidate_cache(project_id, scope)`, `SMEMBERS` the index set, delete all tracked cache keys plus the "all scopes" index (scope=""), then delete both index keys.  Both `ingest_graph_document` and `ingest_vector_document` now call `cache_module.invalidate_cache(project_id, scope)` after a successful ingest (including chunked ingestion when `ingested > 0`).
+**Prevention Guideline:** Cache invalidation based on prefix-scanning hashed keys is always broken. Use a secondary index (Redis Set) to track which keys belong to which tenant, then delete by membership.
+
+### [2026-03-03] answer_query Refactored — Complexity Reduced from 21 to ~7 (FIXED)
+**Root Cause:** `answer_query` had two inner closure functions (`_fetch_graph`, `_fetch_vector`) plus dedup loops and prompt building — all inline. ruff C901 reported complexity 21 > 10.
+**Fix Applied:** Extracted three module-level helpers: `_fetch_graph_passages(query, project_id, scope, rerank)`, `_fetch_vector_passages(query, project_id, scope, rerank)`, and `_dedup_cross_source(graph_passages, vector_passages)`. The `answer_query` body now calls these via `asyncio.gather()` — complexity is now ~7.
+**Prevention Guideline:** Inner async closures count toward the enclosing function's complexity. Extract them as module-level helpers when complexity exceeds 10.
+
+### [2026-03-03] Production Config Validation Added to config.py (NEW)
+**Added:** `validate_config()` function in `nexus/config.py` (v2.7). Returns a list of warning strings when unsafe defaults are detected (e.g., default Neo4j password `password123`, localhost URLs in `NEXUS_ENV=production`). Called at server startup in `server.py:main()` — warnings logged at WARNING level. Strict mode activates with `NEXUS_ENV=production`.
+**Guideline:** Call `validate_config()` at startup for all new service entry points. Check for `password123` pattern with `# nosec B105` to silence bandit false positives.
+
+### [2026-03-03] Cache Key Collision Between Graph and Vector Context Tools (FIXED)
+**Root Cause:** `cache_key()` in `cache.py` used `f"{project_id}:{scope}:{query}"` — no tool type discriminator. When `get_graph_context` was called first with the same `(query, project_id, scope)` triple, its "Graph Context retrieved..." result was stored in Redis. A subsequent `get_vector_context` call with the same arguments got a cache hit and returned the graph result with the wrong label.
+**Fix Applied:** Added `tool_type: str = ""` parameter to `cache_key`, `get_cached`, and `set_cached`. Graph calls pass `tool_type="graph"`, vector calls pass `tool_type="vector"`, answer calls pass `tool_type="answer"`. The key format is now `"{tool_type}:{project_id}:{scope}:{query}"`.
+**Prevention Guideline:** Any new tool that calls `cache_module.get_cached`/`set_cached` MUST pass a unique `tool_type` string — even if the query prefix already seems unique. Always include a named discriminator in cache keys when multiple tools share the same parameter space.
+
+### [2026-03-03] scope Parameter Made Optional on get_vector_context and get_graph_context (FIXED)
+**Root Cause:** `scope` was a required positional parameter with no default. Passing an invalid or unknown scope (e.g. `CORE_DOCS` instead of `PERSONA`) silently returned "No context found" with no guidance. Empty scope was not supported.
+**Fix Applied:** Changed `scope: str` → `scope: str = ""` on both `get_vector_context` and `get_graph_context`. When scope is empty, the `tenant_scope` metadata filter is omitted — only `project_id` is applied — so results come from all scopes for that project. Log and result messages display "all scopes" when scope is empty.
+**Prevention Guideline:** Optional scoped retrieval is the correct default — always allow cross-scope queries as a fallback so callers can progressively narrow scope rather than getting empty results from a wrong scope name.
 
 ## Key Findings
 
@@ -128,7 +149,36 @@
 
 ---
 
+## Lessons Learned (Post-Fix Documentation)
+
+### 2026-03-03 — Cache bypass of max_chars (FIXED)
+
+**Root Cause:** `get_vector_context` and `get_graph_context` applied the `max_chars` cap to *fresh* retrieval results but returned cache hits **unconditionally**, bypassing the cap entirely. A stale large entry in Redis (stored before `max_chars` was added) would be returned verbatim — up to 10.6k tokens vs the intended ~375 tokens.
+
+**Fix Applied:**
+- Added `_apply_cap(text, max_chars)` helper in `tools.py`
+- Applied it to **all** cache hit return paths in `get_vector_context`, `get_graph_context`, `answer_query`
+- Added `MAX_CONTEXT_CHARS` config constant (env var `MAX_CONTEXT_CHARS`, default `1500` chars ≈ 375 tokens)
+- Changed `max_chars` default from hardcoded `3000` to `MAX_CONTEXT_CHARS` (env-var configurable)
+- Set `MAX_CONTEXT_CHARS=1500` in `.mcp.json`
+- Cleared Redis cache to evict stale large entries
+- Added 7 regression tests (`TestApplyCap`, cache-bypass tests)
+
+**Prevention Guideline:** When adding a `max_chars`/`max_tokens` parameter to any cached function, ALWAYS apply the cap AFTER the cache retrieval, not only in the fresh-fetch path. The cache may store old (uncapped) results from before the parameter existed.
+
+> **Rule:** Cache returns must pass through the same output-size guards as fresh results.
+
 ## Changelog
+
+### v3.5 — 2026-03-03
+
+- **Fixed:** Cache bypass of `max_chars` in `get_vector_context`, `get_graph_context`, `answer_query`
+- **Added:** `_apply_cap()` helper — applied to BOTH fresh results AND cache hits
+- **Added:** `MAX_CONTEXT_CHARS` config constant (env var, default 1500 chars ≈ 375 tokens)
+- **Updated:** `max_chars` default changed from hardcoded `3000` → `MAX_CONTEXT_CHARS`
+- **Updated:** `.mcp.json` — `MAX_CONTEXT_CHARS=1500` added to nexus env
+- **Cache:** Cleared Redis (`nexus:*` keys) to evict stale large entries
+- Tests: 245 passed (7 new: `TestApplyCap` × 5, cache-bypass × 2), lint clean
 
 ### v3.4 — 2026-03-02
 

@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v2.7
+**Version:** v2.9
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 197 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 279 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -70,11 +70,11 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 
 ### Retrieval
 
-| Tool                 | Parameters                                       | Description                                                                                          |
-| -------------------- | ------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
-| `get_graph_context`  | `query`, `project_id`, `scope`, `rerank=True`    | Query GraphRAG; cross-encoder reranks candidates by default                                          |
-| `get_vector_context` | `query`, `project_id`, `scope`, `rerank=True`    | Query Vector RAG; cross-encoder reranks candidates by default                                        |
-| `answer_query`       | `query`, `project_id`, `scope=""`, `rerank=True` | Combined RAG/GraphRAG answer via local Ollama LLM. `scope=""` retrieves from **all project scopes**. |
+| Tool                 | Parameters                                        | Description                                                                                          |
+| -------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `get_graph_context`  | `query`, `project_id`, `scope=""`, `rerank=True`  | Query GraphRAG; cross-encoder reranks candidates by default. `scope=""` queries all scopes.          |
+| `get_vector_context` | `query`, `project_id`, `scope=""`, `rerank=True`  | Query Vector RAG; cross-encoder reranks candidates by default. `scope=""` queries all scopes.        |
+| `answer_query`       | `query`, `project_id`, `scope=""`, `rerank=True`  | Combined RAG/GraphRAG answer via local Ollama LLM. `scope=""` retrieves from **all project scopes**. |
 
 ### Health & Diagnostics
 
@@ -103,6 +103,17 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 | `get_all_project_ids`   | List all distinct project IDs across both DBs                   |
 | `get_all_tenant_scopes` | List all scopes (optionally filtered by `project_id`)           |
 | `delete_tenant_data`    | Delete all data for a `project_id`, or a `(project_id, scope)`  |
+
+### Administration & Sync
+
+| Tool                      | Description                                                                            |
+| ------------------------- | -------------------------------------------------------------------------------------- |
+| `delete_all_data`         | **Full wipe** — delete all data from Neo4j and Qdrant across all tenants               |
+| `ingest_project_directory`| Recursively ingest an entire directory tree into both GraphRAG and VectorRAG           |
+| `sync_project_files`      | Re-ingest core docs that have changed (idempotent, SHA-256 dedup)                      |
+| `sync_deleted_files`      | Remove stale database entries for files deleted from disk                              |
+| `list_core_doc_files`     | List all core documentation files tracked for sync (dry-run for `sync_project_files`) |
+| `cache_stats`             | Get Redis cache stats: key count, memory usage, TTL settings                           |
 
 **Notes:**
 
@@ -154,23 +165,24 @@ PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term
 
 ## Environment Variables
 
-| Variable              | Default                    | Description                                      |
-| --------------------- | -------------------------- | ------------------------------------------------ |
-| `RERANKER_MODEL`      | `BAAI/bge-reranker-v2-m3`  | HuggingFace model ID for the cross-encoder       |
-| `RERANKER_TOP_N`      | `5`                        | Number of results returned after reranking       |
-| `RERANKER_CANDIDATE_K`| `20`                       | Candidate pool size fetched before reranking     |
-| `RERANKER_ENABLED`    | `true`                     | Set to `false` to disable reranking globally     |
-| `MAX_DOCUMENT_SIZE`   | `524288` (512KB)           | Documents larger than this are auto-chunked      |
-| `INGEST_CHUNK_SIZE`   | `1024`                     | Chunk size for large document splitting          |
-| `INGEST_CHUNK_OVERLAP`| `128`                      | Overlap between chunks                           |
-| `NEO4J_URI`           | `bolt://localhost:7687`    | Neo4j connection URI                             |
-| `NEO4J_USERNAME`      | `neo4j`                    | Neo4j username                                   |
-| `NEO4J_PASSWORD`      | `password`                 | Neo4j password (use env var in production)       |
-| `QDRANT_URL`          | `http://localhost:6333`    | Qdrant connection URL                            |
-| `OLLAMA_BASE_URL`     | `http://localhost:11434`   | Ollama base URL                                  |
-| `REDIS_URL`           | `redis://localhost:6379`   | Redis connection URL for semantic cache          |
-| `CACHE_TTL`           | `86400` (24h)              | Cache entry TTL in seconds                       |
-| `CACHE_ENABLED`       | `true`                     | Set to `false` to bypass Redis cache globally    |
+| Variable               | Default                    | Description                                                         |
+| ---------------------- | -------------------------- | ------------------------------------------------------------------- |
+| `RERANKER_MODEL`       | `BAAI/bge-reranker-v2-m3`  | HuggingFace model ID for the cross-encoder                          |
+| `RERANKER_TOP_N`       | `5`                        | Number of results returned after reranking                          |
+| `RERANKER_CANDIDATE_K` | `20`                       | Candidate pool size fetched before reranking                        |
+| `RERANKER_ENABLED`     | `true`                     | Set to `false` to disable reranking globally                        |
+| `MAX_DOCUMENT_SIZE`    | `4096` (4KB)               | Documents larger than this are auto-chunked on ingest               |
+| `MAX_CONTEXT_CHARS`    | `1500`                     | Hard cap on chars returned by retrieval tools (0 = disabled)        |
+| `INGEST_CHUNK_SIZE`    | `1024`                     | Chunk size for large document splitting                             |
+| `INGEST_CHUNK_OVERLAP` | `128`                      | Overlap between chunks                                              |
+| `NEO4J_URL`            | `bolt://localhost:7687`    | Neo4j connection URI                                                |
+| `NEO4J_USER`           | `neo4j`                    | Neo4j username                                                      |
+| `NEO4J_PASSWORD`       | `password123`              | Neo4j password (use env var in production)                          |
+| `QDRANT_URL`           | `http://localhost:6333`    | Qdrant connection URL                                               |
+| `OLLAMA_URL`           | `http://localhost:11434`   | Ollama base URL                                                     |
+| `REDIS_URL`            | `redis://localhost:6379`   | Redis connection URL for semantic cache                             |
+| `CACHE_TTL`            | `86400` (24h)              | Cache entry TTL in seconds                                          |
+| `CACHE_ENABLED`        | `true`                     | Set to `false` to bypass Redis cache globally                       |
 
 ---
 
@@ -211,7 +223,7 @@ asyncio.run(call(
     "get_vector_context",
     query="how does deduplication work?",
     project_id="MY_PROJECT",
-    scope="CORE_CODE",
+    scope="CORE_CODE",    # omit or pass scope="" to query all scopes
 ))
 EOF
 ```
@@ -298,7 +310,7 @@ async def main():
     result = await get_vector_context(
         query="how does deduplication work?",
         project_id="MY_PROJECT",
-        scope="CORE_CODE",
+        scope="CORE_CODE",  # omit or pass scope="" to query all scopes
     )
     print(result)
 
@@ -554,6 +566,25 @@ Use the automation script to start all services after a reboot:
 
 ## Recent Updates
 
+### v2.9 (2026-03-03)
+
+- 🔒 **SECURITY**: Exception message sanitization — all public tools now return generic error messages to MCP clients; full exception details logged server-side only. Prevents leaking internal paths, service URLs, or credentials via error strings.
+- 🐛 **BUGFIX**: `invalidate_cache()` in `nexus/cache.py` was broken — hash-prefix pattern scan (`nexus:{hash[:8]}*`) never matched any keys. Fixed with a secondary Redis Set index (`nexus:idx:{project_id}:{scope}`): `set_cached` now also `SADD`s each key to the index; `invalidate_cache` uses `SMEMBERS` + bulk delete.
+- 🐛 **BUGFIX**: `ingest_graph_document` and `ingest_vector_document` never called `cache_module.invalidate_cache()`. Fixed: both now invalidate the tenant's cache after a successful ingest (single-doc and chunked paths).
+- ♻️ **REFACTOR**: `answer_query` complexity reduced from 21 → ~7 (ruff C901 fix). Extracted `_fetch_graph_passages()`, `_fetch_vector_passages()`, and `_dedup_cross_source()` as module-level helpers. Logic is identical, function is now maintainable.
+- ✨ **NEW**: `validate_config()` in `nexus/config.py` — startup config check warns on default Neo4j password and localhost service URLs in `NEXUS_ENV=production` mode. Called at server startup in `server.py:main()`.
+- ✅ **Tests**: 279 tests passing (+30 new: cache secondary index, exception sanitization, cache-on-ingest, config validation, answer_query helpers), lint clean (ruff)
+
+### v2.8 (2026-03-03)
+
+- 🐛 **BUGFIX**: Cache key collision between graph and vector context tools
+  - `cache_key()` had no tool-type discriminator — a `get_graph_context` call cached "Graph Context…" and a subsequent `get_vector_context` with identical `(query, project_id, scope)` returned the cached graph result with the wrong label
+  - Fix: Added `tool_type` parameter to `cache_key`, `get_cached`, `set_cached` in `nexus/cache.py`. Graph calls use `tool_type="graph"`, vector `"vector"`, answer `"answer"`. Key format: `nexus:{SHA256(tool_type|project_id|scope|query)[:16]}`
+- ✨ **FEATURE**: `scope` parameter is now optional (`scope=""`) on `get_graph_context` and `get_vector_context`
+  - When `scope` is empty, the `tenant_scope` metadata filter is omitted — all scopes for the project are searched
+  - Result messages display "all scopes" when scope is omitted
+- ✅ **Tests**: 249 tests passing (+4 regression tests for cache collision and optional scope), lint clean
+
 ### v2.7 (2026-03-02)
 
 - 🐛 **BUGFIX**: Reranker import path corrected (`flag_reranker` → `flag_embedding_reranker`)
@@ -561,7 +592,7 @@ Use the automation script to start all services after a reboot:
   - Fix: Updated both `TYPE_CHECKING` guard and runtime import in `nexus/reranker.py`; updated 6 `sys.modules` patches in `tests/test_reranker.py`
 - ⚡ **NEW**: Redis semantic cache integrated into all retrieval tools
   - `get_vector_context`, `get_graph_context`, and `answer_query` now check Redis on entry and write on exit
-  - Cache key: `nexus:{SHA256(query|project_id|scope)[:16]}`, TTL: 86400s (24h)
+  - Cache key (v2.7): `nexus:{SHA256(project_id|scope|query)[:16]}` — superseded in v2.8 to include `tool_type`
   - Previously imported but never called — all RAG queries were bypassing cache entirely
 - 📦 **NEW**: FlagEmbedding dependency pinned in `pyproject.toml`
   - Added `FlagEmbedding>=1.3.5,<2.0.0` and `transformers>=4.40.0,<5.0.0`

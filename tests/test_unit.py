@@ -1,4 +1,4 @@
-# Version: v2.1
+# Version: v2.2
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -15,6 +15,14 @@ from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
 from nexus import indexes as nexus_indexes
 from nexus import tools as nexus_tools
+
+# Save original cache functions at module-import time, before any fixtures run.
+# conftest.autouse disable_cache replaces nexus.cache.set_cached with a no-op lambda;
+# these module-level references still point to the real implementations.
+import nexus.cache as _nexus_cache
+
+_orig_set_cached = _nexus_cache.set_cached
+_orig_invalidate_cache = _nexus_cache.invalidate_cache
 
 
 # ---------------------------------------------------------------------------
@@ -320,15 +328,18 @@ class TestIngestInputValidation:
 
 class TestIngestErrorPaths:
     async def test_ingest_vector_document_error_returns_string(self):
+        """Exception message must be generic (not expose raw exception details)."""
         with (
             patch("nexus.tools.get_vector_index", side_effect=Exception("DB down")),
             patch.object(qdrant_backend, "is_duplicate", return_value=False),
         ):
             result = await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
         assert "Error" in result
-        assert "DB down" in result
+        # Raw exception text must NOT be exposed to client
+        assert "DB down" not in result
 
     async def test_ingest_graph_document_error_returns_string(self):
+        """Exception message must be generic (not expose raw exception details)."""
         with (
             patch(
                 "nexus.tools.get_graph_index", side_effect=Exception("Neo4j offline")
@@ -337,7 +348,8 @@ class TestIngestErrorPaths:
         ):
             result = await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
         assert "Error" in result
-        assert "Neo4j offline" in result
+        # Raw exception text must NOT be exposed to client
+        assert "Neo4j offline" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +375,7 @@ class TestContextRetrieval:
     async def test_get_vector_context_with_results(self):
         node = MagicMock()
         node.node.get_content.return_value = "match!"
+        node.score = 0.95  # Score is required for formatting
         with patch(
             "nexus.tools.get_vector_index", return_value=self._mock_index([node])
         ):
@@ -391,6 +404,7 @@ class TestContextRetrieval:
     async def test_get_graph_context_max_chars_truncates(self):
         node = MagicMock()
         node.node.get_content.return_value = "x" * 5000
+        node.score = 0.95  # Score is required for formatting
         with patch(
             "nexus.tools.get_graph_index", return_value=self._mock_index([node])
         ):
@@ -398,11 +412,12 @@ class TestContextRetrieval:
                 "query", "PROJ", "SCOPE", max_chars=100
             )
         assert "truncated" in result
-        assert len(result) < 200  # header + 100 chars + suffix, not 5000
+        assert len(result) < 250  # header + [score: X.XXXX] + 100 chars + suffix
 
     async def test_get_graph_context_max_chars_zero_disables(self):
         node = MagicMock()
         node.node.get_content.return_value = "x" * 5000
+        node.score = 0.95  # Score is required for formatting
         with patch(
             "nexus.tools.get_graph_index", return_value=self._mock_index([node])
         ):
@@ -415,6 +430,7 @@ class TestContextRetrieval:
     async def test_get_vector_context_max_chars_truncates(self):
         node = MagicMock()
         node.node.get_content.return_value = "y" * 5000
+        node.score = 0.95  # Score is required for formatting
         with patch(
             "nexus.tools.get_vector_index", return_value=self._mock_index([node])
         ):
@@ -422,11 +438,12 @@ class TestContextRetrieval:
                 "query", "PROJ", "SCOPE", max_chars=100
             )
         assert "truncated" in result
-        assert len(result) < 200
+        assert len(result) < 250  # header + [score: X.XXXX] + 100 chars + suffix
 
     async def test_get_vector_context_max_chars_zero_disables(self):
         node = MagicMock()
         node.node.get_content.return_value = "y" * 5000
+        node.score = 0.95  # Score is required for formatting
         with patch(
             "nexus.tools.get_vector_index", return_value=self._mock_index([node])
         ):
@@ -435,6 +452,162 @@ class TestContextRetrieval:
             )
         assert "truncated" not in result
         assert "y" * 5000 in result
+
+    async def test_get_vector_context_cache_hit_respects_max_chars(self):
+        """Regression: cache hits must honour max_chars (bypass bug)."""
+        large_cached = (
+            "Vector Context retrieved for PROJ in scope SCOPE:\n" + "z" * 5000
+        )
+        with patch("nexus.tools.cache_module.get_cached", return_value=large_cached):
+            result = await nexus_tools.get_vector_context(
+                "query", "PROJ", "SCOPE", max_chars=100
+            )
+        assert "truncated" in result
+        assert len(result) <= 120  # 100 + len("… [truncated]")
+
+    async def test_get_graph_context_cache_hit_respects_max_chars(self):
+        """Regression: cache hits must honour max_chars (bypass bug)."""
+        large_cached = "Graph Context retrieved for PROJ in scope SCOPE:\n" + "z" * 5000
+        with patch("nexus.tools.cache_module.get_cached", return_value=large_cached):
+            result = await nexus_tools.get_graph_context(
+                "query", "PROJ", "SCOPE", max_chars=100
+            )
+        assert "truncated" in result
+        assert len(result) <= 120
+
+    async def test_graph_and_vector_cache_keys_do_not_collide(self):
+        """Regression: graph and vector tools must use distinct cache namespaces.
+
+        Before the fix, both tools shared the same cache key — a graph cache
+        hit would poison a subsequent vector query with 'Graph Context...' text.
+        """
+        from nexus.cache import cache_key
+
+        key_graph = cache_key("same query", "PROJ", "SCOPE", tool_type="graph")
+        key_vector = cache_key("same query", "PROJ", "SCOPE", tool_type="vector")
+        key_answer = cache_key("same query", "PROJ", "SCOPE", tool_type="answer")
+        assert key_graph != key_vector
+        assert key_graph != key_answer
+        assert key_vector != key_answer
+
+    async def test_get_vector_context_empty_scope_omits_scope_filter(self):
+        """When scope is empty, only the project_id filter is applied."""
+        from llama_index.core.vector_stores.types import MetadataFilters
+
+        captured_filters: list[MetadataFilters] = []
+
+        async def fake_retrieve(query):
+            return []
+
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = fake_retrieve
+        mock_index = MagicMock()
+
+        def capture_retriever(**kwargs):
+            captured_filters.append(kwargs.get("filters"))
+            return mock_retriever
+
+        mock_index.as_retriever = capture_retriever
+
+        with patch("nexus.tools.get_vector_index", return_value=mock_index):
+            result = await nexus_tools.get_vector_context("query", "PROJ", scope="")
+
+        assert "No Vector context found" in result
+        assert "all scopes" in result
+        # Only project_id filter — no tenant_scope filter
+        assert len(captured_filters[0].filters) == 1
+        assert captured_filters[0].filters[0].key == "project_id"
+
+    async def test_get_graph_context_empty_scope_omits_scope_filter(self):
+        """When scope is empty, only the project_id filter is applied."""
+        from llama_index.core.vector_stores.types import MetadataFilters
+
+        captured_filters: list[MetadataFilters] = []
+
+        async def fake_retrieve(query):
+            return []
+
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = fake_retrieve
+        mock_index = MagicMock()
+
+        def capture_retriever(**kwargs):
+            captured_filters.append(kwargs.get("filters"))
+            return mock_retriever
+
+        mock_index.as_retriever = capture_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            result = await nexus_tools.get_graph_context("query", "PROJ", scope="")
+
+        assert "No Graph context found" in result
+        assert "all scopes" in result
+        assert len(captured_filters[0].filters) == 1
+        assert captured_filters[0].filters[0].key == "project_id"
+
+    async def test_get_vector_context_with_scope_includes_scope_filter(self):
+        """When scope is provided, the tenant_scope filter IS applied."""
+        captured_filters = []
+
+        async def fake_retrieve(query):
+            return []
+
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = fake_retrieve
+        mock_index = MagicMock()
+
+        def capture_retriever(**kwargs):
+            captured_filters.append(kwargs.get("filters"))
+            return mock_retriever
+
+        mock_index.as_retriever = capture_retriever
+
+        with patch("nexus.tools.get_vector_index", return_value=mock_index):
+            await nexus_tools.get_vector_context("query", "PROJ", scope="PERSONA")
+
+        assert len(captured_filters[0].filters) == 2
+        filter_keys = {f.key for f in captured_filters[0].filters}
+        assert "project_id" in filter_keys
+        assert "tenant_scope" in filter_keys
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools._apply_cap helper
+# ---------------------------------------------------------------------------
+
+
+class TestApplyCap:
+    def test_truncates_at_limit(self):
+        from nexus.tools import _apply_cap
+
+        result = _apply_cap("a" * 200, 100)
+        assert result == "a" * 100 + "… [truncated]"
+        assert len(result) == 113  # 100 + 13 chars in suffix ("… [truncated]")
+
+    def test_no_truncation_when_under_limit(self):
+        from nexus.tools import _apply_cap
+
+        text = "short text"
+        assert _apply_cap(text, 100) == text
+
+    def test_zero_disables_cap(self):
+        from nexus.tools import _apply_cap
+
+        text = "x" * 5000
+        assert _apply_cap(text, 0) == text
+
+    def test_exact_limit_not_truncated(self):
+        from nexus.tools import _apply_cap
+
+        text = "a" * 100
+        assert _apply_cap(text, 100) == text
+
+    def test_one_over_limit_truncated(self):
+        from nexus.tools import _apply_cap
+
+        text = "a" * 101
+        result = _apply_cap(text, 100)
+        assert "truncated" in result
 
 
 # ---------------------------------------------------------------------------
@@ -848,9 +1021,10 @@ class TestDeleteAllDataTool:
 class TestPostRetrievalDedup:
     """Verify that duplicate nodes returned by the retriever are collapsed."""
 
-    def _make_node(self, content: str):
+    def _make_node(self, content: str, score: float = 0.95):
         node = MagicMock()
         node.node.get_content.return_value = content
+        node.score = score  # Score is required for formatting
         return node
 
     def _mock_index(self, nodes):
@@ -914,3 +1088,385 @@ class TestPostRetrievalDedup:
             result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
         assert "node alpha" in result
         assert "node beta" in result
+
+
+# ---------------------------------------------------------------------------
+# nexus.cache — secondary index (_idx_key, set_cached, invalidate_cache)
+# ---------------------------------------------------------------------------
+
+
+class TestCacheSecondaryIndex:
+    """Verify the secondary index that enables per-tenant cache invalidation."""
+
+    def test_idx_key_format_non_empty_scope(self):
+        from nexus.cache import _idx_key
+
+        key = _idx_key("MY_PROJ", "CORE_CODE")
+        assert key.startswith("nexus:idx:")
+        assert "MY_PROJ" in key
+        assert "CORE_CODE" in key
+
+    def test_idx_key_empty_scope_uses_sentinel(self):
+        from nexus.cache import _idx_key
+
+        key = _idx_key("MY_PROJ", "")
+        assert key.startswith("nexus:idx:")
+        assert "__all__" in key
+
+    def test_idx_key_differs_by_scope(self):
+        from nexus.cache import _idx_key
+
+        key_a = _idx_key("P", "SCOPE_A")
+        key_b = _idx_key("P", "SCOPE_B")
+        key_all = _idx_key("P", "")
+        assert key_a != key_b
+        assert key_a != key_all
+        assert key_b != key_all
+
+    def test_set_cached_adds_key_to_secondary_index(self):
+        """set_cached should SADD the cache key to the project/scope index set."""
+        from nexus.cache import cache_key, _idx_key
+
+        mock_redis = MagicMock()
+        # Use _orig_set_cached (module-import-time reference) to bypass conftest patching
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                _orig_set_cached("myquery", "PROJ", "S", "result", tool_type="vector")
+
+        expected_cache_key = cache_key("myquery", "PROJ", "S", tool_type="vector")
+        expected_idx = _idx_key("PROJ", "S")
+        mock_redis.sadd.assert_called_once_with(expected_idx, expected_cache_key)
+
+    def test_invalidate_cache_deletes_indexed_keys(self):
+        """invalidate_cache must delete all keys tracked in the index set."""
+        from nexus.cache import _idx_key
+
+        idx = _idx_key("PROJ", "S")
+        all_idx = _idx_key("PROJ", "")
+        fake_scoped_keys = {"nexus:abc1", "nexus:abc2"}
+        fake_all_keys = {"nexus:def1"}
+
+        mock_redis = MagicMock()
+        mock_redis.smembers.side_effect = lambda k: {
+            idx: fake_scoped_keys,
+            all_idx: fake_all_keys,
+        }.get(k, set())
+
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                _orig_invalidate_cache("PROJ", "S")
+
+        deleted_args = set(mock_redis.delete.call_args[0])
+        # Must delete all scope cache keys + all-scope cache keys + both index keys
+        assert fake_scoped_keys <= deleted_args
+        assert fake_all_keys <= deleted_args
+        assert idx in deleted_args
+        assert all_idx in deleted_args
+
+    def test_invalidate_cache_empty_scope_does_not_collect_all_idx_twice(self):
+        """When scope='', only the __all__ index is collected (no double-collection)."""
+        from nexus.cache import _idx_key
+
+        all_idx = _idx_key("PROJ", "")
+        mock_redis = MagicMock()
+        mock_redis.smembers.return_value = {"nexus:key1"}
+
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                _orig_invalidate_cache("PROJ", "")
+
+        # smembers called once (for the empty scope = all-scopes index)
+        mock_redis.smembers.assert_called_once_with(all_idx)
+
+    def test_invalidate_cache_disabled_returns_zero(self):
+        with patch("nexus.cache.CACHE_ENABLED", False):
+            count = _orig_invalidate_cache("PROJ", "S")
+        assert count == 0
+
+    def test_invalidate_cache_redis_error_returns_zero(self):
+        import redis as redis_lib
+
+        mock_redis = MagicMock()
+        mock_redis.smembers.side_effect = redis_lib.RedisError("Redis is down")
+        with patch("nexus.cache.get_redis", return_value=mock_redis):
+            with patch("nexus.cache.CACHE_ENABLED", True):
+                count = _orig_invalidate_cache("PROJ", "S")
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — exception sanitization (no raw exception in client response)
+# ---------------------------------------------------------------------------
+
+
+class TestExceptionSanitization:
+    """Verify that internal exceptions are not exposed to MCP clients."""
+
+    async def test_get_vector_context_error_is_generic(self):
+        """Exception in retriever must not return raw exc details to client."""
+        with patch(
+            "nexus.tools.get_vector_index",
+            side_effect=RuntimeError("Connection refused: bolt://internal-host:9999"),
+        ):
+            result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
+        assert "internal-host" not in result
+        assert "Connection refused" not in result
+        assert "Error" in result
+
+    async def test_get_graph_context_error_is_generic(self):
+        """Exception in graph retriever must not return raw exc details to client."""
+        with patch(
+            "nexus.tools.get_graph_index",
+            side_effect=RuntimeError("auth failure: user=neo4j pass=password123"),
+        ):
+            result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
+        assert "password123" not in result
+        assert "auth failure" not in result
+        assert "Error" in result
+
+    async def test_ingest_vector_error_is_generic(self):
+        """Exception during vector ingest must not expose internals."""
+        with (
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch(
+                "nexus.tools.get_vector_index",
+                side_effect=RuntimeError("disk /dev/sda1 is full at /data/qdrant"),
+            ),
+        ):
+            result = await nexus_tools.ingest_vector_document("text", "P", "S")
+        assert "/data/qdrant" not in result
+        assert "disk" not in result
+        assert "Error" in result
+
+    async def test_ingest_graph_error_is_generic(self):
+        """Exception during graph ingest must not expose internals."""
+        with (
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch(
+                "nexus.tools.get_graph_index",
+                side_effect=RuntimeError("BOLT port 7687 auth=neo4j:letmein"),
+            ),
+        ):
+            result = await nexus_tools.ingest_graph_document("text", "P", "S")
+        assert "letmein" not in result
+        assert "BOLT port" not in result
+        assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — cache invalidation on ingest
+# ---------------------------------------------------------------------------
+
+
+class TestCacheInvalidationOnIngest:
+    """After successful ingest, cache_module.invalidate_cache must be called."""
+
+    async def test_vector_ingest_calls_invalidate_on_success(self):
+        mock_index = MagicMock()
+        with (
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_vector_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
+        ):
+            await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
+        mock_invalidate.assert_called_once_with("PROJ", "SCOPE")
+
+    async def test_vector_ingest_does_not_invalidate_on_duplicate(self):
+        """No cache invalidation when document is skipped as duplicate."""
+        with (
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=True),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
+        ):
+            await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
+        mock_invalidate.assert_not_called()
+
+    async def test_graph_ingest_calls_invalidate_on_success(self):
+        mock_index = MagicMock()
+        with (
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_graph_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
+        ):
+            await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
+        mock_invalidate.assert_called_once_with("PROJ", "SCOPE")
+
+    async def test_graph_ingest_does_not_invalidate_on_duplicate(self):
+        with (
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(neo4j_backend, "is_duplicate", return_value=True),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
+        ):
+            await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
+        mock_invalidate.assert_not_called()
+
+    async def test_vector_chunked_ingest_invalidates_when_ingested_gt_zero(self):
+        """Chunked ingest should invalidate cache only when at least one chunk succeeded."""
+
+        mock_index = MagicMock()
+        # Simulate a 6KB document that will be chunked
+        big_text = "x " * 3500  # > 4KB threshold
+
+        with (
+            patch("nexus.tools.needs_chunking", return_value=True),
+            patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"]),
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_vector_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
+        ):
+            result = await nexus_tools.ingest_vector_document(big_text, "PROJ", "SCOPE")
+        assert "ingested" in result.lower() or "chunk" in result.lower()
+        mock_invalidate.assert_called_once_with("PROJ", "SCOPE")
+
+
+# ---------------------------------------------------------------------------
+# nexus.config — validate_config
+# ---------------------------------------------------------------------------
+
+
+class TestValidateConfig:
+    """validate_config returns warning messages for unsafe defaults."""
+
+    def test_default_password_triggers_warning(self):
+        from nexus.config import validate_config
+        import nexus.config as nc
+
+        original = nc.DEFAULT_NEO4J_PASSWORD
+        try:
+            nc.DEFAULT_NEO4J_PASSWORD = "password123"
+            warnings = validate_config()
+        finally:
+            nc.DEFAULT_NEO4J_PASSWORD = original
+
+        assert len(warnings) >= 1
+        assert any("password" in w.lower() or "NEO4J_PASSWORD" in w for w in warnings)
+
+    def test_strong_password_no_warning(self):
+        from nexus.config import validate_config
+        import nexus.config as nc
+
+        original = nc.DEFAULT_NEO4J_PASSWORD
+        try:
+            nc.DEFAULT_NEO4J_PASSWORD = "s3cr3t!PasswordXYZ"
+            warnings = validate_config()
+        finally:
+            nc.DEFAULT_NEO4J_PASSWORD = original
+
+        # Only localhost-in-production warnings might fire; not password warning
+        password_warns = [
+            w for w in warnings if "NEO4J_PASSWORD" in w and "password123" in w
+        ]
+        assert len(password_warns) == 0
+
+    def test_localhost_urls_warn_in_production_mode(self):
+        from nexus.config import validate_config
+        import nexus.config as nc
+        import os
+
+        original_pw = nc.DEFAULT_NEO4J_PASSWORD
+        try:
+            nc.DEFAULT_NEO4J_PASSWORD = "strongpass"
+            with patch.dict(os.environ, {"NEXUS_ENV": "production"}):
+                warnings = validate_config()
+        finally:
+            nc.DEFAULT_NEO4J_PASSWORD = original_pw
+
+        # All three default service URLs point to localhost — expect 3 warnings
+        localhost_warns = [w for w in warnings if "localhost" in w]
+        assert len(localhost_warns) >= 1
+
+    def test_no_warnings_in_non_production_mode_with_good_config(self):
+        from nexus.config import validate_config
+        import nexus.config as nc
+        import os
+
+        original_pw = nc.DEFAULT_NEO4J_PASSWORD
+        try:
+            nc.DEFAULT_NEO4J_PASSWORD = "strongpass"
+            with patch.dict(os.environ, {"NEXUS_ENV": "development"}):
+                warnings = validate_config()
+        finally:
+            nc.DEFAULT_NEO4J_PASSWORD = original_pw
+
+        assert warnings == []
+
+    def test_validate_config_returns_list(self):
+        from nexus.config import validate_config
+
+        result = validate_config()
+        assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — answer_query helpers (_dedup_cross_source)
+# ---------------------------------------------------------------------------
+
+
+class TestAnswerQueryHelpers:
+    """Unit tests for the module-level helpers extracted from answer_query."""
+
+    def test_dedup_cross_source_attributes_graph_first(self):
+        from nexus.tools import _dedup_cross_source
+
+        result = _dedup_cross_source(["passage A"], ["passage B"])
+        assert result == ["[graph] passage A", "[vector] passage B"]
+
+    def test_dedup_cross_source_graph_wins_on_collision(self):
+        """Same content in both sources → attributed to graph, not repeated."""
+        from nexus.tools import _dedup_cross_source
+
+        result = _dedup_cross_source(["shared"], ["shared"])
+        assert result == ["[graph] shared"]
+
+    def test_dedup_cross_source_empty_inputs(self):
+        from nexus.tools import _dedup_cross_source
+
+        assert _dedup_cross_source([], []) == []
+
+    def test_dedup_cross_source_graph_only(self):
+        from nexus.tools import _dedup_cross_source
+
+        result = _dedup_cross_source(["a", "b"], [])
+        assert "[graph] a" in result
+        assert "[graph] b" in result
+        assert len(result) == 2
+
+    def test_dedup_cross_source_vector_only(self):
+        from nexus.tools import _dedup_cross_source
+
+        result = _dedup_cross_source([], ["x", "y"])
+        assert all(p.startswith("[vector]") for p in result)
+        assert len(result) == 2
+
+    def test_dedup_cross_source_skips_whitespace_only_passages(self):
+        """Empty/whitespace passages must be filtered out."""
+        from nexus.tools import _dedup_cross_source
+
+        result = _dedup_cross_source(["  ", "real content"], [""])
+        assert len(result) == 1
+        assert "[graph] real content" in result
+
+    async def test_fetch_graph_passages_returns_empty_on_error(self):
+        """_fetch_graph_passages must return [] instead of raising on backend errors."""
+        from nexus.tools import _fetch_graph_passages
+
+        with patch(
+            "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+        ):
+            result = await _fetch_graph_passages("q", "P", "S", rerank=False)
+        assert result == []
+
+    async def test_fetch_vector_passages_returns_empty_on_error(self):
+        """_fetch_vector_passages must return [] instead of raising on backend errors."""
+        from nexus.tools import _fetch_vector_passages
+
+        with patch(
+            "nexus.tools.get_vector_index", side_effect=RuntimeError("qdrant down")
+        ):
+            result = await _fetch_vector_passages("q", "P", "S", rerank=False)
+        assert result == []
