@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 Tests for nexus.chunking — Document chunking utilities.
 """
@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 
 from nexus import chunking
 from nexus.chunking import needs_chunking, chunk_document
+from nexus.config import MAX_DOCUMENT_SIZE
 
 
 class TestNeedsChunking:
@@ -20,13 +21,12 @@ class TestNeedsChunking:
 
     def test_large_document_needs_chunking(self):
         """Documents over MAX_DOCUMENT_SIZE should need chunking."""
-        # Create a document larger than 512KB
-        large_text = "x" * (512 * 1024 + 1)
+        large_text = "x" * (MAX_DOCUMENT_SIZE + 1)
         assert needs_chunking(large_text) is True
 
     def test_exact_limit_does_not_need_chunking(self):
         """Document exactly at MAX_DOCUMENT_SIZE should not need chunking."""
-        exact_text = "x" * (512 * 1024)
+        exact_text = "x" * MAX_DOCUMENT_SIZE
         assert needs_chunking(exact_text) is False
 
     def test_empty_document_does_not_need_chunking(self):
@@ -35,8 +35,8 @@ class TestNeedsChunking:
 
     def test_unicode_document_size_in_bytes(self):
         """Unicode characters should be measured in bytes, not characters."""
-        # Each emoji is 4 bytes in UTF-8
-        emoji_text = "😀" * (128 * 1024 + 1)  # 128K emojis = 512KB + 4 bytes
+        # Each emoji is 4 bytes in UTF-8; exceed the threshold in bytes
+        emoji_text = "😀" * (MAX_DOCUMENT_SIZE // 4 + 1)
         assert needs_chunking(emoji_text) is True
 
     @patch.object(chunking, "MAX_DOCUMENT_SIZE", 100)

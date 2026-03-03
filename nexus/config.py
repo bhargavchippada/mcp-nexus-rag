@@ -1,4 +1,4 @@
-# Version: v2.4
+# Version: v2.5
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -32,8 +32,11 @@ DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
 # ---------------------------------------------------------------------------
 # Document ingestion limits
 # ---------------------------------------------------------------------------
-# Documents exceeding MAX_DOCUMENT_SIZE (bytes) are automatically chunked
-MAX_DOCUMENT_SIZE = int(os.environ.get("MAX_DOCUMENT_SIZE", str(512 * 1024)))  # 512KB
+# Documents exceeding MAX_DOCUMENT_SIZE (bytes) are automatically chunked.
+# Default 4KB so all project docs (README, MEMORY, AGENTS) are chunked into
+# focused 1024-char pieces, preventing single giant nodes from flooding Claude's
+# context window when retrieved.
+MAX_DOCUMENT_SIZE = int(os.environ.get("MAX_DOCUMENT_SIZE", str(4 * 1024)))  # 4KB
 # Chunk size/overlap for large document splitting (uses CHUNK_SIZE/OVERLAP if not set)
 INGEST_CHUNK_SIZE = int(os.environ.get("INGEST_CHUNK_SIZE", str(DEFAULT_CHUNK_SIZE)))
 INGEST_CHUNK_OVERLAP = int(

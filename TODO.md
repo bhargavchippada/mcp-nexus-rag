@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v1.2
+**Version:** v1.3
 
 ## Hardening
 
@@ -10,6 +10,14 @@
 - [x] Move httpx import to module level (fixed 2026-03-01)
 - [x] Fix mutable default argument in `ingest_project_directory` (fixed 2026-03-01)
 - [ ] Per-tenant rate limiting (optional)
+
+## Completed (2026-03-02 — token optimization)
+
+- [x] Lower `MAX_DOCUMENT_SIZE` from 512KB to 4KB — project docs now chunked on ingest
+- [x] Add `max_chars=3000` parameter to `get_vector_context` and `get_graph_context`
+- [x] Set `RERANKER_TOP_N=2`, `RERANKER_CANDIDATE_K=10` in `.mcp.json`
+- [x] Update `test_chunking.py` to use `MAX_DOCUMENT_SIZE` from config (not hardcoded 512KB)
+- [x] RAG reset + re-ingest core docs with new chunk sizes
 
 ## Completed (2026-03-02)
 

@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v3.0
+**Version:** v3.1
 
 ## Known Issues
 
@@ -56,6 +56,25 @@
 - Vectors are fully stored and searchable regardless of `indexed_vectors_count`
 
 ## Lessons Learned (Post-Fix Documentation)
+
+### 2026-03-02 — RAG token cost optimized (FIXED)
+
+**Root Cause:** Three compounding issues inflated tool response tokens:
+1. `MAX_DOCUMENT_SIZE=512KB` — project docs (README, MEMORY, AGENTS; 5–15KB) stored as single nodes; one retrieved node = 15KB = ~3750 tokens
+2. `RERANKER_TOP_N=5` — returned 5 full nodes per call; worst case 5 × 15KB = 75KB per call
+3. No `max_chars` cap on `get_vector_context`/`get_graph_context` (unlike `answer_query` which has `max_context_chars=6000`)
+
+**Fix Applied:**
+- `MAX_DOCUMENT_SIZE`: 512KB → 4KB — all project docs now chunked into 1024-char pieces on ingest
+- Added `max_chars: int = 3000` parameter to both retrieval tools (hard cap ~750 tokens per call)
+- `.mcp.json`: `RERANKER_TOP_N=2`, `RERANKER_CANDIDATE_K=10` — returns 2 best chunks, not 5
+- `test_chunking.py`: updated to use `MAX_DOCUMENT_SIZE` from config (was hardcoded to 512KB)
+
+**Token reduction per call:** ~10,000 tokens worst-case → ~750 tokens (~87% reduction)
+
+**Prevention Guideline:** When adding retrieval tools, always add a `max_chars` cap parameter. Never let raw document nodes flow to Claude's context without a size guard.
+
+> **Rule:** `MAX_DOCUMENT_SIZE` should be ≤ 2× the expected chunk size for your target documents. For markdown docs (5–15KB), 4KB is appropriate. For large code files, increase to 16–32KB.
 
 ### 2026-03-02 — Reranker import path wrong (FIXED)
 

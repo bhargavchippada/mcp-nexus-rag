@@ -388,6 +388,54 @@ class TestContextRetrieval:
             result = await nexus_tools.get_graph_context("query", "PROJ", "SCOPE")
         assert "Error" in result
 
+    async def test_get_graph_context_max_chars_truncates(self):
+        node = MagicMock()
+        node.node.get_content.return_value = "x" * 5000
+        with patch(
+            "nexus.tools.get_graph_index", return_value=self._mock_index([node])
+        ):
+            result = await nexus_tools.get_graph_context(
+                "query", "PROJ", "SCOPE", max_chars=100
+            )
+        assert "truncated" in result
+        assert len(result) < 200  # header + 100 chars + suffix, not 5000
+
+    async def test_get_graph_context_max_chars_zero_disables(self):
+        node = MagicMock()
+        node.node.get_content.return_value = "x" * 5000
+        with patch(
+            "nexus.tools.get_graph_index", return_value=self._mock_index([node])
+        ):
+            result = await nexus_tools.get_graph_context(
+                "query", "PROJ", "SCOPE", max_chars=0
+            )
+        assert "truncated" not in result
+        assert "x" * 5000 in result
+
+    async def test_get_vector_context_max_chars_truncates(self):
+        node = MagicMock()
+        node.node.get_content.return_value = "y" * 5000
+        with patch(
+            "nexus.tools.get_vector_index", return_value=self._mock_index([node])
+        ):
+            result = await nexus_tools.get_vector_context(
+                "query", "PROJ", "SCOPE", max_chars=100
+            )
+        assert "truncated" in result
+        assert len(result) < 200
+
+    async def test_get_vector_context_max_chars_zero_disables(self):
+        node = MagicMock()
+        node.node.get_content.return_value = "y" * 5000
+        with patch(
+            "nexus.tools.get_vector_index", return_value=self._mock_index([node])
+        ):
+            result = await nexus_tools.get_vector_context(
+                "query", "PROJ", "SCOPE", max_chars=0
+            )
+        assert "truncated" not in result
+        assert "y" * 5000 in result
+
 
 # ---------------------------------------------------------------------------
 # nexus.tools — get_all_project_ids

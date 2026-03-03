@@ -338,6 +338,7 @@ async def get_graph_context(
     project_id: str,
     scope: str,
     rerank: bool = True,
+    max_chars: int = 3000,
 ) -> str:
     """Retrieve isolated context from the GraphRAG memory.
 
@@ -350,6 +351,8 @@ async def get_graph_context(
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
         rerank: If True (default) and RERANKER_ENABLED is set, applies the
             cross-encoder reranker to the candidate set before returning.
+        max_chars: Truncate the combined context string to this many characters
+            before returning (default 3000 ≈ 750 tokens). Set to 0 to disable.
 
     Returns:
         Structured context relevant to the specific project and scope.
@@ -398,6 +401,8 @@ async def get_graph_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
+        if max_chars > 0 and len(context_str) > max_chars:
+            context_str = context_str[:max_chars] + "… [truncated]"
         result = (
             f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
         )
@@ -645,6 +650,7 @@ async def get_vector_context(
     project_id: str,
     scope: str,
     rerank: bool = True,
+    max_chars: int = 3000,
 ) -> str:
     """Retrieve isolated context from the standard RAG (Vector) memory.
 
@@ -657,6 +663,8 @@ async def get_vector_context(
         scope: The retrieval scope (e.g., 'CORE_CODE', 'SYSTEM_LOGS').
         rerank: If True (default) and RERANKER_ENABLED is set, applies the
             cross-encoder reranker to the candidate set before returning.
+        max_chars: Truncate the combined context string to this many characters
+            before returning (default 3000 ≈ 750 tokens). Set to 0 to disable.
 
     Returns:
         Structured context relevant to the specific project and scope.
@@ -705,6 +713,8 @@ async def get_vector_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
+        if max_chars > 0 and len(context_str) > max_chars:
+            context_str = context_str[:max_chars] + "… [truncated]"
         result = f"Vector Context retrieved for {project_id} in scope {scope}:\n{context_str}"
         cache_module.set_cached(query, project_id, scope, result)
         return result
