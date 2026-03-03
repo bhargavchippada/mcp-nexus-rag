@@ -1,4 +1,4 @@
-# Version: v2.3
+# Version: v2.4
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -1692,3 +1692,269 @@ class TestFreshResultCaching:
         assert len(cached_values) == 1
         assert len(cached_values[0]) > 1500
         assert len(result) <= 1500 + len("… [truncated]")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — deep code review fixes (v3.5 / v1.2 / v1.7)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteTenantDataCacheInvalidation:
+    """Fix 1 (HIGH): delete_tenant_data must invalidate Redis cache after deletion."""
+
+    async def test_invalidates_cache_on_success(self):
+        """Cache is invalidated when both backends succeed."""
+        with (
+            patch("nexus.tools.neo4j_backend.delete_data"),
+            patch("nexus.tools.qdrant_backend.delete_data"),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inval,
+        ):
+            result = await nexus_tools.delete_tenant_data("PROJ", "SCOPE")
+        assert "Successfully" in result
+        mock_inval.assert_called_once_with("PROJ", "SCOPE")
+
+    async def test_invalidates_cache_on_partial_neo4j_failure(self):
+        """Cache is still invalidated even if Neo4j deletion fails."""
+        with (
+            patch(
+                "nexus.tools.neo4j_backend.delete_data",
+                side_effect=Exception("neo4j down"),
+            ),
+            patch("nexus.tools.qdrant_backend.delete_data"),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inval,
+        ):
+            result = await nexus_tools.delete_tenant_data("PROJ", "SCOPE")
+        assert "Partial failure" in result
+        mock_inval.assert_called_once_with("PROJ", "SCOPE")
+
+    async def test_invalidates_cache_on_both_backends_failing(self):
+        """Cache is still invalidated when both backends fail (stale entries must go)."""
+        with (
+            patch(
+                "nexus.tools.neo4j_backend.delete_data",
+                side_effect=Exception("neo4j down"),
+            ),
+            patch(
+                "nexus.tools.qdrant_backend.delete_data",
+                side_effect=Exception("qdrant down"),
+            ),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inval,
+        ):
+            result = await nexus_tools.delete_tenant_data("PROJ", "SCOPE")
+        assert "Partial failure" in result
+        mock_inval.assert_called_once_with("PROJ", "SCOPE")
+
+
+class TestEmptyQueryValidation:
+    """Fix 2 (HIGH): get_graph_context / get_vector_context must reject empty queries."""
+
+    async def test_get_graph_context_empty_query(self):
+        result = await nexus_tools.get_graph_context("", "PROJ", "SCOPE")
+        assert result == "Error: 'query' must not be empty."
+
+    async def test_get_graph_context_whitespace_query(self):
+        result = await nexus_tools.get_graph_context("   ", "PROJ", "SCOPE")
+        assert result == "Error: 'query' must not be empty."
+
+    async def test_get_vector_context_empty_query(self):
+        result = await nexus_tools.get_vector_context("", "PROJ", "SCOPE")
+        assert result == "Error: 'query' must not be empty."
+
+    async def test_get_vector_context_whitespace_query(self):
+        result = await nexus_tools.get_vector_context("   ", "PROJ", "SCOPE")
+        assert result == "Error: 'query' must not be empty."
+
+    async def test_get_graph_context_valid_query_passes_validation(self):
+        """A non-empty query must NOT return the empty-query error."""
+        mock_index = MagicMock()
+        mock_retriever = AsyncMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[])
+        mock_index.as_retriever.return_value = mock_retriever
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            result = await nexus_tools.get_graph_context(
+                "real query", "PROJ", "SCOPE", rerank=False
+            )
+        assert "Error: 'query' must not be empty." not in result
+
+    async def test_get_vector_context_valid_query_passes_validation(self):
+        mock_index = MagicMock()
+        mock_retriever = AsyncMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[])
+        mock_index.as_retriever.return_value = mock_retriever
+        with patch("nexus.tools.get_vector_index", return_value=mock_index):
+            result = await nexus_tools.get_vector_context(
+                "real query", "PROJ", "SCOPE", rerank=False
+            )
+        assert "Error: 'query' must not be empty." not in result
+
+
+class TestRerankerThreadSafety:
+    """Fix 4 (HIGH): reranker singleton must use double-checked locking."""
+
+    def test_reranker_lock_exists(self):
+        """_reranker_lock must be a threading.Lock instance."""
+        from nexus import reranker as nexus_reranker
+
+        assert hasattr(nexus_reranker, "_reranker_lock")
+        # Both Lock and RLock are acceptable; check for lock protocol
+        lock = nexus_reranker._reranker_lock
+        assert hasattr(lock, "acquire") and hasattr(lock, "release")
+
+    def test_concurrent_get_reranker_only_initialises_once(self):
+        """Two sequential calls must each receive the same singleton (constructed once)."""
+        import sys
+        import types
+        from nexus import reranker as nexus_reranker
+
+        nexus_reranker.reset_reranker()
+        fake_instance = MagicMock()
+        mock_cls = MagicMock(return_value=fake_instance)
+
+        # Inject a fake module so the internal `from ... import FlagEmbeddingReranker`
+        # resolves to our mock class without needing the real ML library loaded.
+        fake_module = types.ModuleType(
+            "llama_index.postprocessor.flag_embedding_reranker"
+        )
+        fake_module.FlagEmbeddingReranker = mock_cls  # type: ignore[attr-defined]
+
+        with patch.dict(
+            sys.modules,
+            {"llama_index.postprocessor.flag_embedding_reranker": fake_module},
+        ):
+            r1 = nexus_reranker.get_reranker()
+            r2 = nexus_reranker.get_reranker()
+
+        nexus_reranker.reset_reranker()  # cleanup singleton
+
+        assert r1 is r2
+        assert mock_cls.call_count == 1  # Model constructed exactly once
+
+
+class TestAutoChunkErrorSanitization:
+    """Fix 9 (MEDIUM): auto_chunk=False error must not leak MAX_DOCUMENT_SIZE value."""
+
+    async def test_ingest_graph_error_hides_size_value(self):
+        from nexus.config import MAX_DOCUMENT_SIZE
+
+        large_text = "x" * (MAX_DOCUMENT_SIZE + 1)
+        result = await nexus_tools.ingest_graph_document(
+            large_text, "PROJ", "SCOPE", auto_chunk=False
+        )
+        assert "Error" in result
+        # Must NOT expose the exact byte/KB threshold
+        assert str(MAX_DOCUMENT_SIZE // 1024) not in result
+
+    async def test_ingest_vector_error_hides_size_value(self):
+        from nexus.config import MAX_DOCUMENT_SIZE
+
+        large_text = "x" * (MAX_DOCUMENT_SIZE + 1)
+        result = await nexus_tools.ingest_vector_document(
+            large_text, "PROJ", "SCOPE", auto_chunk=False
+        )
+        assert "Error" in result
+        assert str(MAX_DOCUMENT_SIZE // 1024) not in result
+
+    async def test_ingest_graph_error_suggests_auto_chunk(self):
+        """Error message must still guide the caller to set auto_chunk=True."""
+        from nexus.config import MAX_DOCUMENT_SIZE
+
+        large_text = "x" * (MAX_DOCUMENT_SIZE + 1)
+        result = await nexus_tools.ingest_graph_document(
+            large_text, "PROJ", "SCOPE", auto_chunk=False
+        )
+        assert "auto_chunk=True" in result
+
+
+class TestSyncProjectFilesSuccessCheck:
+    """Fix 8 (MEDIUM): 'Skipped: duplicate' results must count as success, not error."""
+
+    async def test_skipped_duplicate_counted_as_ingested(self):
+        """sync_project_files must treat 'Skipped' responses as successful syncs."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        files_needing_sync = [
+            {
+                "filepath": fake_file,
+                "source": "TEST/README.md",
+                "project_id": "TEST",
+                "scope": "CORE_DOCS",
+            }
+        ]
+
+        # Both ingest calls return "Skipped: duplicate content..."
+        skipped_msg = "Skipped: duplicate content already exists for project 'TEST'."
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=files_needing_sync,
+            ),
+            patch(
+                "nexus.tools.neo4j_backend.delete_by_filepath",
+            ),
+            patch(
+                "nexus.tools.qdrant_backend.delete_by_filepath",
+            ),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value=skipped_msg,
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value=skipped_msg,
+            ),
+            patch(
+                "nexus.tools.sync_module.delete_stale_files",
+                return_value=[],
+            ),
+        ):
+            result = await nexus_tools.sync_project_files("/fake/root")
+
+        # Should report 1 synced, 0 errors
+        assert "Synced 1 of 1" in result
+        assert "Errors" not in result
+
+    async def test_error_result_still_counted_as_error(self):
+        """Actual 'Error:' responses must still be treated as failures."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        files_needing_sync = [
+            {
+                "filepath": fake_file,
+                "source": "TEST/README.md",
+                "project_id": "TEST",
+                "scope": "CORE_DOCS",
+            }
+        ]
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=files_needing_sync,
+            ),
+            patch("nexus.tools.neo4j_backend.delete_by_filepath"),
+            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="Error: Graph document ingestion failed.",
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="Successfully ingested Vector document.",
+            ),
+            patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
+        ):
+            result = await nexus_tools.sync_project_files("/fake/root")
+
+        assert "Synced 0 of 1" in result
+        assert "Errors" in result

@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v1.8
+**Version:** v1.9
 
 ## Hardening
 
@@ -13,6 +13,7 @@
 - [x] Fix batch ingest missing `cache_module.invalidate_cache()` — stale cache after batch (fixed 2026-03-03)
 - [x] Fix `answer_query` cache hit wrongly applying `_apply_cap(answer, max_context_chars)` (fixed 2026-03-03)
 - [x] Fix get_graph/vector_context caching truncated result — `max_chars` became cache-state-dependent (fixed 2026-03-03)
+- [x] Deep code review — 11 bugs fixed (2026-03-03): delete_tenant_data cache invalidation, empty query validation, CORS credentials, reranker thread safety, late imports, silent exceptions, sync success check, error message sanitization, asyncio.gather exception logging, dead code cleanup
 - [ ] Per-tenant rate limiting (optional)
 
 ## Completed (2026-03-03 — robustness hardening)

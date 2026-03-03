@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v1.2
 """
 nexus.reranker — Singleton FlagEmbeddingReranker wrapping bge-reranker-v2-m3.
 
@@ -8,6 +8,7 @@ Use reset_reranker() in tests to clear the singleton between test cases.
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 from nexus.config import (
@@ -20,13 +21,15 @@ if TYPE_CHECKING:
     from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
 
 _reranker: "FlagEmbeddingReranker | None" = None
+_reranker_lock = threading.Lock()
 
 
 def get_reranker() -> "FlagEmbeddingReranker":
     """Return the process-level FlagEmbeddingReranker singleton.
 
-    Lazy-loads the model on first call. Subsequent calls return the cached
-    instance with no I/O overhead.
+    Lazy-loads the model on first call using double-checked locking to
+    prevent concurrent threads from initialising the model multiple times.
+    Subsequent calls return the cached instance with no I/O overhead.
 
     Returns:
         Configured FlagEmbeddingReranker instance.
@@ -37,20 +40,22 @@ def get_reranker() -> "FlagEmbeddingReranker":
     """
     global _reranker
     if _reranker is None:
-        from llama_index.postprocessor.flag_embedding_reranker import (
-            FlagEmbeddingReranker,
-        )
+        with _reranker_lock:
+            if _reranker is None:
+                from llama_index.postprocessor.flag_embedding_reranker import (
+                    FlagEmbeddingReranker,
+                )
 
-        logger.info(
-            f"Loading reranker model: {DEFAULT_RERANKER_MODEL} "
-            f"(top_n={DEFAULT_RERANKER_TOP_N}, fp16=True)"
-        )
-        _reranker = FlagEmbeddingReranker(
-            model=DEFAULT_RERANKER_MODEL,
-            top_n=DEFAULT_RERANKER_TOP_N,
-            use_fp16=True,
-        )
-        logger.info("Reranker model loaded.")
+                logger.info(
+                    f"Loading reranker model: {DEFAULT_RERANKER_MODEL} "
+                    f"(top_n={DEFAULT_RERANKER_TOP_N}, fp16=True)"
+                )
+                _reranker = FlagEmbeddingReranker(
+                    model=DEFAULT_RERANKER_MODEL,
+                    top_n=DEFAULT_RERANKER_TOP_N,
+                    use_fp16=True,
+                )
+                logger.info("Reranker model loaded.")
     return _reranker
 
 

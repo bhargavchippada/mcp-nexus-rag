@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.7
 """
 HTTP API server for Nexus RAG.
 
@@ -9,6 +9,8 @@ Run with: uvicorn http_server:app --host 0.0.0.0 --port 8765
 """
 
 import asyncio
+import re
+from datetime import datetime, timezone
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -24,6 +26,7 @@ from nexus.tools import (
     answer_query,
     health_check,
     get_all_project_ids,
+    get_all_tenant_scopes,
 )
 
 
@@ -60,6 +63,7 @@ class GraphResult(BaseModel):
     """A single graph search result."""
 
     text: str
+    score: float = 0.0
     project_id: str
     scope: str
     source: str
@@ -91,6 +95,12 @@ class ProjectsResponse(BaseModel):
     project_ids: list[str]
 
 
+class ScopesResponse(BaseModel):
+    """Response body for /scopes endpoint."""
+
+    scopes: list[str]
+
+
 # ---------------------------------------------------------------------------
 # App setup
 # ---------------------------------------------------------------------------
@@ -113,7 +123,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, restrict to specific origins
-    allow_credentials=True,
+    allow_credentials=False,  # Must be False when allow_origins=["*"] (CORS spec)
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -128,16 +138,13 @@ app.add_middleware(
 async def http_health_check():
     """Check connectivity to all backends."""
     result = await health_check()
-    # Parse the health check result string
-    lines = result.split("\n")
-    health = {"neo4j": "unknown", "qdrant": "unknown", "ollama": "unknown"}
-    for line in lines:
-        if "neo4j" in line.lower():
-            health["neo4j"] = "OK" if "OK" in line else "ERROR"
-        elif "qdrant" in line.lower():
-            health["qdrant"] = "OK" if "OK" in line else "ERROR"
-        elif "ollama" in line.lower():
-            health["ollama"] = "OK" if "OK" in line else "ERROR"
+    # health_check() returns a dict with keys: neo4j, qdrant, ollama
+    # Values are "ok" or "error: <message>"
+    health = {
+        "neo4j": "OK" if result.get("neo4j") == "ok" else "ERROR",
+        "qdrant": "OK" if result.get("qdrant") == "ok" else "ERROR",
+        "ollama": "OK" if result.get("ollama") == "ok" else "ERROR",
+    }
 
     all_ok = all(v == "OK" for v in health.values())
     return HealthResponse(
@@ -152,97 +159,149 @@ async def http_health_check():
 async def http_get_projects():
     """Get all available project IDs."""
     result = await get_all_project_ids()
-    # The result is a string like "Available project IDs: ['X', 'Y']"
-    # or a list directly depending on implementation
-    if isinstance(result, str):
-        # Parse from string format
-        import re
+    return ProjectsResponse(project_ids=list(result))
 
-        match = re.search(r"\[([^\]]*)\]", result)
-        if match:
-            ids_str = match.group(1)
-            project_ids = [
-                p.strip().strip("'\"") for p in ids_str.split(",") if p.strip()
-            ]
-        else:
-            project_ids = []
-    else:
-        project_ids = list(result)
 
-    return ProjectsResponse(project_ids=project_ids)
+@app.get("/scopes", response_model=ScopesResponse)
+async def http_get_scopes(project_id: Optional[str] = None):
+    """Get all available tenant scopes, optionally filtered by project."""
+    result = await get_all_tenant_scopes(project_id=project_id)
+    return ScopesResponse(scopes=list(result))
 
 
 def _parse_context_results(context_str: str, default_project: str, default_scope: str):
-    """Parse context string into structured results."""
+    """Parse context string into structured results.
+
+    Supports format: - [score: X.XXXX] content here
+    Only lines with [score:] prefix are treated as separate results.
+    Content without score prefix is appended to the previous result.
+    """
     results = []
     if "No " in context_str and "context found" in context_str:
         return results
 
+    # Pattern to match: - [score: X.XXXX] content (including negative scores)
+    score_pattern = re.compile(r"^-\s*\[score:\s*([-\d.]+)\]\s*(.*)$")
+
     lines = context_str.split("\n")
+    current_result = None
+
     for line in lines:
         line = line.strip()
-        if line.startswith("- "):
-            text = line[2:]  # Remove "- " prefix
-            results.append(
-                {
-                    "text": text[:500],  # Limit text length
-                    "project_id": default_project,
-                    "scope": default_scope,
-                    "source": "nexus-rag",
-                }
-            )
+        if not line:
+            continue
+
+        # Check if this line starts a new result (has score prefix)
+        match = score_pattern.match(line)
+        if match:
+            # Save previous result if exists
+            if current_result:
+                current_result["text"] = current_result["text"][:500]
+                results.append(current_result)
+
+            # Start new result
+            try:
+                score = float(match.group(1))
+            except ValueError:
+                score = 0.0
+            current_result = {
+                "text": match.group(2),
+                "score": score,
+                "project_id": default_project,
+                "scope": default_scope,
+                "source": "nexus-rag",
+            }
+        elif current_result:
+            # Append to current result's text (multiline content)
+            current_result["text"] += " " + line
+
+    # Don't forget the last result
+    if current_result:
+        current_result["text"] = current_result["text"][:500]
+        results.append(current_result)
+
     return results
 
 
 @app.post("/query", response_model=QueryResponse)
 async def http_query(request: QueryRequest):
     """Query both vector and graph stores with optional synthesis."""
-    from datetime import datetime, timezone
+    from nexus.config import logger
 
-    project_id = request.project_id or ""
+    project_id = request.project_id or "AGENT"
     scope = request.scope or ""
 
-    # Query both backends concurrently
-    vector_task = get_vector_context(
-        query=request.query,
-        project_id=project_id if project_id else "AGENT",  # Default to AGENT
-        scope=scope if scope else "CORE_CODE",  # Default scope
-        rerank=request.rerank,
-    )
-    graph_task = get_graph_context(
-        query=request.query,
-        project_id=project_id if project_id else "AGENT",
-        scope=scope if scope else "CORE_CODE",
-        rerank=request.rerank,
+    # Get available scopes if none specified
+    scopes_to_query = [scope] if scope else []
+    if not scopes_to_query:
+        all_scopes = await get_all_tenant_scopes(project_id=project_id)
+        scopes_to_query = list(all_scopes) if all_scopes else ["CORE_CODE"]
+
+    # Query all scopes concurrently
+    # max_chars=0 disables truncation since we parse into structured results
+    vector_tasks = [
+        get_vector_context(
+            query=request.query,
+            project_id=project_id,
+            scope=s,
+            rerank=request.rerank,
+            max_chars=0,
+        )
+        for s in scopes_to_query
+    ]
+    graph_tasks = [
+        get_graph_context(
+            query=request.query,
+            project_id=project_id,
+            scope=s,
+            rerank=request.rerank,
+            max_chars=0,
+        )
+        for s in scopes_to_query
+    ]
+
+    all_results = await asyncio.gather(
+        *vector_tasks, *graph_tasks, return_exceptions=True
     )
 
-    vector_result, graph_result = await asyncio.gather(
-        vector_task, graph_task, return_exceptions=True
-    )
+    # Split results
+    num_scopes = len(scopes_to_query)
+    vector_results_raw = all_results[:num_scopes]
+    graph_results_raw = all_results[num_scopes:]
 
-    # Parse results
+    # Parse vector results from all scopes
     vector_results = []
-    if isinstance(vector_result, str) and "Error" not in vector_result:
-        parsed = _parse_context_results(
-            vector_result, project_id or "AGENT", scope or "CORE_CODE"
-        )
-        vector_results = [VectorResult(**r, score=0.0) for r in parsed]
+    for s, result in zip(scopes_to_query, vector_results_raw):
+        if isinstance(result, Exception):
+            logger.warning(f"Vector context task failed for scope {s!r}: {result}")
+            continue
+        # Skip tool-level error strings (start with "Error"), pass all other content
+        if isinstance(result, str) and not result.startswith("Error"):
+            parsed = _parse_context_results(result, project_id, s)
+            vector_results.extend([VectorResult(**r) for r in parsed])
 
+    # Parse graph results from all scopes
     graph_results = []
-    if isinstance(graph_result, str) and "Error" not in graph_result:
-        parsed = _parse_context_results(
-            graph_result, project_id or "AGENT", scope or "CORE_CODE"
-        )
-        graph_results = [GraphResult(**r) for r in parsed]
+    for s, result in zip(scopes_to_query, graph_results_raw):
+        if isinstance(result, Exception):
+            logger.warning(f"Graph context task failed for scope {s!r}: {result}")
+            continue
+        if isinstance(result, str) and not result.startswith("Error"):
+            parsed = _parse_context_results(result, project_id, s)
+            graph_results.extend([GraphResult(**r) for r in parsed])
 
-    # Optional synthesis
+    # Sort by score descending (highest relevance first)
+    vector_results.sort(key=lambda x: x.score, reverse=True)
+    graph_results.sort(key=lambda x: x.score, reverse=True)
+
+    # Optional synthesis (answer_query handles empty scope by searching all)
     synthesis = None
-    if request.synthesize and (vector_results or graph_results):
+    if request.synthesize:
         try:
             synthesis = await answer_query(
                 query=request.query,
-                project_id=project_id if project_id else "AGENT",
-                scope=scope,
+                project_id=project_id,
+                scope=request.scope or "",  # Empty = search all scopes
                 rerank=request.rerank,
             )
             # Clean up error messages

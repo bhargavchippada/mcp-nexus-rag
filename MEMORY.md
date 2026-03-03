@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v3.9
+**Version:** v4.0
 
 ## Known Issues
 
@@ -17,6 +17,61 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review — 11 Bugs Fixed (v3.5/v1.2/v1.7)
+
+**Bug 1 (HIGH): `delete_tenant_data` missing cache invalidation**
+**Root Cause:** `delete_tenant_data` deleted data from Neo4j + Qdrant but never called `cache_module.invalidate_cache()`. Cache entries served stale data after deletion.
+**Fix Applied:** Added `cache_module.invalidate_cache(project_id, scope)` unconditionally after both backend delete calls — even on partial failure, stale entries must be purged.
+**Prevention Guideline:** Any function that deletes OR modifies tenant data must invalidate the cache. "Write" includes delete. Always invalidate after data mutations, not just ingest.
+
+**Bug 2 (HIGH): Empty query accepted by `get_graph_context` / `get_vector_context`**
+**Root Cause:** Both functions had no `query` validation. `answer_query` had it; the query functions didn't. Empty queries caused expensive backend calls with meaningless results.
+**Fix Applied:** Added `if not query or not query.strip(): return "Error: 'query' must not be empty."` at the start of both functions.
+**Prevention Guideline:** Validate all required string inputs at the entry point of every public tool, not just some. Apply the same validation pattern that `answer_query` uses.
+
+**Bug 3 (HIGH): CORS misconfiguration — `allow_credentials=True` + wildcard origin**
+**Root Cause:** `http_server.py` had `allow_origins=["*"]` with `allow_credentials=True`. Per the CORS spec, a wildcard origin with credentials is invalid — browsers reject such responses.
+**Fix Applied:** Changed `allow_credentials=True` → `allow_credentials=False`.
+**Prevention Guideline:** `allow_credentials=True` requires explicit origin allowlists (never `"*"`). Wildcard origin means `allow_credentials` must be `False`.
+
+**Bug 4 (HIGH): Reranker singleton has no thread lock — race condition on init**
+**Root Cause:** `nexus/reranker.py` `get_reranker()` used a bare `if _reranker is None:` check without a lock. Two concurrent coroutines could both pass the check and both call `FlagEmbeddingReranker(...)` — loading the model twice.
+**Fix Applied:** Added `_reranker_lock = threading.Lock()` and double-checked locking pattern: outer check → lock → inner check → init.
+**Prevention Guideline:** All process-level singletons backed by expensive initialisation must use double-checked locking (`threading.Lock`).
+
+**Bug 5 (MEDIUM): Late imports inside `answer_query` and `_fetch_graph_passages`**
+**Root Cause:** `import asyncio` and `from nexus.config import DEFAULT_LLM_MODEL, DEFAULT_LLM_TIMEOUT` were inside the function body. This adds overhead on every call and obscures dependencies.
+**Fix Applied:** Moved all late imports to module level in `nexus/tools.py`.
+**Prevention Guideline:** Only use function-level imports for optional heavy dependencies (e.g., ML models under `TYPE_CHECKING`). Standard library and project config must import at module top.
+
+**Bug 6 (MEDIUM): Late imports in `http_server.py` endpoint handlers**
+**Root Cause:** `from datetime import datetime, timezone` in `http_query`, `import re` in `_parse_context_results`, `http_get_projects`, `http_get_scopes`, `http_query`.
+**Fix Applied:** Moved `import re` and `from datetime import datetime, timezone` to module level.
+
+**Bug 7 (MEDIUM): `print_all_stats` silently swallowed Qdrant scope errors**
+**Root Cause:** `except Exception: vector_scopes = set()` — no logging, making Qdrant failures invisible.
+**Fix Applied:** Changed to `except Exception as e: logger.warning(...)`.
+**Prevention Guideline:** Never bare-except silently. Always log at least `logger.warning(str(e))`.
+
+**Bug 8 (MEDIUM): `sync_project_files` counts "Skipped: duplicate" as error**
+**Root Cause:** `if "Successfully" in graph_result and "Successfully" in vector_result:` — documents already ingested return "Skipped: duplicate content...", which was counted as an error.
+**Fix Applied:** Changed to `if "Error" not in graph_result and "Error" not in vector_result:`.
+**Prevention Guideline:** Success-check by absence of error, not presence of success keyword, when multiple valid success messages exist ("Successfully", "Skipped").
+
+**Bug 9 (MEDIUM): `auto_chunk=False` error message leaked internal `MAX_DOCUMENT_SIZE` value**
+**Root Cause:** `f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit..."` exposed the internal config value.
+**Fix Applied:** Changed to generic `"Error: Document exceeds size limit. Set auto_chunk=True to split automatically."`.
+**Prevention Guideline:** Error messages returned to callers must not expose internal config values, file paths, or service details.
+
+**Bug 10 (MEDIUM): `asyncio.gather(return_exceptions=True)` exceptions silently dropped**
+**Root Cause:** Result parsing in `http_query` only checked `isinstance(result, str)` — `Exception` objects in `all_results` were skipped silently.
+**Fix Applied:** Added `if isinstance(result, Exception): logger.warning(...); continue` before the string check.
+**Prevention Guideline:** When using `return_exceptions=True`, always handle the `Exception` case explicitly. Do not assume all results are the expected type.
+
+**Bug 11 (LOW): Dead `isinstance(result, str)` branches in `http_get_projects` / `http_get_scopes`**
+**Root Cause:** Both `get_all_project_ids` and `get_all_tenant_scopes` always return lists. The string-parsing fallback code was dead and added confusion.
+**Fix Applied:** Simplified both handlers to `list(result)` directly.
 
 ### [2026-03-03] Code Review — 4 Bugs Fixed
 

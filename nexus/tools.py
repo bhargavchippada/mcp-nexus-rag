@@ -1,4 +1,4 @@
-# Version: v3.4
+# Version: v3.5
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -6,6 +6,7 @@ Imports are done from the nexus sub-modules; server.py is a thin wrapper
 that imports this module to register the tools on the shared mcp instance.
 """
 
+import asyncio
 from typing import Optional
 from datetime import datetime, timezone
 import os
@@ -23,6 +24,8 @@ from nexus.config import (
     mcp,
     DEFAULT_QDRANT_URL,
     DEFAULT_OLLAMA_URL,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TIMEOUT,
     DEFAULT_RERANKER_CANDIDATE_K,
     MAX_CONTEXT_CHARS,
     RERANKER_ENABLED,
@@ -158,9 +161,7 @@ async def ingest_graph_document(
     # Handle large documents
     if needs_chunking(text):
         if not auto_chunk:
-            from nexus.config import MAX_DOCUMENT_SIZE
-
-            return f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit. Set auto_chunk=True to split automatically."
+            return "Error: Document exceeds size limit. Set auto_chunk=True to split automatically."
 
         chunks = chunk_document(text)
         ingested = 0
@@ -382,6 +383,8 @@ async def get_graph_context(
     Returns:
         Structured context relevant to the specific project and scope.
     """
+    if not query or not query.strip():
+        return "Error: 'query' must not be empty."
     scope_label = scope if scope else "all scopes"
     logger.info(
         f"Graph retrieve: project={project_id} scope={scope_label} "
@@ -480,9 +483,7 @@ async def ingest_vector_document(
     # Handle large documents
     if needs_chunking(text):
         if not auto_chunk:
-            from nexus.config import MAX_DOCUMENT_SIZE
-
-            return f"Error: Document exceeds {MAX_DOCUMENT_SIZE // 1024}KB limit. Set auto_chunk=True to split automatically."
+            return "Error: Document exceeds size limit. Set auto_chunk=True to split automatically."
 
         chunks = chunk_document(text)
         ingested = 0
@@ -706,6 +707,8 @@ async def get_vector_context(
     Returns:
         Structured context relevant to the specific project and scope.
     """
+    if not query or not query.strip():
+        return "Error: 'query' must not be empty."
     scope_label = scope if scope else "all scopes"
     logger.info(
         f"Vector retrieve: project={project_id} scope={scope_label} "
@@ -774,8 +777,6 @@ async def _fetch_graph_passages(
 
     Returns a list of content strings, or an empty list on any error.
     """
-    import asyncio  # noqa: F401 (asyncio already imported at call site)
-
     try:
         index = get_graph_index()
         filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
@@ -892,10 +893,6 @@ async def answer_query(
     Returns:
         LLM-generated answer string, or an error message if generation fails.
     """
-    import asyncio
-
-    from nexus.config import DEFAULT_LLM_MODEL, DEFAULT_OLLAMA_URL, DEFAULT_LLM_TIMEOUT
-
     if not query or not query.strip():
         return "Error: 'query' must not be empty."
     if not project_id or not project_id.strip():
@@ -912,7 +909,9 @@ async def answer_query(
     )
     if cached is not None:
         logger.info(f"answer_query cache hit: project={project_id} scope={scope_msg}")
-        return cached  # answer is LLM output — max_context_chars limits input, not output
+        return (
+            cached  # answer is LLM output — max_context_chars limits input, not output
+        )
 
     # ── 1. Retrieve from both backends concurrently ──────────────────────────
     graph_passages, vector_passages = await asyncio.gather(
@@ -1121,6 +1120,9 @@ async def delete_tenant_data(project_id: str, scope: str = "") -> str:
     except Exception as e:
         errors.append(f"Qdrant: {e}")
 
+    # Always invalidate cache — even on partial failure, cached results are stale
+    cache_module.invalidate_cache(project_id, scope)
+
     label = f"project '{project_id}'"
     if scope:
         label += f", scope '{scope}'"
@@ -1210,7 +1212,8 @@ async def print_all_stats() -> str:
                     ]
                 ),
             )
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Qdrant scopes error for project '{project_id}': {e}")
             vector_scopes = set()
 
         all_scopes = sorted(graph_scopes | vector_scopes)
@@ -1562,7 +1565,7 @@ async def sync_project_files(
                 file_path=str(filepath),
             )
 
-            if "Successfully" in graph_result and "Successfully" in vector_result:
+            if "Error" not in graph_result and "Error" not in vector_result:
                 ingested += 1
                 logger.info(f"Synced: {f['source']}")
             else:
