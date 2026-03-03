@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v2.9
+**Version:** v3.0
 
 ## Known Issues
 
@@ -57,6 +57,36 @@
 
 ## Lessons Learned (Post-Fix Documentation)
 
+### 2026-03-02 — Reranker import path wrong (FIXED)
+
+**Root Cause:** `nexus/reranker.py` imported from `llama_index.postprocessor.flag_reranker` (non-existent module). Correct module is `llama_index.postprocessor.flag_embedding_reranker`. The wrong path caused `ModuleNotFoundError` on every reranker load, silently degrading to un-reranked results with a WARNING in logs.
+
+**Fix Applied:** Updated both `TYPE_CHECKING` guard and runtime import in `reranker.py`. Updated all 6 `sys.modules` patch keys in `tests/test_reranker.py`.
+
+**Prevention Guideline:** When adding a new llama-index postprocessor, always verify the exact import path via `poetry show llama-index-postprocessor-flag-embedding-reranker` and `python -c "import llama_index.postprocessor.flag_embedding_reranker"`.
+
+> **Guideline:** Test the reranker load explicitly: `poetry run python -c "from nexus.reranker import get_reranker; get_reranker()"` — this catches import errors before prod.
+
+### 2026-03-02 — Redis cache never called (FIXED)
+
+**Root Cause:** `cache_module` was imported in `tools.py` (`from nexus import cache as cache_module`) but `cache_module.get_cached()` and `cache_module.set_cached()` were never invoked in `get_vector_context`, `get_graph_context`, or `answer_query`. All RAG queries hit Qdrant/Neo4j on every call.
+
+**Fix Applied:** Added cache check at function entry and cache write at function exit in all three retrieval functions. `answer_query` uses `f"answer:{query}"` as cache key for namespace separation.
+
+**Prevention Guideline:** When adding a cache module, always verify integration with a live cache hit test: call the same query twice and confirm the second call does NOT hit the backend (check logs for "cache hit").
+
+> **Guideline:** After integrating cache into any function, run the `disable_cache` autouse fixture pattern in tests: monkeypatch both `get_cached → None` and `set_cached → noop` in `nexus.tools.cache_module`.
+
+### 2026-03-02 — FlagEmbedding incompatible with transformers 5.x (FIXED)
+
+**Root Cause:** `FlagEmbedding 1.3.5` imports `is_torch_fx_available` from `transformers.utils.import_utils`. This symbol was removed in `transformers 5.0`. Installing `FlagEmbedding` without a version pin pulled `transformers 5.2.0` which caused `ImportError` on reranker load.
+
+**Fix Applied:** `poetry run pip install "transformers<5.0"` → installed 4.57.6. Pinned in `pyproject.toml`: `FlagEmbedding>=1.3.5,<2.0.0` and `transformers>=4.40.0,<5.0.0`.
+
+**Prevention Guideline:** Always pin `transformers<5.0` when using FlagEmbedding. Check `poetry show FlagEmbedding` for required transformers version before upgrading.
+
+> **Guideline:** When adding ML/HuggingFace dependencies, immediately pin upper bounds on transformers and torch to prevent silent breakage from upstream API removals.
+
 ### 2026-03-01 — Late imports anti-pattern (FIXED)
 
 **Root Cause:** `import httpx` placed inside function body instead of module level, breaking static analysis and IDE support.
@@ -80,6 +110,16 @@
 ---
 
 ## Changelog
+
+### v3.0 — 2026-03-02
+
+- **FIXED:** Reranker import path `flag_reranker` → `flag_embedding_reranker` (was silently falling back on every query)
+- **FIXED:** Redis cache not integrated into retrieval tools (was imported but never called)
+- **FIXED:** FlagEmbedding incompatible with transformers 5.x — pinned `transformers<5.0` in pyproject.toml
+- **Added:** `autouse=True` disable_cache fixture in conftest.py (test isolation)
+- **Updated:** `start-services.sh` v1.1 — Redis check, `--watcher` option
+- **Updated:** `install-hooks.sh` v1.1 — `xargs -r` safety fix, UUOC cleanup
+- Tests: 197 passed in 2.25s, lint clean
 
 ### v2.9 — 2026-03-01
 

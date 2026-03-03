@@ -398,7 +398,9 @@ async def get_graph_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
-        result = f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        result = (
+            f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        )
         cache_module.set_cached(query, project_id, scope, result)
         return result
     except Exception as e:

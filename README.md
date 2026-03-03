@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v2.6
+**Version:** v2.7
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 197 tests passing
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 197 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -121,6 +121,7 @@ Services are defined in `docker-compose.yml`:
 | **Neo4j**    | `bolt://localhost:7687`  | GraphRAG graph store                  |
 | **Qdrant**   | `http://localhost:6333`  | Vector store (`nexus_rag` collection) |
 | **Ollama**   | `http://localhost:11434` | Local LLM + embeddings                |
+| **Redis**    | `redis://localhost:6379` | Semantic query result cache (24h TTL) |
 | **Postgres** | `localhost:5432`         | Reserved (pgvector, future)           |
 
 Models auto-pulled by `ollama-init` on first start:
@@ -128,7 +129,7 @@ Models auto-pulled by `ollama-init` on first start:
 - `nomic-embed-text` — embeddings
 - `llama3.1:8b` — graph extraction
 
-> **Note**: `BAAI/bge-reranker-v2-m3` is loaded directly from HuggingFace Hub by `llama-index-postprocessor-flag-reranker` — it does **not** require an Ollama pull.
+> **Note**: `BAAI/bge-reranker-v2-m3` is loaded directly from HuggingFace Hub by `llama-index-postprocessor-flag-embedding-reranker` — it does **not** require an Ollama pull. Requires `FlagEmbedding>=1.3.5,<2.0.0` and `transformers>=4.40.0,<5.0.0`.
 
 ```bash
 docker-compose up -d
@@ -167,6 +168,9 @@ PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term
 | `NEO4J_PASSWORD`      | `password`                 | Neo4j password (use env var in production)       |
 | `QDRANT_URL`          | `http://localhost:6333`    | Qdrant connection URL                            |
 | `OLLAMA_BASE_URL`     | `http://localhost:11434`   | Ollama base URL                                  |
+| `REDIS_URL`           | `redis://localhost:6379`   | Redis connection URL for semantic cache          |
+| `CACHE_TTL`           | `86400` (24h)              | Cache entry TTL in seconds                       |
+| `CACHE_ENABLED`       | `true`                     | Set to `false` to bypass Redis cache globally    |
 
 ---
 
@@ -503,6 +507,22 @@ Use the automation script to start all services after a reboot:
 ---
 
 ## Recent Updates
+
+### v2.7 (2026-03-02)
+
+- 🐛 **BUGFIX**: Reranker import path corrected (`flag_reranker` → `flag_embedding_reranker`)
+  - Warning `No module named 'llama_index.postprocessor.flag_reranker'` was causing silent fallback to un-reranked results on every query
+  - Fix: Updated both `TYPE_CHECKING` guard and runtime import in `nexus/reranker.py`; updated 6 `sys.modules` patches in `tests/test_reranker.py`
+- ⚡ **NEW**: Redis semantic cache integrated into all retrieval tools
+  - `get_vector_context`, `get_graph_context`, and `answer_query` now check Redis on entry and write on exit
+  - Cache key: `nexus:{SHA256(query|project_id|scope)[:16]}`, TTL: 86400s (24h)
+  - Previously imported but never called — all RAG queries were bypassing cache entirely
+- 📦 **NEW**: FlagEmbedding dependency pinned in `pyproject.toml`
+  - Added `FlagEmbedding>=1.3.5,<2.0.0` and `transformers>=4.40.0,<5.0.0`
+  - Prevents `ImportError: cannot import name 'is_torch_fx_available'` from transformers 5.x
+- 🧪 **Tests**: Added `autouse=True` `disable_cache` fixture in `conftest.py` to prevent Redis from polluting unit tests
+- 🔧 **Scripts**: `start-services.sh` v1.1 — added Redis health check, `--watcher` option
+- ✅ **Tests**: 197 tests passing, lint clean
 
 ### v2.6 (2026-02-28)
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v1.0
+# Version: v1.1
 # Install git hooks for Antigravity workspace
 # Ensures Code-Graph-RAG stays in sync with code changes
 
@@ -74,7 +74,7 @@ install_nexus_hook() {
     if [ -f "$submodule_dir/.git" ]; then
         # Get the actual git dir from the .git file
         local git_dir
-        git_dir=$(cat "$submodule_dir/.git" | sed 's/gitdir: //')
+        git_dir=$(sed 's/gitdir: //' "$submodule_dir/.git")
         hook_path="$submodule_dir/$git_dir/hooks/pre-commit"
     fi
 
@@ -92,7 +92,7 @@ set -e
 echo "[pre-commit] Running pre-commit checks..."
 
 # Check for debug prints
-if git diff --cached --name-only | xargs grep -l 'print(' 2>/dev/null | head -1; then
+if git diff --cached --name-only | xargs -r grep -l 'print(' 2>/dev/null | head -1; then
     echo "[pre-commit] WARNING: Found print() statements in staged files"
 fi
 
@@ -121,7 +121,7 @@ install_post_commit_hook() {
 
     if [ -f "$submodule_dir/.git" ]; then
         local git_dir
-        git_dir=$(cat "$submodule_dir/.git" | sed 's/gitdir: //')
+        git_dir=$(sed 's/gitdir: //' "$submodule_dir/.git")
         hook_path="$submodule_dir/$git_dir/hooks/post-commit"
     else
         hook_path="$submodule_dir/.git/hooks/post-commit"

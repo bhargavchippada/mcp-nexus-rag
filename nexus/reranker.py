@@ -37,7 +37,9 @@ def get_reranker() -> "FlagEmbeddingReranker":
     """
     global _reranker
     if _reranker is None:
-        from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
+        from llama_index.postprocessor.flag_embedding_reranker import (
+            FlagEmbeddingReranker,
+        )
 
         logger.info(
             f"Loading reranker model: {DEFAULT_RERANKER_MODEL} "

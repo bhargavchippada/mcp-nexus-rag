@@ -7,7 +7,7 @@ test_unit.py and test_integration.py so each test module stays lean.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +66,7 @@ def disable_cache(monkeypatch):
     Tests that explicitly test caching should override this with their own mock.
     """
     import nexus.tools as tools_module
+
     monkeypatch.setattr(tools_module.cache_module, "get_cached", lambda *a, **kw: None)
     monkeypatch.setattr(tools_module.cache_module, "set_cached", lambda *a, **kw: None)
 

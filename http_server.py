@@ -12,7 +12,7 @@ import asyncio
 from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -24,7 +24,6 @@ from nexus.tools import (
     answer_query,
     health_check,
     get_all_project_ids,
-    get_tenant_stats,
 )
 
 
@@ -249,7 +248,7 @@ async def http_query(request: QueryRequest):
             # Clean up error messages
             if synthesis and synthesis.startswith("Error"):
                 synthesis = None
-        except Exception as e:
+        except Exception:
             synthesis = None
 
     return QueryResponse(

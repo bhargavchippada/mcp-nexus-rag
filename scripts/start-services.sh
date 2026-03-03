@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v1.0
+# Version: v1.1
 # Antigravity AI Services Startup Script
 # Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG
 
@@ -18,6 +18,7 @@ ANTIGRAVITY_DIR="${HOME}/antigravity"
 NEO4J_PORT=7687
 QDRANT_PORT=6333
 OLLAMA_PORT=11434
+REDIS_PORT=6379
 MEMGRAPH_PORT=7688
 
 # Colors
@@ -81,6 +82,7 @@ show_status() {
     check_port $NEO4J_PORT "  Neo4j (GraphRAG)" || true
     check_port $QDRANT_PORT "  Qdrant (VectorRAG)" || true
     check_port $OLLAMA_PORT "  Ollama (LLM)" || true
+    check_port $REDIS_PORT "  Redis (Cache)" || true
 
     echo ""
     echo "Code-Graph-RAG Services:"
@@ -168,6 +170,34 @@ reindex_antigravity() {
 # Stop Services
 # ─────────────────────────────────────────────────────────────────────────────
 
+start_watcher() {
+    log_info "Starting Code-Graph-RAG realtime watcher..."
+
+    if [ ! -d "$CODE_GRAPH_RAG_DIR" ]; then
+        log_error "Code-Graph-RAG not found at $CODE_GRAPH_RAG_DIR"
+        return 1
+    fi
+
+    # Kill any existing watcher
+    pkill -f "realtime_updater.py" 2>/dev/null || true
+    sleep 1
+
+    cd "$CODE_GRAPH_RAG_DIR"
+    nohup .venv/bin/python realtime_updater.py "$ANTIGRAVITY_DIR" \
+        --host localhost --port $MEMGRAPH_PORT \
+        > /tmp/cgr-watcher.log 2>&1 &
+
+    local watcher_pid=$!
+    sleep 2
+
+    if kill -0 "$watcher_pid" 2>/dev/null; then
+        log_success "Watcher started (PID: $watcher_pid). Log: /tmp/cgr-watcher.log"
+    else
+        log_error "Watcher failed to start. Check /tmp/cgr-watcher.log"
+        return 1
+    fi
+}
+
 stop_services() {
     log_info "Stopping all Antigravity AI services..."
 
@@ -218,6 +248,14 @@ health_check() {
         all_healthy=false
     fi
 
+    # Redis
+    if redis-cli -p $REDIS_PORT ping > /dev/null 2>&1; then
+        log_success "Redis: healthy"
+    else
+        log_error "Redis: unhealthy"
+        all_healthy=false
+    fi
+
     # Memgraph (check via port)
     if nc -z localhost $MEMGRAPH_PORT 2>/dev/null; then
         log_success "Memgraph: healthy"
@@ -252,6 +290,7 @@ usage() {
     echo "  --stop        Stop all services"
     echo "  --restart     Restart all services"
     echo "  --reindex     Re-index antigravity codebase"
+    echo "  --watcher     Start/restart Code-Graph-RAG realtime watcher"
     echo "  --help        Show this help"
     echo ""
     echo "Examples:"
@@ -281,6 +320,9 @@ main() {
             ;;
         --reindex)
             reindex_antigravity
+            ;;
+        --watcher)
+            start_watcher
             ;;
         --help|-h)
             usage
