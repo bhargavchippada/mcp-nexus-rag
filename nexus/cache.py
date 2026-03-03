@@ -1,4 +1,4 @@
-# Version: v1.4
+# Version: v1.5
 """
 nexus.cache — Semantic caching for repeated LLM queries.
 
@@ -166,10 +166,14 @@ def invalidate_cache(project_id: str, scope: str = "") -> int:
     (``scope=""``) for the same project, since adding content to any scope
     makes cross-scope results stale too.
 
+    When *scope* is empty (full-project invalidation), ALL per-scope indices
+    are also scanned and cleared, so that scoped queries don't return stale
+    data after destructive operations like ``delete_tenant_data``.
+
     Args:
         project_id: Project identifier.
-        scope: Optional tenant scope. Empty string invalidates only cross-scope
-            (all-scopes) queries for the project.
+        scope: Optional tenant scope. Empty string invalidates ALL cached
+            queries for the project (both cross-scope and per-scope).
 
     Returns:
         Total number of Redis keys deleted (cache entries + index keys).
@@ -182,19 +186,31 @@ def invalidate_cache(project_id: str, scope: str = "") -> int:
         cache_keys_to_delete: set[str] = set()
         idx_keys_to_delete: set[str] = set()
 
-        # Collect cache keys for this specific scope
+        # Collect cache keys for this specific scope (or __all__ when scope="")
         idx = _idx_key(project_id, scope)
         scope_keys = r.smembers(idx)
         cache_keys_to_delete.update(scope_keys)
         idx_keys_to_delete.add(idx)
 
-        # Also invalidate "all scopes" queries (scope="") for this project
-        # since adding content to any scope makes those stale too
         if scope:
+            # Also invalidate "all scopes" queries (scope="") for this project
+            # since adding content to any scope makes those stale too
             all_idx = _idx_key(project_id, "")
             all_keys = r.smembers(all_idx)
             cache_keys_to_delete.update(all_keys)
             idx_keys_to_delete.add(all_idx)
+        else:
+            # Full-project invalidation: also clear ALL per-scope indices so
+            # that scoped queries don't return stale data after destructive
+            # operations like delete_tenant_data.
+            safe_pid = project_id.replace(":", "_")
+            for per_scope_idx in r.scan_iter(
+                match=f"nexus:idx:{safe_pid}:*", count=100
+            ):
+                if per_scope_idx not in idx_keys_to_delete:
+                    per_scope_keys = r.smembers(per_scope_idx)
+                    cache_keys_to_delete.update(per_scope_keys)
+                    idx_keys_to_delete.add(per_scope_idx)
 
         all_to_delete = cache_keys_to_delete | idx_keys_to_delete
         if all_to_delete:

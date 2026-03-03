@@ -1,4 +1,4 @@
-# Version: v2.8
+# Version: v2.9
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -7,6 +7,7 @@ asyncio_mode=auto (set in pyproject.toml) removes the need for @pytest.mark.asyn
 
 import threading
 import pytest
+import redis
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from nexus import config as nexus_config
@@ -2687,8 +2688,12 @@ class TestAnswerQueryBothBackendsFail:
     async def test_both_fail_returns_no_context_message(self):
         """When graph and vector both fail, returns 'No context found' (not an exception)."""
         with (
-            patch("nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")),
-            patch("nexus.tools.get_vector_index", side_effect=RuntimeError("qdrant down")),
+            patch(
+                "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+            ),
+            patch(
+                "nexus.tools.get_vector_index", side_effect=RuntimeError("qdrant down")
+            ),
             patch("nexus.tools.cache_module") as mock_cache,
         ):
             mock_cache.get_cached.return_value = None
@@ -2709,7 +2714,9 @@ class TestAnswerQueryBothBackendsFail:
         mock_vector_index.as_retriever.return_value = mock_vector_retriever
 
         with (
-            patch("nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")),
+            patch(
+                "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+            ),
             patch("nexus.tools.get_vector_index", return_value=mock_vector_index),
             patch("nexus.tools.cache_module") as mock_cache,
             patch("nexus.tools.RERANKER_ENABLED", False),
@@ -2729,3 +2736,104 @@ class TestAnswerQueryBothBackendsFail:
 
         # Should have tried the LLM with the vector context
         assert mock_http_instance.post.called
+
+
+# ---------------------------------------------------------------------------
+# TestInvalidateCacheFullProject (Loop 6)
+# ---------------------------------------------------------------------------
+
+
+class TestInvalidateCacheFullProject:
+    """invalidate_cache(project_id, scope='') must clear ALL per-scope indices."""
+
+    def test_full_project_invalidation_clears_per_scope_indices(self):
+        """scope='' scans nexus:idx:{pid}:* and deletes all per-scope cache entries."""
+        mock_redis = MagicMock()
+        # Simulate two per-scope indices for the project
+        mock_redis.scan_iter.return_value = [
+            "nexus:idx:PROJ:CORE_CODE",
+            "nexus:idx:PROJ:__all__",
+        ]
+        # __all__ idx key is already added before scan; smembers for both indices
+        mock_redis.smembers.side_effect = lambda key: {
+            "nexus:idx:PROJ:__all__": {"nexus:abc123"},
+            "nexus:idx:PROJ:CORE_CODE": {"nexus:def456"},
+        }.get(key, set())
+        mock_redis.delete.return_value = 4
+
+        with (
+            patch("nexus.cache.CACHE_ENABLED", True),
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+        ):
+            deleted = _nexus_cache.invalidate_cache("PROJ", "")
+
+        assert deleted == 4
+        # scan_iter must have been called with nexus:idx:PROJ:* pattern
+        mock_redis.scan_iter.assert_called_once_with(
+            match="nexus:idx:PROJ:*", count=100
+        )
+        # delete should include both cache entries and both index keys
+        args = mock_redis.delete.call_args[0]
+        assert "nexus:abc123" in args
+        assert "nexus:def456" in args
+        assert "nexus:idx:PROJ:__all__" in args
+        assert "nexus:idx:PROJ:CORE_CODE" in args
+
+    def test_scoped_invalidation_does_not_scan(self):
+        """scope='X' does NOT scan per-scope indices — only clears X and __all__."""
+        mock_redis = MagicMock()
+        mock_redis.smembers.return_value = {"nexus:abc"}
+        mock_redis.delete.return_value = 3
+
+        with (
+            patch("nexus.cache.CACHE_ENABLED", True),
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+        ):
+            _nexus_cache.invalidate_cache("PROJ", "CORE_CODE")
+
+        mock_redis.scan_iter.assert_not_called()
+
+    def test_full_project_invalidation_no_per_scope_indices(self):
+        """scope='' with no per-scope indices still clears __all__ and returns 0."""
+        mock_redis = MagicMock()
+        mock_redis.scan_iter.return_value = ["nexus:idx:PROJ:__all__"]
+        mock_redis.smembers.return_value = set()
+        mock_redis.delete.return_value = 1
+
+        with (
+            patch("nexus.cache.CACHE_ENABLED", True),
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+        ):
+            deleted = _nexus_cache.invalidate_cache("PROJ", "")
+
+        # Only the index key itself is deleted (no cache entries)
+        assert deleted == 1
+
+    def test_full_project_invalidation_redis_error_returns_zero(self):
+        """Redis error during full-project scan returns 0 without raising."""
+        mock_redis = MagicMock()
+        mock_redis.smembers.side_effect = redis.RedisError("scan failed")
+
+        with (
+            patch("nexus.cache.CACHE_ENABLED", True),
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+        ):
+            result = _nexus_cache.invalidate_cache("PROJ", "")
+
+        assert result == 0
+
+    def test_full_project_invalidation_colon_in_project_id_escaped(self):
+        """Colons in project_id are replaced with underscores in the scan pattern."""
+        mock_redis = MagicMock()
+        mock_redis.scan_iter.return_value = []
+        mock_redis.smembers.return_value = set()
+
+        with (
+            patch("nexus.cache.CACHE_ENABLED", True),
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+        ):
+            _nexus_cache.invalidate_cache("MY:PROJECT", "")
+
+        mock_redis.scan_iter.assert_called_once_with(
+            match="nexus:idx:MY_PROJECT:*", count=100
+        )
