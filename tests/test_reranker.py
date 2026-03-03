@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v1.2
 """
 tests/test_reranker.py — Unit tests for nexus.reranker and reranker integration
 in get_vector_context / get_graph_context.
@@ -60,7 +60,7 @@ class TestGetRerankerSingleton:
         with patch.dict(
             "sys.modules",
             {
-                "llama_index.postprocessor.flag_reranker": MagicMock(
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
                     FlagEmbeddingReranker=mock_cls
                 )
             },
@@ -74,7 +74,7 @@ class TestGetRerankerSingleton:
         with patch.dict(
             "sys.modules",
             {
-                "llama_index.postprocessor.flag_reranker": MagicMock(
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
                     FlagEmbeddingReranker=mock_cls
                 )
             },
@@ -91,7 +91,7 @@ class TestGetRerankerSingleton:
         with patch.dict(
             "sys.modules",
             {
-                "llama_index.postprocessor.flag_reranker": MagicMock(
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
                     FlagEmbeddingReranker=mock_cls
                 )
             },
@@ -110,7 +110,7 @@ class TestGetRerankerSingleton:
         with patch.dict(
             "sys.modules",
             {
-                "llama_index.postprocessor.flag_reranker": MagicMock(
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
                     FlagEmbeddingReranker=mock_cls
                 )
             },
@@ -127,7 +127,7 @@ class TestGetRerankerSingleton:
         with patch.dict(
             "sys.modules",
             {
-                "llama_index.postprocessor.flag_reranker": MagicMock(
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
                     FlagEmbeddingReranker=mock_cls
                 )
             },
@@ -142,7 +142,7 @@ class TestGetRerankerSingleton:
         with patch.dict(
             "sys.modules",
             {
-                "llama_index.postprocessor.flag_reranker": MagicMock(
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
                     FlagEmbeddingReranker=mock_cls
                 )
             },

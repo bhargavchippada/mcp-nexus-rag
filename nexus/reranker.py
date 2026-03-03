@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 nexus.reranker — Singleton FlagEmbeddingReranker wrapping bge-reranker-v2-m3.
 
@@ -17,7 +17,7 @@ from nexus.config import (
 )
 
 if TYPE_CHECKING:
-    from llama_index.postprocessor.flag_reranker import FlagEmbeddingReranker
+    from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
 
 _reranker: "FlagEmbeddingReranker | None" = None
 
@@ -32,12 +32,12 @@ def get_reranker() -> "FlagEmbeddingReranker":
         Configured FlagEmbeddingReranker instance.
 
     Raises:
-        ImportError: If llama-index-postprocessor-flag-reranker is not installed.
+        ImportError: If llama-index-postprocessor-flag-embedding-reranker is not installed.
         RuntimeError: If the model cannot be loaded from disk or HuggingFace Hub.
     """
     global _reranker
     if _reranker is None:
-        from llama_index.postprocessor.flag_reranker import FlagEmbeddingReranker
+        from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
 
         logger.info(
             f"Loading reranker model: {DEFAULT_RERANKER_MODEL} "
