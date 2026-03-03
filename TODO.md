@@ -115,6 +115,7 @@
 
 - [x] Refactor `answer_query` — complexity 21 > 10 (fixed 2026-03-03)
 - [ ] [LOW] Consider splitting tools.py (1600+ lines) into logical modules
+- [ ] [LOW] Chunked ingest returns "Successfully ingested 0 chunks (errors=N)" when all chunks fail — misleading; watcher would incorrectly log "synced" for a failed ingest
 
 ## Features
 
