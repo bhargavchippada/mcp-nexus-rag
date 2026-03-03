@@ -1,4 +1,4 @@
-# Version: v1.0
+# Version: v1.1
 """
 tests/conftest.py — Shared fixtures and mock helpers for the Nexus RAG test suite.
 
@@ -7,7 +7,7 @@ test_unit.py and test_integration.py so each test module stays lean.
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,18 @@ def make_neo4j_driver_with_single(single_return):
 # ---------------------------------------------------------------------------
 # Pytest fixtures exposed to all test modules
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def disable_cache(monkeypatch):
+    """Disable Redis cache for all unit/integration tests.
+
+    Prevents real Redis reads/writes from polluting test isolation.
+    Tests that explicitly test caching should override this with their own mock.
+    """
+    import nexus.tools as tools_module
+    monkeypatch.setattr(tools_module.cache_module, "get_cached", lambda *a, **kw: None)
+    monkeypatch.setattr(tools_module.cache_module, "set_cached", lambda *a, **kw: None)
 
 
 @pytest.fixture()

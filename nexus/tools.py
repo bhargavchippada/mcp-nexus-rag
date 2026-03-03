@@ -1,4 +1,4 @@
-# Version: v2.9
+# Version: v3.0
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -358,6 +358,10 @@ async def get_graph_context(
         f"Graph retrieve: project={project_id} scope={scope} "
         f"query={query!r} rerank={rerank}"
     )
+    cached = cache_module.get_cached(query, project_id, scope)
+    if cached is not None:
+        logger.info(f"Graph cache hit: project={project_id} scope={scope}")
+        return cached
     try:
         index = get_graph_index()
         filters = MetadataFilters(
@@ -394,9 +398,9 @@ async def get_graph_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
-        return (
-            f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
-        )
+        result = f"Graph Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        cache_module.set_cached(query, project_id, scope, result)
+        return result
     except Exception as e:
         logger.error(f"Error retrieving Graph context: {e}")
         return f"Error retrieving Graph context: {e}"
@@ -659,6 +663,10 @@ async def get_vector_context(
         f"Vector retrieve: project={project_id} scope={scope} "
         f"query={query!r} rerank={rerank}"
     )
+    cached = cache_module.get_cached(query, project_id, scope)
+    if cached is not None:
+        logger.info(f"Vector cache hit: project={project_id} scope={scope}")
+        return cached
     try:
         index = get_vector_index()
         filters = MetadataFilters(
@@ -695,7 +703,9 @@ async def get_vector_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join([f"- {n.node.get_content()}" for n in nodes])
-        return f"Vector Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        result = f"Vector Context retrieved for {project_id} in scope {scope}:\n{context_str}"
+        cache_module.set_cached(query, project_id, scope, result)
+        return result
     except Exception as e:
         logger.error(f"Error retrieving Vector context: {e}")
         return f"Error retrieving Vector context: {e}"
@@ -754,6 +764,10 @@ async def answer_query(
         f"answer_query: project={project_id} scope={scope_msg} "
         f"model={llm_model} query={query!r}"
     )
+    cached = cache_module.get_cached(f"answer:{query}", project_id, scope)
+    if cached is not None:
+        logger.info(f"answer_query cache hit: project={project_id} scope={scope_msg}")
+        return cached
 
     # ── 1. Retrieve from both backends concurrently ──────────────────────────
     async def _fetch_graph() -> list[str]:
@@ -883,6 +897,7 @@ async def answer_query(
             logger.info(
                 f"answer_query: answer generated ({len(answer)} chars) via {llm_model}"
             )
+            cache_module.set_cached(f"answer:{query}", project_id, scope, answer)
             return answer
     except httpx.HTTPStatusError as e:
         err = f"Ollama HTTP error {e.response.status_code}: {e.response.text[:200]}"
