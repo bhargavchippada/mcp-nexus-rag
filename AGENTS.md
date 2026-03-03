@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.4
+**Version:** v1.5
 
 ## Services — Full Startup
 
@@ -17,6 +17,13 @@ Use the automation script after a reboot or service restart.
 
 # Start the Code-Graph-RAG realtime watcher (keep Memgraph in sync with code changes)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --watcher
+
+# Start the Nexus RAG sync watcher (auto-ingests core docs into Neo4j+Qdrant on change)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --rag-sync
+# Or directly (logs to stdout):
+cd ~/antigravity/projects/mcp-nexus-rag && poetry run python -m nexus.watcher
+# Check log:
+tail -f /tmp/rag-sync-watcher.log
 
 # Verify everything is healthy
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --health
@@ -33,6 +40,7 @@ Use the automation script after a reboot or service restart.
 | **Postgres** | `docker-compose up -d` | 5432 | Reserved (pgvector) |
 | **Memgraph** | `start-services.sh` or `docker start memgraph-cgr` | 7688 | Code AST graph |
 | **CGR Watcher** | `start-services.sh --watcher` | — | Syncs code changes → Memgraph |
+| **RAG Sync Watcher** | `start-services.sh --rag-sync` | — | Auto-ingests core docs → Neo4j+Qdrant |
 | **Nexus MCP** | Auto — Claude Code via `.mcp.json` | stdio | RAG tools for agents |
 | **Code-Graph-RAG MCP** | Auto — Claude Code via `.mcp.json` | stdio | Code analysis tools |
 
