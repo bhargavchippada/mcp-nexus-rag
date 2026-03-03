@@ -1,4 +1,4 @@
-# Version: v2.9
+# Version: v3.0
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -1960,6 +1960,195 @@ class TestSyncProjectFilesSuccessCheck:
 
         assert "Synced 0 of 1" in result
         assert "Errors" in result
+
+
+# ---------------------------------------------------------------------------
+# TestSyncProjectFilesPreDeleteErrors (Loop 10 — Bugs L10-1 and L10-2)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncProjectFilesPreDeleteErrors:
+    """Regression tests for Bugs L10-1 and L10-2 in sync_project_files.
+
+    L10-1: bare 'except Exception: pass' on pre-delete silently swallowed
+    connection errors, leaving old chunks alive alongside new ones.
+    Fix: log warning, append to errors, continue (skip ingest for that file).
+
+    L10-2: cache was not invalidated after a successful pre-delete when the
+    subsequent ingest call failed, leaving stale cache entries pointing at
+    deleted content.
+    Fix: call cache_module.invalidate_cache() immediately after pre-delete
+    and before ingest.
+    """
+
+    def _make_file_entry(self, filepath):
+        return {
+            "filepath": filepath,
+            "source": "TEST/README.md",
+            "project_id": "TEST",
+            "scope": "CORE_DOCS",
+        }
+
+    async def test_pre_delete_error_skips_ingest(self, tmp_path):
+        """Bug L10-1: if pre-delete raises, ingest must NOT be called and the
+        file must be counted as an error, not a successful sync."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=[self._make_file_entry(fake_file)],
+            ),
+            patch(
+                "nexus.tools.neo4j_backend.delete_by_filepath",
+                side_effect=RuntimeError("connection refused"),
+            ),
+            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch(
+                "nexus.tools.ingest_graph_document", new_callable=AsyncMock
+            ) as mock_graph,
+            patch(
+                "nexus.tools.ingest_vector_document", new_callable=AsyncMock
+            ) as mock_vector,
+            patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
+            patch("nexus.tools.cache_module"),
+        ):
+            result = await nexus_tools.sync_project_files("/fake/root")
+
+        # ingest must not have been called when pre-delete fails
+        mock_graph.assert_not_called()
+        mock_vector.assert_not_called()
+        # file counted as error, not success
+        assert "Synced 0 of 1" in result
+        assert "Errors" in result
+
+    async def test_pre_delete_error_message_in_result(self, tmp_path):
+        """Bug L10-1: the error message must mention the failed file source."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=[self._make_file_entry(fake_file)],
+            ),
+            patch(
+                "nexus.tools.neo4j_backend.delete_by_filepath",
+                side_effect=ConnectionError("neo4j unreachable"),
+            ),
+            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch("nexus.tools.ingest_graph_document", new_callable=AsyncMock),
+            patch("nexus.tools.ingest_vector_document", new_callable=AsyncMock),
+            patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
+            patch("nexus.tools.cache_module"),
+        ):
+            result = await nexus_tools.sync_project_files("/fake/root")
+
+        # error message references the source file
+        assert "TEST/README.md" in result
+
+    async def test_cache_invalidated_after_pre_delete_before_failed_ingest(self):
+        """Bug L10-2: cache must be invalidated after pre-delete even when
+        the subsequent ingest call returns an error."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=[self._make_file_entry(fake_file)],
+            ),
+            patch("nexus.tools.neo4j_backend.delete_by_filepath"),
+            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="Error: graph ingestion failed",
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="Error: vector ingestion failed",
+            ),
+            patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
+            patch("nexus.tools.cache_module") as mock_cache,
+        ):
+            await nexus_tools.sync_project_files("/fake/root")
+
+        # cache must have been invalidated (after pre-delete, before ingest)
+        mock_cache.invalidate_cache.assert_called_with("TEST", "CORE_DOCS")
+
+    async def test_cache_invalidated_on_successful_sync(self):
+        """Bug L10-2: cache must also be invalidated on a fully successful sync."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=[self._make_file_entry(fake_file)],
+            ),
+            patch("nexus.tools.neo4j_backend.delete_by_filepath"),
+            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="Successfully ingested graph document",
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="Successfully ingested vector document",
+            ),
+            patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
+            patch("nexus.tools.cache_module") as mock_cache,
+        ):
+            result = await nexus_tools.sync_project_files("/fake/root")
+
+        # successful sync: cache invalidated and file counted as synced
+        mock_cache.invalidate_cache.assert_called_with("TEST", "CORE_DOCS")
+        assert "Synced 1 of 1" in result
+
+    async def test_pre_delete_qdrant_error_skips_ingest(self):
+        """Bug L10-1: Qdrant pre-delete failure also skips ingest (not just Neo4j)."""
+        from pathlib import Path
+
+        fake_file = MagicMock(spec=Path)
+        fake_file.read_text.return_value = "content"
+
+        with (
+            patch(
+                "nexus.tools.sync_module.get_files_needing_sync",
+                return_value=[self._make_file_entry(fake_file)],
+            ),
+            patch("nexus.tools.neo4j_backend.delete_by_filepath"),  # neo4j succeeds
+            patch(
+                "nexus.tools.qdrant_backend.delete_by_filepath",
+                side_effect=RuntimeError("qdrant timeout"),
+            ),
+            patch(
+                "nexus.tools.ingest_graph_document", new_callable=AsyncMock
+            ) as mock_graph,
+            patch(
+                "nexus.tools.ingest_vector_document", new_callable=AsyncMock
+            ) as mock_vector,
+            patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
+            patch("nexus.tools.cache_module"),
+        ):
+            result = await nexus_tools.sync_project_files("/fake/root")
+
+        mock_graph.assert_not_called()
+        mock_vector.assert_not_called()
+        assert "Synced 0 of 1" in result
 
 
 # ---------------------------------------------------------------------------

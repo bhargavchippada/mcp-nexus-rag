@@ -1,4 +1,4 @@
-# Version: v1.2
+# Version: v1.3
 """
 Tests for nexus.watcher — RAG sync daemon.
 """
@@ -444,6 +444,98 @@ class TestSyncDeleted:
         ):
             await _sync_deleted([untracked], tmp_path)
         mock_cache.invalidate_cache.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestSyncChangedSuccessCheck (Loop 12 — Bug L12-4)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncChangedSuccessCheck:
+    """_sync_changed success check must use 'Error' not in result instead of
+    'Successfully' in.  'Skipped: duplicate' is a valid non-error outcome
+    (content already ingested by a concurrent call) and must NOT trigger a
+    WARNING log.
+    """
+
+    async def test_skipped_duplicate_does_not_log_warning(self, tmp_path):
+        """'Skipped: duplicate' must log INFO (success), not WARNING."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+        f.write_text("content")
+
+        skipped = "Skipped: duplicate content already exists."
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module"),
+            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch("nexus.tools.ingest_graph_document", AsyncMock(return_value=skipped)),
+            patch(
+                "nexus.tools.ingest_vector_document", AsyncMock(return_value=skipped)
+            ),
+            patch("nexus.watcher.logger") as mock_logger,
+        ):
+            await _sync_changed([str(f)], workspace)
+
+        # info logged for the synced file, warning must NOT have been logged
+        mock_logger.info.assert_called()
+        mock_logger.warning.assert_not_called()
+
+    async def test_error_result_logs_warning(self, tmp_path):
+        """'Error:' in either ingest result must trigger a WARNING log."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+        f.write_text("content")
+
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module"),
+            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                AsyncMock(return_value="Error: neo4j unavailable"),
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                AsyncMock(return_value="Successfully ingested vector document"),
+            ),
+            patch("nexus.watcher.logger") as mock_logger,
+        ):
+            await _sync_changed([str(f)], workspace)
+
+        mock_logger.warning.assert_called_once()
+        assert "partial sync" in mock_logger.warning.call_args[0][0]
+
+    async def test_both_successfully_logs_info_not_warning(self, tmp_path):
+        """Full success path: both 'Successfully' results log INFO, no WARNING."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        f = workspace / "CLAUDE.md"
+        f.write_text("content")
+
+        with (
+            patch("nexus.watcher.neo4j_backend"),
+            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.cache_module"),
+            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.tools.ingest_graph_document",
+                AsyncMock(return_value="Successfully ingested graph document"),
+            ),
+            patch(
+                "nexus.tools.ingest_vector_document",
+                AsyncMock(return_value="Successfully ingested vector document"),
+            ),
+            patch("nexus.watcher.logger") as mock_logger,
+        ):
+            await _sync_changed([str(f)], workspace)
+
+        mock_logger.info.assert_called()
+        mock_logger.warning.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

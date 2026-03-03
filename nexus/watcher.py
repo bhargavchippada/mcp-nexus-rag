@@ -1,4 +1,4 @@
-# Version: v1.2
+# Version: v1.3
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -190,7 +190,10 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
                 file_path=abs_path_str,
             )
 
-            if "Successfully" in graph_result and "Successfully" in vector_result:
+            # Bug L12-4 fix: use "Error" not in instead of "Successfully" in.
+            # "Skipped: duplicate" is a valid non-error result (content already ingested
+            # by a concurrent call) and should NOT trigger a WARNING.
+            if "Error" not in graph_result and "Error" not in vector_result:
                 logger.info(f"Watcher: synced {source_id} ({project_id}/{scope})")
             else:
                 logger.warning(

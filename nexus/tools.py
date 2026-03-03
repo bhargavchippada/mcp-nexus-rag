@@ -1,4 +1,4 @@
-# Version: v3.9
+# Version: v4.0
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -1562,7 +1562,9 @@ async def sync_project_files(
         try:
             content = filepath.read_text(encoding="utf-8")
 
-            # Delete old version first (by filepath)
+            # Delete old version first (by filepath).
+            # Bug L10-1 fix: log + skip on connection error (bare pass hid failures,
+            # leaving old chunks alongside newly ingested ones = duplicate content).
             try:
                 neo4j_backend.delete_by_filepath(
                     f["project_id"], str(filepath), f["scope"]
@@ -1570,8 +1572,14 @@ async def sync_project_files(
                 qdrant_backend.delete_by_filepath(
                     f["project_id"], str(filepath), f["scope"]
                 )
-            except Exception:
-                pass  # Ignore if not exists
+            except Exception as e:
+                logger.warning(f"Pre-delete error for {f['source']}: {e}")
+                errors.append(f"{f['source']}: pre-delete failed: {e}")
+                continue
+
+            # Bug L10-2 fix: invalidate cache immediately after pre-delete and before
+            # ingest so stale results aren't served if ingest fails (fail-open: empty > stale).
+            cache_module.invalidate_cache(f["project_id"], f["scope"])
 
             # Ingest to both stores
             graph_result = await ingest_graph_document(

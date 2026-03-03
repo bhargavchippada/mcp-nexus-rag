@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.6
+**Version:** v4.7
 
 ## Known Issues
 
@@ -17,6 +17,23 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Loops 10–12 — 3 Bugs Fixed (tools.py v4.0, watcher.py v1.3, test_unit.py v3.0, test_watcher.py v1.3)
+
+**Bug L10-1 (MEDIUM): `sync_project_files` — bare `except Exception: pass` on pre-delete silently swallowed connection errors**
+**Root Cause:** In `nexus/tools.py sync_project_files`, the inner `try/except` around `neo4j_backend.delete_by_filepath` + `qdrant_backend.delete_by_filepath` used a bare `except Exception: pass` with the comment "Ignore if not exists". A real connection error (e.g., `RuntimeError: connection refused`) was swallowed identically to a "document not found" no-op. This left old chunks alive in both stores, then the ingest ran anyway, creating duplicate content.
+**Fix Applied:** Changed to `except Exception as e: logger.warning(...); errors.append(...); continue`. A pre-delete failure now skips the ingest for that file and is reported in the tool result.
+**Prevention Guideline:** Never use bare `except: pass` in backend I/O paths. "Not found" is a no-op for delete operations and does NOT raise — backends return silently. Any exception IS a real error. Always log + skip on pre-delete failures.
+
+**Bug L10-2 (MEDIUM): `sync_project_files` — cache not invalidated after pre-delete when ingest fails**
+**Root Cause:** Same delete-then-ingest pattern as Bug L7-4 (watcher `_sync_changed`), but in `sync_project_files`. After pre-delete succeeded but ingest returned "Error:", the cache was never invalidated. Queries continued serving stale cached results pointing at data that had just been deleted from the backends.
+**Fix Applied:** Added `cache_module.invalidate_cache(f["project_id"], f["scope"])` immediately after the pre-delete try/except block, before the ingest calls.
+**Prevention Guideline:** The "delete-then-reingest" pattern occurs in three places: `watcher._sync_changed`, `sync_project_files`, and (implicitly) ingest tools via dedup. All three now invalidate the cache right after deletion. Any future code using this pattern must do the same.
+
+**Bug L12-4 (LOW): `watcher._sync_changed` — `"Successfully" in result` check false-negative on "Skipped: duplicate"**
+**Root Cause:** The success check at line 193 in `nexus/watcher.py` used `"Successfully" in graph_result and "Successfully" in vector_result`. If a concurrent MCP tool had just ingested the same content, both ingest functions return "Skipped: duplicate content already exists for project…" — a valid non-error outcome. The watcher treated this as a partial failure and logged a misleading WARNING. The identical bug was fixed in `sync_project_files` in Round 1 but was missed in `_sync_changed`.
+**Fix Applied:** Changed to `"Error" not in graph_result and "Error" not in vector_result`, consistent with all other success checks in the codebase.
+**Prevention Guideline:** Use `"Error" not in result` (not `"Successfully" in result`) for all ingest success checks. "Successfully" is only one of several valid success messages; other valid outcomes ("Skipped: duplicate") don't contain "Successfully". Apply consistently across ALL code paths that call ingest functions.
 
 ### [2026-03-03] Deep Code Review Rounds 6–9 — 2 Bugs Fixed (cache.py v1.5, watcher.py v1.2, test_unit.py v2.9, test_watcher.py v1.2)
 

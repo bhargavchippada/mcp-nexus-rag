@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.1
+**Version:** v3.2
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 371 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 379 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -565,6 +565,13 @@ Use the automation script to start all services after a reboot:
 ---
 
 ## Recent Updates
+
+### v3.2 (2026-03-03) — Deep Code Review Loops 10–12: 3 Bugs Fixed
+
+- 🐛 **BUGFIX**: `sync_project_files` bare `except Exception: pass` on pre-delete silently swallowed connection errors, leaving old chunks alive alongside new ingest = duplicate content; now logs, skips ingest, and reports error (`tools.py` v4.0, **Bug L10-1**)
+- 🐛 **BUGFIX**: `sync_project_files` — cache not invalidated after pre-delete when ingest failed; stale cache served deleted content; fixed with `cache_module.invalidate_cache()` before ingest (`tools.py` v4.0, **Bug L10-2**)
+- 🐛 **BUGFIX**: `watcher._sync_changed` — `"Successfully" in result` check treated "Skipped: duplicate" as a partial failure (warning log); changed to `"Error" not in result` consistent with all other ingest success checks (`watcher.py` v1.3, **Bug L12-4**)
+- ✅ **Tests**: 379 tests passing (+8 regression tests), lint clean (ruff)
 
 ### v3.1 (2026-03-03) — Deep Code Review Rounds 2–9: 11 Bugs Fixed
 

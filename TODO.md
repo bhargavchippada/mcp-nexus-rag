@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.5
+**Version:** v2.6
 
 ## Pending
 
@@ -26,6 +26,15 @@
 - [ ] [LOW] Cache hit rate monitoring — track cache hits/misses in Redis (e.g., counter key)
 
 ---
+
+## Completed (archived — 2026-03-03, loops 10–12)
+
+> Full root causes and fixes in `MEMORY.md` Lessons Learned (v4.7).
+
+- [x] Deep code review loops 10–12: 3 bugs fixed, 8 new regression tests (371→379 total), ruff clean
+  - Loop 10: sync_project_files bare except swallowed pre-delete errors (L10-1), cache not invalidated after pre-delete (L10-2) + 5 tests (376)
+  - Loop 11: cache.py full review — no new bugs, all 9 functions verified correct
+  - Loop 12: watcher._sync_changed "Successfully" in result false-negative on "Skipped: duplicate" (L12-4) + 3 tests (379)
 
 ## Completed (archived — 2026-03-03, rounds 2–9)
 
