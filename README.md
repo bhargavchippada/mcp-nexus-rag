@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v2.9
+**Version:** v3.0
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 279 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 290 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -566,6 +566,16 @@ Use the automation script to start all services after a reboot:
 
 ## Recent Updates
 
+### v3.0 (2026-03-03) — Code Review: 4 Bugs Fixed
+
+- 🐛 **BUGFIX**: `n.score=None` crash in `get_graph_context` / `get_vector_context` — when the reranker fails and falls back to un-reranked nodes, graph nodes can have `score=None`. The f-string `{n.score:.4f}` raised `TypeError`. Fixed with `{(n.score if n.score is not None else 0.0):.4f}`.
+- 🐛 **BUGFIX**: Batch ingest functions (`ingest_graph_documents_batch`, `ingest_vector_documents_batch`) never called `cache_module.invalidate_cache()`. Stale cache entries persisted after bulk ingestion. Fixed: both functions now collect dirty `(project_id, scope)` pairs and invalidate at the end.
+- 🐛 **BUGFIX**: `answer_query` cache hits applied `_apply_cap(cached_answer, max_context_chars)` — incorrectly treating the output size parameter as the input context limit. Fixed: cache hits return the cached answer as-is; `max_context_chars` only bounds the Ollama prompt input.
+- 🐛 **BUGFIX**: `get_graph/vector_context` cached the truncated result (capped to `max_chars`), making cache output depend on the first caller's `max_chars`. A subsequent caller with a larger `max_chars` got less content than expected. Fixed: cache stores full result; `_apply_cap` is applied at return time for both fresh and cache paths.
+- 🔧 **CLEANUP**: Fixed type annotations in `cache.py` — `set_cached`/`get_cached` used `dict[str, Any]` but callers pass/return `str`. Changed to `Any`.
+- 📝 **DOCS**: Fixed docstrings in both ingest functions that incorrectly stated "default 512KB" — actual `MAX_DOCUMENT_SIZE` default is 4KB.
+- ✅ **Tests**: 290 tests passing (+11 regression tests: `TestScoreNoneHandling`, `TestBatchIngestCacheInvalidation`, `TestAnswerQueryCacheHit`, `TestFreshResultCaching`), lint clean (ruff)
+
 ### v2.9 (2026-03-03)
 
 - 🔒 **SECURITY**: Exception message sanitization — all public tools now return generic error messages to MCP clients; full exception details logged server-side only. Prevents leaking internal paths, service URLs, or credentials via error strings.
@@ -574,6 +584,7 @@ Use the automation script to start all services after a reboot:
 - ♻️ **REFACTOR**: `answer_query` complexity reduced from 21 → ~7 (ruff C901 fix). Extracted `_fetch_graph_passages()`, `_fetch_vector_passages()`, and `_dedup_cross_source()` as module-level helpers. Logic is identical, function is now maintainable.
 - ✨ **NEW**: `validate_config()` in `nexus/config.py` — startup config check warns on default Neo4j password and localhost service URLs in `NEXUS_ENV=production` mode. Called at server startup in `server.py:main()`.
 - ✅ **Tests**: 279 tests passing (+30 new: cache secondary index, exception sanitization, cache-on-ingest, config validation, answer_query helpers), lint clean (ruff)
+<!-- Note: test count updated to 290 in v3.0 (+11 regression tests) -->
 
 ### v2.8 (2026-03-03)
 

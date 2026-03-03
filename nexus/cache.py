@@ -1,4 +1,4 @@
-# Version: v1.2
+# Version: v1.3
 """
 nexus.cache — Semantic caching for repeated LLM queries.
 
@@ -84,7 +84,7 @@ def cache_key(query: str, project_id: str, scope: str = "", tool_type: str = "")
 
 def get_cached(
     query: str, project_id: str, scope: str = "", tool_type: str = ""
-) -> dict[str, Any] | None:
+) -> Any | None:
     """
     Retrieve cached query result.
 
@@ -115,7 +115,7 @@ def set_cached(
     query: str,
     project_id: str,
     scope: str,
-    result: dict[str, Any],
+    result: Any,
     ttl: int | None = None,
     tool_type: str = "",
 ) -> bool:

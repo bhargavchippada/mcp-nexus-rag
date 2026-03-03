@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v3.7
+**Version:** v3.9
 
 ## Known Issues
 
@@ -17,6 +17,33 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Code Review — 4 Bugs Fixed
+
+**Bug 1: `n.score=None` crashes `:.4f` format (HIGH)**
+**Root Cause:** Nodes returned from `PropertyGraphIndex.as_retriever().aretrieve()` can have `score=None` when the reranker fails and falls back to un-reranked nodes. The f-string `{n.score:.4f}` raises `TypeError`.
+**Fix Applied:** Changed to `{(n.score if n.score is not None else 0.0):.4f}` in both `get_graph_context` and `get_vector_context`. None scores format as "0.0000".
+**Prevention Guideline:** Guard against None when using format specifiers on library-returned values.
+
+**Bug 2: Batch ingest missing cache invalidation (HIGH)**
+**Root Cause:** `ingest_graph_documents_batch` and `ingest_vector_documents_batch` never called `cache_module.invalidate_cache()`. Single-doc paths did; batch paths didn't.
+**Fix Applied:** Both batch functions now track `set[tuple[str, str]]` of dirty `(project_id, scope)` pairs and call `invalidate_cache` for each at the end.
+**Prevention Guideline:** Any function writing new data must invalidate affected cache entries. Collect dirty tenant keys and invalidate in bulk at end of batch loops.
+
+**Bug 3: `answer_query` cache hit wrongly truncates LLM answer with `max_context_chars` (MEDIUM)**
+**Root Cause:** `max_context_chars` limits LLM input context, not the output answer. `_apply_cap(cached, max_context_chars)` on cache hits truncated the answer at 6000 chars. Fresh results were returned without truncation.
+**Fix Applied:** Cache hits return `cached` directly (no `_apply_cap`). `max_context_chars` only bounds `combined_context` (the prompt input).
+**Prevention Guideline:** Clearly distinguish input-size parameters (`max_context_chars`) from output-size parameters (`max_chars`). Never apply an input-size cap to the output.
+
+**Bug 4: Fresh results cached TRUNCATED — `max_chars` became cache-state-dependent (MEDIUM)**
+**Root Cause:** `get_graph/vector_context` stored a `max_chars`-truncated result in cache. A subsequent caller with a larger `max_chars` still received the smaller result from cache.
+**Fix Applied:** Both functions now cache the FULL untruncated result and apply `_apply_cap(result, max_chars)` at return time for both fresh and cache paths.
+**Prevention Guideline:** Cache full/canonical results. Apply output caps at retrieval time. Truncation parameters must be part of the cache key if truncation is applied before caching.
+
+### [2026-03-03] HTTP Server Error Check Too Broad — Zero Results Returned (FIXED)
+**Root Cause:** In `http_server.py`, the condition `"Error" not in result` was used to filter out error responses. However, document content containing the word "Error" (e.g., "Error Recovery:", "Error handling") triggered this check, causing valid results to be skipped and returning 0 results.
+**Fix Applied:** Changed `"Error" not in result` to `result.startswith("Error")` so only actual error responses (which start with "Error:") are filtered out, not document content that happens to contain the word "Error".
+**Prevention Guideline:** When checking for error responses in string results, use `startswith("Error")` or a more specific pattern like `re.match(r"^Error:", result)`. Never use `"Error" in result` which matches document content.
 
 ### [2026-03-03] Exception Sanitization — Raw Exceptions No Longer Exposed to MCP Clients (FIXED)
 **Root Cause:** `except Exception as e: return f"Error: {e}"` in `get_graph_context`, `get_vector_context`, `ingest_graph_document`, `ingest_vector_document`, and `answer_query` returned raw exception strings to MCP clients, potentially leaking internal paths, service addresses, or credentials.
@@ -169,6 +196,14 @@
 > **Rule:** Cache returns must pass through the same output-size guards as fresh results.
 
 ## Changelog
+
+### v3.6 — 2026-03-03
+
+- **http_server.py v1.6:** Fixed error check too broad — `"Error" not in result` → `result.startswith("Error")`
+- Document content containing "Error" (e.g., "Error Recovery:") was incorrectly filtered out
+- Results now sorted by reranker score descending (highest relevance first)
+- Fixed parsing to only treat `- [score: X.XXXX]` prefix lines as separate results
+- Added `max_chars=0` to disable truncation in HTTP server (UI handles display)
 
 ### v3.5 — 2026-03-03
 

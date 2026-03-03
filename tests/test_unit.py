@@ -1,4 +1,4 @@
-# Version: v2.2
+# Version: v2.3
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -1470,3 +1470,225 @@ class TestAnswerQueryHelpers:
         ):
             result = await _fetch_vector_passages("q", "P", "S", rerank=False)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: n.score=None must not crash format string (TypeError)
+# ---------------------------------------------------------------------------
+
+
+class TestScoreNoneHandling:
+    """Nodes with score=None must not raise TypeError in context format string."""
+
+    def _mock_index(self, nodes):
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=nodes)
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+        return mock_index
+
+    def _make_node(self, content: str, score=None):
+        node = MagicMock()
+        node.node.get_content.return_value = content
+        node.score = score
+        return node
+
+    async def test_graph_context_none_score_does_not_crash(self):
+        """Node with score=None should produce '0.0000' in output, not TypeError."""
+        node = self._make_node("graph content", score=None)
+        with patch(
+            "nexus.tools.get_graph_index",
+            return_value=self._mock_index([node]),
+        ):
+            result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
+        assert "graph content" in result
+        assert "0.0000" in result  # None → 0.0
+
+    async def test_vector_context_none_score_does_not_crash(self):
+        """Node with score=None should produce '0.0000' in output, not TypeError."""
+        node = self._make_node("vector content", score=None)
+        with patch(
+            "nexus.tools.get_vector_index",
+            return_value=self._mock_index([node]),
+        ):
+            result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
+        assert "vector content" in result
+        assert "0.0000" in result
+
+    async def test_mixed_scores_none_and_float(self):
+        """Mix of None and float scores should all format correctly."""
+        node_with_score = self._make_node("node A", score=0.75)
+        node_without_score = self._make_node("node B", score=None)
+        with patch(
+            "nexus.tools.get_vector_index",
+            return_value=self._mock_index([node_with_score, node_without_score]),
+        ):
+            result = await nexus_tools.get_vector_context("q", "P", "S", rerank=False)
+        assert "0.7500" in result
+        assert "0.0000" in result
+        assert "node A" in result
+        assert "node B" in result
+
+
+# ---------------------------------------------------------------------------
+# Regression: batch ingest functions must invalidate cache
+# ---------------------------------------------------------------------------
+
+
+class TestBatchIngestCacheInvalidation:
+    """Batch ingest tools must call cache_module.invalidate_cache after success."""
+
+    async def test_graph_batch_invalidates_cache_per_tenant(self):
+        """Each unique (project_id, scope) that had a successful ingest must be invalidated."""
+        mock_index = MagicMock()
+        docs = [
+            {"text": "doc A", "project_id": "P1", "scope": "S1"},
+            {"text": "doc B", "project_id": "P1", "scope": "S1"},
+            {"text": "doc C", "project_id": "P2", "scope": "S2"},
+        ]
+        with (
+            patch("nexus.tools.needs_chunking", return_value=False),
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_graph_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
+        ):
+            result = await nexus_tools.ingest_graph_documents_batch(docs)
+        assert result["ingested"] == 3
+        # Must have been called at least for both (P1,S1) and (P2,S2)
+        calls = {(c.args[0], c.args[1]) for c in mock_inv.call_args_list}
+        assert ("P1", "S1") in calls
+        assert ("P2", "S2") in calls
+
+    async def test_graph_batch_no_invalidation_when_all_skipped(self):
+        """All duplicates → no ingestion → no cache invalidation."""
+        docs = [{"text": "doc A", "project_id": "P1", "scope": "S1"}]
+        with (
+            patch("nexus.tools.needs_chunking", return_value=False),
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(neo4j_backend, "is_duplicate", return_value=True),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
+        ):
+            result = await nexus_tools.ingest_graph_documents_batch(docs)
+        assert result["skipped"] == 1
+        mock_inv.assert_not_called()
+
+    async def test_vector_batch_invalidates_cache_per_tenant(self):
+        mock_index = MagicMock()
+        docs = [
+            {"text": "doc A", "project_id": "PA", "scope": "SA"},
+            {"text": "doc B", "project_id": "PB", "scope": "SB"},
+        ]
+        with (
+            patch("nexus.tools.needs_chunking", return_value=False),
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_vector_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
+        ):
+            result = await nexus_tools.ingest_vector_documents_batch(docs)
+        assert result["ingested"] == 2
+        calls = {(c.args[0], c.args[1]) for c in mock_inv.call_args_list}
+        assert ("PA", "SA") in calls
+        assert ("PB", "SB") in calls
+
+    async def test_vector_batch_no_invalidation_when_all_skipped(self):
+        docs = [{"text": "doc A", "project_id": "P1", "scope": "S1"}]
+        with (
+            patch("nexus.tools.needs_chunking", return_value=False),
+            patch("nexus.tools.content_hash", return_value="HASH"),
+            patch.object(qdrant_backend, "is_duplicate", return_value=True),
+            patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
+        ):
+            result = await nexus_tools.ingest_vector_documents_batch(docs)
+        assert result["skipped"] == 1
+        mock_inv.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Regression: answer_query cache hit must NOT truncate answer with max_context_chars
+# ---------------------------------------------------------------------------
+
+
+class TestAnswerQueryCacheHit:
+    """Cache hit for answer_query must return the full LLM answer unchanged."""
+
+    async def test_cache_hit_returns_answer_unchanged(self):
+        """A cached answer string must be returned as-is, not truncated."""
+        long_answer = "A" * 8000  # > default max_context_chars=6000
+
+        with patch("nexus.tools.cache_module.get_cached", return_value=long_answer):
+            result = await nexus_tools.answer_query("q", "P")
+        # Must not be truncated — max_context_chars limits LLM input, not the answer
+        assert result == long_answer
+
+    async def test_cache_hit_empty_answer_returns_as_is(self):
+        """Empty cached string is returned without modification."""
+        with patch("nexus.tools.cache_module.get_cached", return_value=""):
+            result = await nexus_tools.answer_query("q", "P")
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Regression: get_graph/vector_context fresh result caches full untruncated result
+# ---------------------------------------------------------------------------
+
+
+class TestFreshResultCaching:
+    """Fresh results must cache the full context and apply _apply_cap at return time."""
+
+    def _mock_index(self, content: str, score: float = 0.9):
+        node = MagicMock()
+        node.node.get_content.return_value = content
+        node.score = score
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+        return mock_index
+
+    async def test_vector_context_caches_full_result_not_truncated(self):
+        """Cache must store the full result; _apply_cap is applied at return time."""
+        long_content = "word " * 600  # ~3000 chars, exceeds max_chars=1500
+        mock_index = self._mock_index(long_content)
+        cached_values = []
+
+        def capture_set(query, pid, scope, value, **kwargs):
+            cached_values.append(value)
+
+        with (
+            patch("nexus.tools.get_vector_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.set_cached", side_effect=capture_set),
+        ):
+            result = await nexus_tools.get_vector_context(
+                "q", "P", "S", rerank=False, max_chars=1500
+            )
+
+        # The cached value must be the FULL result (not truncated to max_chars)
+        assert len(cached_values) == 1
+        full_cached = cached_values[0]
+        # Full result contains complete content (not cut at 1500 chars)
+        assert len(full_cached) > 1500
+        # Returned result is capped at 1500 chars (+ truncation suffix)
+        assert len(result) <= 1500 + len("… [truncated]")
+
+    async def test_graph_context_caches_full_result_not_truncated(self):
+        """Same as vector: graph context caches full, returns capped."""
+        long_content = "data " * 600  # ~3000 chars
+        mock_index = self._mock_index(long_content)
+        cached_values = []
+
+        def capture_set(query, pid, scope, value, **kwargs):
+            cached_values.append(value)
+
+        with (
+            patch("nexus.tools.get_graph_index", return_value=mock_index),
+            patch("nexus.tools.cache_module.set_cached", side_effect=capture_set),
+        ):
+            result = await nexus_tools.get_graph_context(
+                "q", "P", "S", rerank=False, max_chars=1500
+            )
+
+        assert len(cached_values) == 1
+        assert len(cached_values[0]) > 1500
+        assert len(result) <= 1500 + len("… [truncated]")

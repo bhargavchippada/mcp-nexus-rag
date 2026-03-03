@@ -1,4 +1,4 @@
-# Version: v3.3
+# Version: v3.4
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -132,7 +132,7 @@ async def ingest_graph_document(
 ) -> str:
     """Ingest a document into the Multi-Tenant GraphRAG memory.
 
-    Large documents exceeding MAX_DOCUMENT_SIZE (default 512KB) are automatically
+    Large documents exceeding MAX_DOCUMENT_SIZE (default 4KB) are automatically
     chunked into smaller pieces. Each chunk is ingested separately with its own
     content hash, preventing duplicates at the chunk level.
 
@@ -267,6 +267,8 @@ async def ingest_graph_documents_batch(
     skipped = 0
     errors = 0
     chunks_created = 0
+    # Track (project_id, scope) pairs with at least one successful ingestion
+    invalidation_keys: set[tuple[str, str]] = set()
 
     for doc_dict in documents:
         try:
@@ -312,6 +314,7 @@ async def ingest_graph_documents_batch(
                     )
                     index.insert(doc)
                     ingested += 1
+                    invalidation_keys.add((project_id, scope))
                 continue
 
             # Standard single-document path
@@ -331,10 +334,15 @@ async def ingest_graph_documents_batch(
             )
             index.insert(doc)
             ingested += 1
+            invalidation_keys.add((project_id, scope))
 
         except Exception as e:
             logger.error(f"Error in batch Graph ingest: {e}")
             errors += 1
+
+    # Invalidate cache for all (project_id, scope) pairs that received new data
+    for pid, sc in invalidation_keys:
+        cache_module.invalidate_cache(pid, sc)
 
     logger.info(
         f"Batch Graph ingest complete: ingested={ingested}, skipped={skipped}, "
@@ -417,13 +425,14 @@ async def get_graph_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join(
-            [f"- [score: {n.score:.4f}] {n.node.get_content()}" for n in nodes]
+            [
+                f"- [score: {(n.score if n.score is not None else 0.0):.4f}] {n.node.get_content()}"
+                for n in nodes
+            ]
         )
-        if max_chars > 0 and len(context_str) > max_chars:
-            context_str = context_str[:max_chars] + "… [truncated]"
         result = f"Graph Context retrieved for {project_id} in scope {scope_label}:\n{context_str}"
         cache_module.set_cached(query, project_id, scope, result, tool_type="graph")
-        return result
+        return _apply_cap(result, max_chars)
     except Exception as e:
         logger.error(f"Error retrieving Graph context: {e}")
         return "Error: Graph context retrieval failed. Check server logs for details."
@@ -445,7 +454,7 @@ async def ingest_vector_document(
 ) -> str:
     """Ingest a document into the Multi-Tenant standard RAG (Vector) memory.
 
-    Large documents exceeding MAX_DOCUMENT_SIZE (default 512KB) are automatically
+    Large documents exceeding MAX_DOCUMENT_SIZE (default 4KB) are automatically
     chunked into smaller pieces. Each chunk is ingested separately with its own
     content hash, preventing duplicates at the chunk level.
 
@@ -580,6 +589,8 @@ async def ingest_vector_documents_batch(
     skipped = 0
     errors = 0
     chunks_created = 0
+    # Track (project_id, scope) pairs with at least one successful ingestion
+    invalidation_keys: set[tuple[str, str]] = set()
 
     for doc_dict in documents:
         try:
@@ -625,6 +636,7 @@ async def ingest_vector_documents_batch(
                     )
                     index.insert(doc)
                     ingested += 1
+                    invalidation_keys.add((project_id, scope))
                 continue
 
             # Standard single-document path
@@ -646,10 +658,15 @@ async def ingest_vector_documents_batch(
             )
             index.insert(doc)
             ingested += 1
+            invalidation_keys.add((project_id, scope))
 
         except Exception as e:
             logger.error(f"Error in batch Vector ingest: {e}")
             errors += 1
+
+    # Invalidate cache for all (project_id, scope) pairs that received new data
+    for pid, sc in invalidation_keys:
+        cache_module.invalidate_cache(pid, sc)
 
     logger.info(
         f"Batch Vector ingest complete: ingested={ingested}, skipped={skipped}, "
@@ -732,13 +749,14 @@ async def get_vector_context(
                     f"Reranker failed, using un-reranked results: {rerank_err}"
                 )
         context_str = "\n".join(
-            [f"- [score: {n.score:.4f}] {n.node.get_content()}" for n in nodes]
+            [
+                f"- [score: {(n.score if n.score is not None else 0.0):.4f}] {n.node.get_content()}"
+                for n in nodes
+            ]
         )
-        if max_chars > 0 and len(context_str) > max_chars:
-            context_str = context_str[:max_chars] + "… [truncated]"
         result = f"Vector Context retrieved for {project_id} in scope {scope_label}:\n{context_str}"
         cache_module.set_cached(query, project_id, scope, result, tool_type="vector")
-        return result
+        return _apply_cap(result, max_chars)
     except Exception as e:
         logger.error(f"Error retrieving Vector context: {e}")
         return "Error: Vector context retrieval failed. Check server logs for details."
@@ -894,7 +912,7 @@ async def answer_query(
     )
     if cached is not None:
         logger.info(f"answer_query cache hit: project={project_id} scope={scope_msg}")
-        return _apply_cap(cached, max_context_chars)
+        return cached  # answer is LLM output — max_context_chars limits input, not output
 
     # ── 1. Retrieve from both backends concurrently ──────────────────────────
     graph_passages, vector_passages = await asyncio.gather(

@@ -2,13 +2,17 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v1.7
+**Version:** v1.8
 
 ## Hardening
 
 - [x] Exception message sanitization — generic messages to client, full error in server logs (fixed 2026-03-03)
 - [x] Move httpx import to module level (fixed 2026-03-01)
 - [x] Fix mutable default argument in `ingest_project_directory` (fixed 2026-03-01)
+- [x] Fix `n.score=None` crash in `get_graph/vector_context` — TypeError on `:.4f` format spec (fixed 2026-03-03)
+- [x] Fix batch ingest missing `cache_module.invalidate_cache()` — stale cache after batch (fixed 2026-03-03)
+- [x] Fix `answer_query` cache hit wrongly applying `_apply_cap(answer, max_context_chars)` (fixed 2026-03-03)
+- [x] Fix get_graph/vector_context caching truncated result — `max_chars` became cache-state-dependent (fixed 2026-03-03)
 - [ ] Per-tenant rate limiting (optional)
 
 ## Completed (2026-03-03 — robustness hardening)
