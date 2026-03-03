@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.2
+**Version:** v4.3
 
 ## Known Issues
 
@@ -17,6 +17,18 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Round 4 — 2 Bugs Fixed + 2 Enhancements (qdrant.py v2.4, sync.py v1.2, tools.py v3.8, indexes.py v2.3)
+
+**Bug L1-1 (MEDIUM): `delete_stale_files` + `sync_deleted_files` only queried Neo4j — Qdrant-only orphans never cleaned**
+**Root Cause:** `nexus/sync.py delete_stale_files()` and `nexus/tools.py sync_deleted_files()` both called `neo4j_backend.get_all_filepaths()` to build the list of indexed paths to check against disk. If a document was partially ingested (e.g., Neo4j ingest succeeded but process crashed before Qdrant ingest, or vice versa), the surviving store's entries became permanent orphans — never detected, never deleted.
+**Fix Applied:** Both functions now union Neo4j and Qdrant file path sets (`neo4j_paths | qdrant_paths`). Added `qdrant_backend.get_all_filepaths()` symmetric with the Neo4j counterpart.
+**Prevention Guideline:** Any "scan indexed paths" operation must query ALL stores and union results. Never assume one store is the authoritative "source of truth" — partial ingest failures can leave each store in a different state.
+
+**Enhancement L1-2 (LOW): `indexes.py` lacked `reset_graph_index()` / `reset_vector_index()`**
+**Root Cause:** `nexus/reranker.py` had `reset_reranker()` for clearing its singleton, but `indexes.py` had no equivalent. Tests that needed a clean index state had to manipulate the private `_*_cache` globals directly — fragile and brittle.
+**Fix Applied:** Added `reset_graph_index()` and `reset_vector_index()` using the same lock-protected pattern as `reset_reranker()`.
+**Prevention Guideline:** Every module-level singleton with a `get_*` factory should also have a `reset_*` function for testability. Apply symmetrically.
 
 ### [2026-03-03] Deep Code Review Round 3 — 5 Bugs Fixed + New Tool (qdrant.py v2.3, tools.py v3.7, watcher.py v1.1, http_server.py v1.8)
 

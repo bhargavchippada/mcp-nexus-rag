@@ -1,4 +1,4 @@
-# Version: v2.3
+# Version: v2.4
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
@@ -293,3 +293,41 @@ def get_document_count(project_id: str, scope: str = "") -> int:
     except Exception as e:
         logger.warning(f"Qdrant document count error: {e}")
         return 0
+
+
+def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
+    """Return distinct file_path values for a project/scope in Qdrant.
+
+    Symmetric with nexus.backends.neo4j.get_all_filepaths so that
+    delete_stale_files and sync_deleted_files can union both stores
+    and catch Qdrant-only orphans.
+
+    Args:
+        project_id: Tenant project ID.
+        scope: Optional tenant scope. If empty, returns paths across all scopes.
+
+    Returns:
+        List of unique non-empty file_path strings, empty list on error.
+    """
+    must_conditions: list = [
+        qdrant_models.FieldCondition(
+            key="project_id",
+            match=qdrant_models.MatchValue(value=project_id),
+        )
+    ]
+    if scope:
+        must_conditions.append(
+            qdrant_models.FieldCondition(
+                key="tenant_scope",
+                match=qdrant_models.MatchValue(value=scope),
+            )
+        )
+    try:
+        paths = scroll_field(
+            "file_path",
+            qdrant_filter=qdrant_models.Filter(must=must_conditions),
+        )
+        return [p for p in paths if p]
+    except Exception as e:
+        logger.warning(f"Qdrant get_all_filepaths error: {e}")
+        return []

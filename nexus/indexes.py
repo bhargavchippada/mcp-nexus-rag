@@ -1,4 +1,4 @@
-# Version: v2.2
+# Version: v2.3
 """
 nexus.indexes — LlamaIndex settings bootstrap and index factories.
 """
@@ -151,3 +151,25 @@ def get_vector_index() -> VectorStoreIndex:
             vector_store=vector_store
         )
         return _vector_index_cache
+
+
+def reset_graph_index() -> None:
+    """Clear the cached graph index so the next call to get_graph_index() re-creates it.
+
+    Symmetric with nexus.reranker.reset_reranker(). Used in tests to ensure
+    a clean index state between test cases.
+    """
+    global _graph_index_cache
+    with _graph_index_lock:
+        _graph_index_cache = None
+
+
+def reset_vector_index() -> None:
+    """Clear the cached vector index so the next call to get_vector_index() re-creates it.
+
+    Symmetric with nexus.reranker.reset_reranker(). Used in tests to ensure
+    a clean index state between test cases.
+    """
+    global _vector_index_cache
+    with _vector_index_lock:
+        _vector_index_cache = None

@@ -2,7 +2,14 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.1
+**Version:** v2.2
+
+## Completed (2026-03-03 — deep review round 4)
+
+- [x] Fix MEDIUM: `delete_stale_files` + `sync_deleted_files` only queried Neo4j — Qdrant-only orphans never cleaned up; now unions both stores (fixed 2026-03-03)
+- [x] Add `qdrant_backend.get_all_filepaths()` — symmetric with neo4j counterpart; enables union-based orphan detection (fixed 2026-03-03)
+- [x] Add `reset_graph_index()` + `reset_vector_index()` to indexes.py — symmetric with `reset_reranker()`; enables clean test isolation (fixed 2026-03-03)
+- [x] 18 new tests added (339→357 total); ruff clean; qdrant.py v2.3→v2.4, sync.py v1.1→v1.2, tools.py v3.7→v3.8, indexes.py v2.2→v2.3, test_unit.py v2.6→v2.7
 
 ## Completed (2026-03-03 — deep review round 3)
 

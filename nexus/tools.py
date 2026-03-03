@@ -1,4 +1,4 @@
-# Version: v3.7
+# Version: v3.8
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -1477,8 +1477,10 @@ async def sync_deleted_files(
     if not base_path.is_dir():
         return f"Error: {directory_path} is not a directory."
 
-    # Get all filepaths from Neo4j (assuming it's the source of truth for metadata)
-    stored_paths = neo4j_backend.get_all_filepaths(project_id, scope)
+    # Union Neo4j + Qdrant — catch orphans in either store
+    neo4j_paths = set(neo4j_backend.get_all_filepaths(project_id, scope))
+    qdrant_paths = set(qdrant_backend.get_all_filepaths(project_id, scope))
+    stored_paths = neo4j_paths | qdrant_paths
     if not stored_paths:
         return "No files found in database to sync."
 

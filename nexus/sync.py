@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v1.2
 """
 nexus.sync — File synchronization for core documentation.
 
@@ -237,8 +237,10 @@ def delete_stale_files(
     root = Path(workspace_root)
     deleted = []
 
-    # Get all indexed file paths from Neo4j
-    indexed_paths = neo4j_backend.get_all_filepaths(project_id, scope)
+    # Union Neo4j + Qdrant — catch orphans in either store
+    neo4j_paths = set(neo4j_backend.get_all_filepaths(project_id, scope))
+    qdrant_paths = set(qdrant_backend.get_all_filepaths(project_id, scope))
+    indexed_paths = neo4j_paths | qdrant_paths
 
     for indexed_path in indexed_paths:
         full_path = (

@@ -1,4 +1,4 @@
-# Version: v2.6
+# Version: v2.7
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -14,6 +14,7 @@ from nexus import dedup as nexus_dedup
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
 from nexus import indexes as nexus_indexes
+from nexus import sync as nexus_sync
 from nexus import tools as nexus_tools
 
 # Save original cache functions at module-import time, before any fixtures run.
@@ -2332,3 +2333,252 @@ class TestInvalidateProjectCache:
             mock_cache.invalidate_cache.return_value = 2
             result = await nexus_tools.invalidate_project_cache("PROJ", "MY_SCOPE")
         assert "MY_SCOPE" in result
+
+
+# ---------------------------------------------------------------------------
+# TestQdrantGetAllFilepaths (Loop 4 — Bug L1-1)
+# ---------------------------------------------------------------------------
+
+
+class TestQdrantGetAllFilepaths:
+    def test_returns_distinct_paths(self):
+        """get_all_filepaths returns unique non-empty paths via scroll_field."""
+        with patch(
+            "nexus.backends.qdrant.scroll_field", return_value={"/a.md", "/b.md"}
+        ):
+            result = qdrant_backend.get_all_filepaths("PROJ", "SCOPE")
+        assert set(result) == {"/a.md", "/b.md"}
+
+    def test_filters_empty_strings(self):
+        """Empty strings from payload are excluded."""
+        with patch("nexus.backends.qdrant.scroll_field", return_value={"", "/real.md"}):
+            result = qdrant_backend.get_all_filepaths("PROJ", "SCOPE")
+        assert "" not in result
+        assert "/real.md" in result
+
+    def test_no_scope_omits_scope_filter(self):
+        """When scope is empty, only project_id condition is passed."""
+        captured = {}
+
+        def fake_scroll(key, qdrant_filter=None):
+            captured["filter"] = qdrant_filter
+            return set()
+
+        with patch("nexus.backends.qdrant.scroll_field", side_effect=fake_scroll):
+            qdrant_backend.get_all_filepaths("PROJ", "")
+
+        must = captured["filter"].must
+        keys = [c.key for c in must]
+        assert "project_id" in keys
+        assert "tenant_scope" not in keys
+
+    def test_with_scope_adds_scope_condition(self):
+        """When scope is provided, both project_id and tenant_scope conditions appear."""
+        captured = {}
+
+        def fake_scroll(key, qdrant_filter=None):
+            captured["filter"] = qdrant_filter
+            return set()
+
+        with patch("nexus.backends.qdrant.scroll_field", side_effect=fake_scroll):
+            qdrant_backend.get_all_filepaths("PROJ", "MY_SCOPE")
+
+        keys = [c.key for c in captured["filter"].must]
+        assert "project_id" in keys
+        assert "tenant_scope" in keys
+
+    def test_error_returns_empty_list(self):
+        """Any exception from scroll_field returns [] without raising."""
+        with patch(
+            "nexus.backends.qdrant.scroll_field", side_effect=Exception("conn error")
+        ):
+            result = qdrant_backend.get_all_filepaths("PROJ", "SCOPE")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# TestDeleteStaleFilesUnion (Loop 4 — Bug L1-1)
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteStaleFilesUnion:
+    def test_catches_qdrant_only_orphan(self, tmp_path):
+        """delete_stale_files removes a file present in Qdrant but not on disk or Neo4j."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+
+        qdrant_only_path = "/orphan/file.md"
+
+        with (
+            patch("nexus.sync.neo4j_backend") as mock_neo4j,
+            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+        ):
+            mock_neo4j.get_all_filepaths.return_value = []
+            mock_qdrant.get_all_filepaths.return_value = [qdrant_only_path]
+
+            deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
+
+        assert qdrant_only_path in deleted
+        mock_neo4j.delete_by_filepath.assert_called_once_with(
+            "PROJ", qdrant_only_path, "SCOPE"
+        )
+        mock_qdrant.delete_by_filepath.assert_called_once_with(
+            "PROJ", qdrant_only_path, "SCOPE"
+        )
+
+    def test_catches_neo4j_only_orphan(self, tmp_path):
+        """delete_stale_files removes a file present in Neo4j but not on disk or Qdrant."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+
+        neo4j_only_path = "/neo4j_only/file.md"
+
+        with (
+            patch("nexus.sync.neo4j_backend") as mock_neo4j,
+            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+        ):
+            mock_neo4j.get_all_filepaths.return_value = [neo4j_only_path]
+            mock_qdrant.get_all_filepaths.return_value = []
+
+            deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
+
+        assert neo4j_only_path in deleted
+
+    def test_existing_file_not_deleted(self, tmp_path):
+        """A file that exists on disk is not deleted even if indexed."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        real_file = workspace / "existing.md"
+        real_file.write_text("content")
+
+        with (
+            patch("nexus.sync.neo4j_backend") as mock_neo4j,
+            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+        ):
+            mock_neo4j.get_all_filepaths.return_value = [str(real_file)]
+            mock_qdrant.get_all_filepaths.return_value = [str(real_file)]
+
+            deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
+
+        assert deleted == []
+        mock_neo4j.delete_by_filepath.assert_not_called()
+        mock_qdrant.delete_by_filepath.assert_not_called()
+
+    def test_union_deduplication(self, tmp_path):
+        """Paths present in both Neo4j and Qdrant are only deleted once."""
+        workspace = tmp_path / "antigravity"
+        workspace.mkdir()
+        shared_path = "/shared/file.md"
+
+        with (
+            patch("nexus.sync.neo4j_backend") as mock_neo4j,
+            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+        ):
+            mock_neo4j.get_all_filepaths.return_value = [shared_path]
+            mock_qdrant.get_all_filepaths.return_value = [shared_path]
+
+            deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
+
+        assert deleted.count(shared_path) == 1
+        assert mock_neo4j.delete_by_filepath.call_count == 1
+        assert mock_qdrant.delete_by_filepath.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# TestSyncDeletedFilesUnion (Loop 4 — Bug L1-1, tools.py path)
+# ---------------------------------------------------------------------------
+
+
+class TestSyncDeletedFilesUnion:
+    async def test_catches_qdrant_only_orphan(self, tmp_path):
+        """sync_deleted_files removes an entry present only in Qdrant."""
+        with (
+            patch("nexus.tools.neo4j_backend") as mock_neo4j,
+            patch("nexus.tools.qdrant_backend") as mock_qdrant,
+            patch("nexus.tools.cache_module"),
+        ):
+            mock_neo4j.get_all_filepaths.return_value = []
+            mock_qdrant.get_all_filepaths.return_value = ["orphan.md"]
+
+            result = await nexus_tools.sync_deleted_files(
+                str(tmp_path), "PROJ", "SCOPE"
+            )
+
+        assert "1" in result
+        mock_qdrant.delete_by_filepath.assert_called_once()
+
+    async def test_no_paths_in_either_store_returns_no_files(self, tmp_path):
+        """Returns early when both stores report no indexed files."""
+        with (
+            patch("nexus.tools.neo4j_backend") as mock_neo4j,
+            patch("nexus.tools.qdrant_backend") as mock_qdrant,
+        ):
+            mock_neo4j.get_all_filepaths.return_value = []
+            mock_qdrant.get_all_filepaths.return_value = []
+
+            result = await nexus_tools.sync_deleted_files(
+                str(tmp_path), "PROJ", "SCOPE"
+            )
+
+        assert "No files" in result
+
+    async def test_union_deduplication_single_delete(self, tmp_path):
+        """A path present in both stores triggers exactly one delete per backend."""
+        shared = "shared/path.md"
+        with (
+            patch("nexus.tools.neo4j_backend") as mock_neo4j,
+            patch("nexus.tools.qdrant_backend") as mock_qdrant,
+            patch("nexus.tools.cache_module"),
+        ):
+            mock_neo4j.get_all_filepaths.return_value = [shared]
+            mock_qdrant.get_all_filepaths.return_value = [shared]
+
+            await nexus_tools.sync_deleted_files(str(tmp_path), "PROJ", "SCOPE")
+
+        assert mock_neo4j.delete_by_filepath.call_count == 1
+        assert mock_qdrant.delete_by_filepath.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# TestIndexResetFunctions (Loop 4 — Bug L1-2)
+# ---------------------------------------------------------------------------
+
+
+class TestIndexResetFunctions:
+    def test_reset_graph_index_clears_cache(self):
+        """reset_graph_index() sets _graph_index_cache back to None."""
+        nexus_indexes._graph_index_cache = MagicMock()
+        nexus_indexes.reset_graph_index()
+        assert nexus_indexes._graph_index_cache is None
+
+    def test_reset_vector_index_clears_cache(self):
+        """reset_vector_index() sets _vector_index_cache back to None."""
+        nexus_indexes._vector_index_cache = MagicMock()
+        nexus_indexes.reset_vector_index()
+        assert nexus_indexes._vector_index_cache is None
+
+    def test_reset_graph_index_forces_reinit(self):
+        """After reset, get_graph_index() re-runs init instead of returning stale cache."""
+        nexus_indexes._graph_index_cache = MagicMock(name="stale_graph")
+        nexus_indexes.reset_graph_index()
+        # After reset the cache is None; the next get_graph_index call would
+        # re-initialize — we just verify it's not the stale mock.
+        assert nexus_indexes._graph_index_cache is None
+
+    def test_reset_vector_index_forces_reinit(self):
+        """After reset, get_vector_index() re-runs init instead of returning stale cache."""
+        nexus_indexes._vector_index_cache = MagicMock(name="stale_vector")
+        nexus_indexes.reset_vector_index()
+        assert nexus_indexes._vector_index_cache is None
+
+    def test_reset_graph_is_idempotent(self):
+        """Calling reset_graph_index() twice is safe."""
+        nexus_indexes.reset_graph_index()
+        nexus_indexes.reset_graph_index()
+        assert nexus_indexes._graph_index_cache is None
+
+    def test_reset_vector_is_idempotent(self):
+        """Calling reset_vector_index() twice is safe."""
+        nexus_indexes.reset_vector_index()
+        nexus_indexes.reset_vector_index()
+        assert nexus_indexes._vector_index_cache is None
