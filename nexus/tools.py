@@ -105,9 +105,7 @@ async def _call_ollama_with_retry(
                 )
                 await asyncio.sleep(delay)
             else:
-                logger.error(
-                    f"Ollama request failed after {retry_count} attempts: {e}"
-                )
+                logger.error(f"Ollama request failed after {retry_count} attempts: {e}")
                 raise
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code if e.response is not None else None
@@ -1909,7 +1907,9 @@ async def sync_project_files(
         filepath = f["filepath"]
         try:
             content = filepath.read_text(encoding="utf-8")
-            canonical_path = sync_module.canonical_file_path(filepath, workspace_root_path)
+            canonical_path = sync_module.canonical_file_path(
+                filepath, workspace_root_path
+            )
 
             # Delete old version first (by filepath).
             # Bug L10-1 fix: log + skip on connection error (bare pass hid failures,

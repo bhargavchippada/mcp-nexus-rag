@@ -12,6 +12,8 @@ from nexus.sync import (
     _classify_file,
 )
 from nexus.watcher import (
+    _acquire_single_instance_lock,
+    _release_single_instance_lock,
     CoreDocEventHandler,
     _delete_from_rag,
     _sync_changed,
@@ -203,6 +205,28 @@ class TestCoreDocEventHandler:
         changed, deleted = h.pop_ready(debounce=0.0)  # second call is empty
         assert changed == []
         assert deleted == []
+
+
+# ---------------------------------------------------------------------------
+# Single-instance watcher lock
+# ---------------------------------------------------------------------------
+
+
+class TestWatcherLock:
+    def test_acquire_and_release_lock(self, tmp_path):
+        lock_path = tmp_path / "watcher.lock"
+        lock_file = _acquire_single_instance_lock(lock_path)
+        assert lock_file is not None
+        _release_single_instance_lock(lock_file)
+
+    def test_second_acquire_raises_when_lock_held(self, tmp_path):
+        lock_path = tmp_path / "watcher.lock"
+        first = _acquire_single_instance_lock(lock_path)
+        try:
+            with pytest.raises(RuntimeError):
+                _acquire_single_instance_lock(lock_path)
+        finally:
+            _release_single_instance_lock(first)
 
 
 # ---------------------------------------------------------------------------

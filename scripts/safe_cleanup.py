@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: v1.3
+# Version: v1.4
 """Safe integrity cleanup for Nexus RAG + Code-Graph-RAG backends.
 
 Default mode is dry-run. Use --apply to perform deletions.
@@ -15,10 +15,6 @@ from pathlib import Path
 
 from neo4j import GraphDatabase
 from qdrant_client import QdrantClient
-try:
-    import mgclient
-except Exception:  # pragma: no cover - optional dependency in this venv
-    mgclient = None  # type: ignore[assignment]
 
 from nexus.config import (
     COLLECTION_NAME,
@@ -192,39 +188,50 @@ def audit_and_cleanup_qdrant(apply: bool, stats: CleanupStats) -> None:
 
 
 def audit_and_cleanup_memgraph(apply: bool, stats: CleanupStats) -> None:
-    if mgclient is None:
-        print("Memgraph cleanup skipped: mgclient is not available in this environment.")
-        return
-
+    # Use the Neo4j Bolt driver for Memgraph so cleanup works in the default
+    # Poetry environment without an extra mgclient dependency.
     root = Path("/home/turiya/antigravity")
-    conn = mgclient.connect(host="localhost", port=7688)
-    cur = conn.cursor()
+    driver = GraphDatabase.driver("bolt://localhost:7688", auth=None)
 
-    cur.execute("MATCH (f:File) RETURN f.path")
-    paths = [r[0] for r in cur.fetchall() if r and r[0]]
-    stats.mem_total_files = len(paths)
+    with driver.session() as session:
+        rows = session.run("MATCH (f:File) RETURN f.path AS path")
+        paths = [r["path"] for r in rows if r and r.get("path")]
+        stats.mem_total_files = len(paths)
 
-    targets: list[str] = []
-    for path in paths:
-        full = root / path
-        if (not full.exists()) or _is_unwanted_memgraph_path(path):
-            targets.append(path)
+        targets: list[str] = []
+        for path in paths:
+            full = root / path
+            if (not full.exists()) or _is_unwanted_memgraph_path(path):
+                targets.append(path)
 
-    stats.mem_stale_or_unwanted = len(targets)
+        stats.mem_stale_or_unwanted = len(targets)
 
-    if apply and targets:
-        deleted = 0
-        for path in targets:
-            cur.execute("MATCH (f:File {path: $path}) DETACH DELETE f", {"path": path})
-            deleted += cur.rowcount if cur.rowcount != -1 else 0
-            cur.execute("MATCH (m:Module {path: $path}) DETACH DELETE m", {"path": path})
-            deleted += cur.rowcount if cur.rowcount != -1 else 0
-        stats.mem_deleted_nodes = deleted
+        if apply and targets:
+            deleted = 0
+            for path in targets:
+                file_row = session.run(
+                    "MATCH (f:File {path: $path}) RETURN count(f) AS c", path=path
+                ).single()
+                mod_row = session.run(
+                    "MATCH (m:Module {path: $path}) RETURN count(m) AS c", path=path
+                ).single()
+                deleted += int(file_row["c"]) if file_row else 0
+                deleted += int(mod_row["c"]) if mod_row else 0
+
+                session.run("MATCH (f:File {path: $path}) DETACH DELETE f", path=path)
+                session.run("MATCH (m:Module {path: $path}) DETACH DELETE m", path=path)
+            stats.mem_deleted_nodes = deleted
+
+    driver.close()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Safe cleanup for RAG/Graph data integrity")
-    parser.add_argument("--apply", action="store_true", help="Apply deletions (default is dry-run)")
+    parser = argparse.ArgumentParser(
+        description="Safe cleanup for RAG/Graph data integrity"
+    )
+    parser.add_argument(
+        "--apply", action="store_true", help="Apply deletions (default is dry-run)"
+    )
     args = parser.parse_args()
 
     stats = CleanupStats()

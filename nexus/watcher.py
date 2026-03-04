@@ -18,10 +18,12 @@ Usage:
 
 import argparse
 import asyncio
+import fcntl
 import os
 import threading
 import time
 from pathlib import Path
+from typing import TextIO
 
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -45,6 +47,40 @@ from nexus import cache as cache_module
 
 WORKSPACE_ROOT = Path(os.environ.get("WORKSPACE_ROOT", "/home/turiya/antigravity"))
 DEBOUNCE_SECONDS = float(os.environ.get("RAG_SYNC_DEBOUNCE", "3.0"))
+LOCKFILE_PATH = Path(os.environ.get("RAG_SYNC_LOCKFILE", "/tmp/rag-sync-watcher.lock"))
+
+
+def _acquire_single_instance_lock(lock_path: Path = LOCKFILE_PATH) -> TextIO:
+    """Acquire an exclusive non-blocking lock so only one watcher runs.
+
+    Raises:
+        RuntimeError: If another watcher instance already holds the lock.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_file = lock_path.open("w", encoding="utf-8")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        raise RuntimeError(
+            f"Watcher lock already held at {lock_path}; another watcher is running."
+        ) from None
+
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
+def _release_single_instance_lock(lock_file: TextIO | None) -> None:
+    """Release watcher process lock."""
+    if lock_file is None:
+        return
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    except Exception:
+        # Best-effort unlock; close() still releases lock at process level.
+        pass
+    lock_file.close()
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +272,7 @@ async def run_watcher(
         workspace_root: Antigravity workspace root (watched recursively).
         debounce: Seconds to wait after the last file event before syncing.
     """
+    lock_file = _acquire_single_instance_lock()
     handler = CoreDocEventHandler(workspace_root)
     observer = Observer()
     observer.schedule(handler, str(workspace_root), recursive=True)
@@ -264,6 +301,7 @@ async def run_watcher(
     finally:
         observer.stop()
         observer.join()
+        _release_single_instance_lock(lock_file)
 
 
 # ---------------------------------------------------------------------------
@@ -287,9 +325,13 @@ def main() -> None:
         help=f"Seconds after last file event before syncing (default: {DEBOUNCE_SECONDS})",
     )
     args = parser.parse_args()
-    asyncio.run(
-        run_watcher(workspace_root=Path(args.workspace), debounce=args.debounce)
-    )
+    try:
+        asyncio.run(
+            run_watcher(workspace_root=Path(args.workspace), debounce=args.debounce)
+        )
+    except RuntimeError as e:
+        logger.error(str(e))
+        raise SystemExit(1) from e
 
 
 if __name__ == "__main__":

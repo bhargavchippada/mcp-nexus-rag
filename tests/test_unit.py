@@ -248,7 +248,9 @@ class TestDeleteByFilepath:
     def test_neo4j_delete_by_filepath_matches_chunk_variants(self):
         mock_driver, mock_session = _make_neo4j_driver()
         with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            neo4j_backend.delete_by_filepath("MY_PROJECT", "docs/README.md", "CORE_DOCS")
+            neo4j_backend.delete_by_filepath(
+                "MY_PROJECT", "docs/README.md", "CORE_DOCS"
+            )
 
         cypher, kwargs = mock_session.run.call_args
         assert "STARTS WITH $chunk_prefix" in cypher[0]
@@ -271,7 +273,9 @@ class TestDeleteByFilepath:
             )
         ]
         with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.delete_by_filepath("MY_PROJECT", "docs/README.md", "CORE_DOCS")
+            qdrant_backend.delete_by_filepath(
+                "MY_PROJECT", "docs/README.md", "CORE_DOCS"
+            )
 
         mock_client.delete.assert_called_once_with(
             collection_name=nexus_config.COLLECTION_NAME, points_selector=["a", "b"]
@@ -4159,7 +4163,9 @@ class TestOllamaRetry:
     async def test_retries_on_transient_http_status(self):
         """Retry helper retries on transient HTTP status codes (e.g. 503)."""
         req = httpx.Request("POST", "http://test/api/chat")
-        transient_response = httpx.Response(503, request=req, text="service unavailable")
+        transient_response = httpx.Response(
+            503, request=req, text="service unavailable"
+        )
 
         mock_ok_response = MagicMock()
         mock_ok_response.status_code = 200
@@ -4169,12 +4175,14 @@ class TestOllamaRetry:
         mock_client = MagicMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(side_effect=[
-            httpx.HTTPStatusError(
-                "503 Service Unavailable", request=req, response=transient_response
-            ),
-            mock_ok_response,
-        ])
+        mock_client.post = AsyncMock(
+            side_effect=[
+                httpx.HTTPStatusError(
+                    "503 Service Unavailable", request=req, response=transient_response
+                ),
+                mock_ok_response,
+            ]
+        )
 
         with (
             patch("httpx.AsyncClient", return_value=mock_client),
