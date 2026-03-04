@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.7
+**Version:** v4.8
 
 ## Known Issues
 
@@ -17,6 +17,22 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Deep Code Review Loops 13–15 — No New Bugs (final verification)
+
+**Loop 13: sync.py — verified correct**
+All 4 functions reviewed: `_classify_file` (path-only, no I/O, len==3 guard prevents nested files), `check_file_changed` (AND semantics — self-healing for partial ingests, fail-open on connection error), `get_files_needing_sync` (delegates correctly), `delete_stale_files` (unions both stores, handles absolute/relative paths via Python Path semantics, delete_by_filepath uses the same stored format). No bugs.
+
+**Loop 14: qdrant.py + neo4j.py — verified correct**
+`neo4j.get_all_filepaths` doesn't filter empty strings (vs qdrant which does), but `sync_deleted_files` has `if not rel_path: continue` guard. `delete_by_filepath` uses `DETACH DELETE` which leaves entity nodes as orphans, but this is a LlamaIndex design limitation — entity nodes without `project_id`/`content_hash` are not returned in retrieval queries. No actionable bugs.
+
+**Loop 15: E2E edge cases — verified correct**
+- `ingest_project_directory` (relative paths) + `sync_deleted_files` form one pipeline; watcher/`sync_project_files` (absolute paths) form another. Python Path handles `base_path / "/abs/path"` by discarding base_path, so both pipelines work correctly in `sync_deleted_files`.
+- Concurrent watcher + MCP sync_project_files: idempotent deletes + dedup → safe.
+- Partial ingest (graph ok, vector fails): AND semantics in `check_file_changed` → self-heals on next event.
+- `delete_stale_files` + watcher concurrent delete: second delete is a no-op.
+
+> **Guideline:** After 15 rounds of deep review (14 bugs fixed total), all known failure modes are handled. The remaining TODOs are low-priority improvements (tools.py splitting, async batch parallelism, JSONL logging). The codebase is production-ready.
 
 ### [2026-03-03] Deep Code Review Loops 10–12 — 3 Bugs Fixed (tools.py v4.0, watcher.py v1.3, test_unit.py v3.0, test_watcher.py v1.3)
 

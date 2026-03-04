@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.6
+**Version:** v2.7
 
 ## Pending
 
@@ -26,6 +26,12 @@
 - [ ] [LOW] Cache hit rate monitoring — track cache hits/misses in Redis (e.g., counter key)
 
 ---
+
+## Completed (archived — 2026-03-03, loops 13–15)
+
+> Full findings in `MEMORY.md` Lessons Learned (v4.8).
+
+- [x] Deep code review loops 13–15: 0 new bugs; sync.py, qdrant.py, neo4j.py, E2E edge cases all verified correct
 
 ## Completed (archived — 2026-03-03, loops 10–12)
 
