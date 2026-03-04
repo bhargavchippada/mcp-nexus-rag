@@ -788,11 +788,14 @@ class TestAnswerQuery:
         with patch("nexus.tools.get_graph_index", return_value=mock_graph_index):
             with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
                 with patch("nexus.tools.RERANKER_ENABLED", False):
-                    with patch("httpx.AsyncClient", return_value=_ollama_mock("42.")):
+                    with patch(
+                        "httpx.AsyncClient",
+                        return_value=_ollama_mock("The answer is 42."),
+                    ):
                         result = await nexus_tools.answer_query(
                             "What is the answer?", "PROJ", "SCOPE"
                         )
-                        assert result == "42."
+                        assert result == "The answer is 42."
 
     async def test_prompt_includes_both_sources(self):
         """Verify the Ollama prompt contains [graph] and [vector] prefixes."""
@@ -1086,10 +1089,11 @@ class TestAnswerQuery:
             with patch("nexus.tools.get_vector_index", return_value=mock_vector_index):
                 with patch("nexus.tools.RERANKER_ENABLED", False):
                     with patch(
-                        "httpx.AsyncClient", return_value=_ollama_mock("fallback")
+                        "httpx.AsyncClient",
+                        return_value=_ollama_mock("Fallback answer provided."),
                     ):
                         result = await nexus_tools.answer_query("Q?", "PROJ", "SCOPE")
-                        assert result == "fallback"
+                        assert result == "Fallback answer provided."
 
     async def test_empty_scope_omits_tenant_filter(self):
         """Verify that an empty scope omits the tenant_scope filter in both backends."""
@@ -1122,3 +1126,71 @@ class TestAnswerQuery:
             keys = [f.key for f in filters.filters]
             assert "project_id" in keys
             assert "tenant_scope" not in keys
+
+    # ── Bug fix: answer_query must NOT cache empty/short responses ──
+
+    async def test_empty_llm_response_not_cached(self):
+        """Empty LLM response should return error and NOT be cached."""
+        node = _make_node("Some context.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    # Ollama returns empty response
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("")):
+                        with patch("nexus.cache.set_cached") as mock_set_cached:
+                            result = await nexus_tools.answer_query(
+                                "Q?", "PROJ", "SCOPE"
+                            )
+                            assert "Error: LLM returned empty response" in result
+                            # Cache should NOT be called
+                            mock_set_cached.assert_not_called()
+
+    async def test_short_llm_response_not_cached(self):
+        """Short LLM response (<10 chars) should return error and NOT be cached."""
+        node = _make_node("Some context.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    # Ollama returns very short response (malformed)
+                    with patch("httpx.AsyncClient", return_value=_ollama_mock("Ok")):
+                        with patch("nexus.cache.set_cached") as mock_set_cached:
+                            result = await nexus_tools.answer_query(
+                                "Q?", "PROJ", "SCOPE"
+                            )
+                            assert "Error: LLM returned empty response" in result
+                            # Cache should NOT be called
+                            mock_set_cached.assert_not_called()
+
+    async def test_valid_llm_response_is_cached(self):
+        """Valid LLM response (>= 10 chars) should be cached normally."""
+        node = _make_node("Some context.")
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
+        mock_index = MagicMock()
+        mock_index.as_retriever.return_value = mock_retriever
+
+        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+            with patch("nexus.tools.get_vector_index", return_value=mock_index):
+                with patch("nexus.tools.RERANKER_ENABLED", False):
+                    # Ollama returns valid response
+                    valid_answer = "This is a valid answer with sufficient length."
+                    with patch(
+                        "httpx.AsyncClient", return_value=_ollama_mock(valid_answer)
+                    ):
+                        with patch("nexus.cache.set_cached") as mock_set_cached:
+                            result = await nexus_tools.answer_query(
+                                "Q?", "PROJ", "SCOPE"
+                            )
+                            assert result == valid_answer
+                            # Cache SHOULD be called
+                            mock_set_cached.assert_called_once()

@@ -1,4 +1,4 @@
-# Version: v4.4
+# Version: v4.6
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -28,7 +28,10 @@ from nexus.config import (
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_RERANKER_CANDIDATE_K,
     MAX_CONTEXT_CHARS,
+    MAX_ANSWER_CONTEXT_LIMIT,
     RERANKER_ENABLED,
+    OLLAMA_RETRY_COUNT,
+    OLLAMA_RETRY_BASE_DELAY,
 )
 from nexus.dedup import content_hash
 from nexus.backends import neo4j as neo4j_backend
@@ -60,6 +63,74 @@ def _apply_cap(text: str, max_chars: int) -> str:
     if max_chars > 0 and len(text) > max_chars:
         return text[:max_chars] + "… [truncated]"
     return text
+
+
+async def _call_ollama_with_retry(
+    url: str, payload: dict, timeout: float = DEFAULT_LLM_TIMEOUT
+) -> dict:
+    """Call Ollama API with exponential backoff retry on transient failures.
+
+    Args:
+        url: Full Ollama API endpoint URL.
+        payload: JSON payload for the request.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        Parsed JSON response from Ollama.
+
+    Retries:
+        - Connection failures and timeouts.
+        - Transient HTTP statuses: 429, 500, 502, 503, 504.
+
+    Raises:
+        httpx.HTTPStatusError: If all retries fail or a non-transient HTTP error occurs.
+        httpx.ConnectError: If all retries fail to connect.
+        httpx.TimeoutException: If all retries time out.
+    """
+    retry_count = max(1, OLLAMA_RETRY_COUNT)
+    last_exception: Exception | None = None
+    for attempt in range(retry_count):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                return response.json()
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            last_exception = e
+            if attempt < retry_count - 1:
+                delay = OLLAMA_RETRY_BASE_DELAY * (2**attempt)
+                logger.warning(
+                    f"Ollama request failed (attempt {attempt + 1}/{retry_count}): "
+                    f"{type(e).__name__}. Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(
+                    f"Ollama request failed after {retry_count} attempts: {e}"
+                )
+                raise
+        except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code if e.response is not None else None
+            is_transient = status_code in {429, 500, 502, 503, 504}
+            if not is_transient or attempt >= retry_count - 1:
+                logger.error(
+                    "Ollama HTTP error after %s attempt(s): %s",
+                    attempt + 1,
+                    status_code,
+                )
+                raise
+
+            last_exception = e
+            delay = OLLAMA_RETRY_BASE_DELAY * (2**attempt)
+            logger.warning(
+                f"Ollama transient HTTP {status_code} (attempt {attempt + 1}/{retry_count}), "
+                f"retrying in {delay:.1f}s..."
+            )
+            await asyncio.sleep(delay)
+    # Should not reach here, but satisfy type checker
+    if last_exception is not None:
+        raise last_exception
+    raise RuntimeError("Ollama retry loop exited unexpectedly without an exception")
 
 
 def _make_metadata(
@@ -831,6 +902,11 @@ async def ingest_document_batches(
         elif txt:
             resolved.append(doc)
         else:
+            # Document has neither text nor file_path — log for debugging
+            logger.warning(
+                "ingest_document_batches: document missing both 'text' and 'file_path', "
+                f"project_id={doc.get('project_id', 'N/A')}, scope={doc.get('scope', 'N/A')}"
+            )
             file_read_errors += 1
 
     graph = await ingest_graph_documents_batch(
@@ -1002,19 +1078,50 @@ def _dedup_cross_source(
 
     Each unique passage is prefixed with its origin: ``[graph]`` or ``[vector]``.
     Passages that appear in both sources are attributed to graph (first seen).
+    Empty passages are dropped with debug logging; warns if ALL passages from a
+    source are empty (may indicate a backend issue).
     """
     seen: set[str] = set()
     parts: list[str] = []
+    dropped_graph = 0
+    dropped_vector = 0
+
     for passage in graph_passages:
         key = passage.strip()
-        if key and key not in seen:
+        if not key:
+            dropped_graph += 1
+            continue
+        if key not in seen:
             seen.add(key)
             parts.append(f"[graph] {passage.strip()}")
+
     for passage in vector_passages:
         key = passage.strip()
-        if key and key not in seen:
+        if not key:
+            dropped_vector += 1
+            continue
+        if key not in seen:
             seen.add(key)
             parts.append(f"[vector] {passage.strip()}")
+
+    # Log dropped passages (debug) and warn if ALL from a source are empty
+    if dropped_graph > 0:
+        logger.debug(
+            f"_dedup_cross_source: dropped {dropped_graph} empty graph passages"
+        )
+    if dropped_vector > 0:
+        logger.debug(
+            f"_dedup_cross_source: dropped {dropped_vector} empty vector passages"
+        )
+    if dropped_graph == len(graph_passages) and graph_passages:
+        logger.warning(
+            "_dedup_cross_source: ALL graph passages were empty — check graph backend"
+        )
+    if dropped_vector == len(vector_passages) and vector_passages:
+        logger.warning(
+            "_dedup_cross_source: ALL vector passages were empty — check vector backend"
+        )
+
     return parts
 
 
@@ -1060,6 +1167,14 @@ async def answer_query(
         return "Error: 'query' must not be empty."
     if not project_id or not project_id.strip():
         return "Error: 'project_id' must not be empty."
+
+    # Clamp max_context_chars to configured limit to prevent excessive memory/token usage
+    if max_context_chars > MAX_ANSWER_CONTEXT_LIMIT:
+        logger.warning(
+            f"answer_query: max_context_chars={max_context_chars} exceeds limit "
+            f"{MAX_ANSWER_CONTEXT_LIMIT}, clamping"
+        )
+        max_context_chars = MAX_ANSWER_CONTEXT_LIMIT
 
     llm_model = model.strip() if model.strip() else DEFAULT_LLM_MODEL
     scope_msg = scope if (scope and scope.strip()) else "all scopes"
@@ -1133,21 +1248,24 @@ async def answer_query(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=DEFAULT_LLM_TIMEOUT) as http_client:
-            response = await http_client.post(
-                f"{DEFAULT_OLLAMA_URL}/api/chat",
-                json=payload,
+        data = await _call_ollama_with_retry(f"{DEFAULT_OLLAMA_URL}/api/chat", payload)
+        answer: str = data["message"]["content"].strip()
+
+        # Validate answer before caching - prevent caching empty/malformed responses
+        if not answer or len(answer) < 10:
+            logger.warning(
+                f"answer_query: LLM returned empty/short response ({len(answer)} chars), "
+                "skipping cache"
             )
-            response.raise_for_status()
-            data = response.json()
-            answer: str = data["message"]["content"].strip()
-            logger.info(
-                f"answer_query: answer generated ({len(answer)} chars) via {llm_model}"
-            )
-            cache_module.set_cached(
-                f"answer:{query}", project_id, scope, answer, tool_type="answer"
-            )
-            return answer
+            return "Error: LLM returned empty response. Please retry."
+
+        logger.info(
+            f"answer_query: answer generated ({len(answer)} chars) via {llm_model}"
+        )
+        cache_module.set_cached(
+            f"answer:{query}", project_id, scope, answer, tool_type="answer"
+        )
+        return answer
     except httpx.HTTPStatusError as e:
         logger.error(
             f"Ollama HTTP error {e.response.status_code}: {e.response.text[:200]}"

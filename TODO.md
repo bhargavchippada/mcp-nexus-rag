@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v3.2
+**Version:** v3.5
 
 ## Pending
 
@@ -33,77 +33,34 @@
 ### Features
 
 - [ ] Structured JSONL logging
-- [ ] Export/import tenant data tools
-- [ ] [LOW] Cache hit rate monitoring — track cache hits/misses in Redis (e.g., counter key)
+- [ ] Export/import tenant data tools (`export_tenant_data`, `import_tenant_data`) — backup/restore
+- [x] Cache hit rate monitoring — DONE: added `get_cache_hit_rate()` in cache.py v1.6, integrated into `cache_stats()`
+- [ ] `get_reranker_stats` tool — expose reranker performance metrics (latency, throughput)
+- [ ] `compare_retrieval_methods` tool — A/B comparison of graph vs vector retrieval for debugging
+- [ ] `search_by_metadata` tool — filter documents by source/file_path without text query
 
 ---
 
-## Completed (archived — 2026-03-03, round 20)
+## Completed Archive (2026-03-02 to 2026-03-04)
 
-- [x] Code review round 20: 2 bugs fixed, 5 regression tests (408→413 total), ruff clean
-  - R20-1: `ingest_project_directory` empty string extension matched all files (tools.py v4.4)
-  - R20-2: `ingest_document` silently ignored `text` when `file_path` also given — now warns
+> **Summary:** 22 deep code review rounds completed. 26 bugs fixed, ~23 regression tests added (413→432 total currently passing). All findings documented in `MEMORY.md` Lessons Learned section with root causes and prevention guidelines.
 
-## Completed (archived — 2026-03-03, round 19)
-
-- [x] Code review round 19: 3 bugs fixed, 7 regression tests (387→394 total), ruff clean
-  - R19-1: `ingest_project_directory` count incremented on ingest error (tools.py v4.2)
-  - R19-2: `_parse_context_results` over-broad "no results" guard (http_server.py v1.9)
-  - R19-3: `get_all_tenant_scopes` stale `vector_scopes2` variable name (tools.py v4.2)
-
-## Completed (archived — 2026-03-03, loops 16–18)
-
-> Full findings in `MEMORY.md` Lessons Learned (v4.9).
-
-- [x] Deep code review loops 16–18: 0 new bugs; dedup.py, indexes.py, reranker.py, config.py, chunking.py, retrieval/admin tools all verified correct
-  - Loop 16: SHA-256 dedup, singleton locks, reset functions — all verified
-  - Loop 17: ALLOWED_META_KEYS injection prevention, byte-length chunking — all verified
-  - Loop 18: retrieval pipeline, answer_query, admin tools — all verified; 1 LOW inconsistency (get_tenant_stats ValueError vs error string)
-
-## Completed (archived — 2026-03-03, loops 13–15)
-
-> Full findings in `MEMORY.md` Lessons Learned (v4.8).
-
-- [x] Deep code review loops 13–15: 0 new bugs; sync.py, qdrant.py, neo4j.py, E2E edge cases all verified correct
-
-## Completed (archived — 2026-03-03, loops 10–12)
-
-> Full root causes and fixes in `MEMORY.md` Lessons Learned (v4.7).
-
-- [x] Deep code review loops 10–12: 3 bugs fixed, 8 new regression tests (371→379 total), ruff clean
-  - Loop 10: sync_project_files bare except swallowed pre-delete errors (L10-1), cache not invalidated after pre-delete (L10-2) + 5 tests (376)
-  - Loop 11: cache.py full review — no new bugs, all 9 functions verified correct
-  - Loop 12: watcher._sync_changed "Successfully" in result false-negative on "Skipped: duplicate" (L12-4) + 3 tests (379)
-
-## Completed (archived — 2026-03-03, rounds 2–9)
-
-> Full root causes and fixes in `MEMORY.md` Lessons Learned + Changelog v3.7/v3.8.
-
-- [x] Deep code review rounds 1–9: 11 bugs fixed, 92 new regression tests (279→371 total), ruff clean
-  - Round 1: 4 bugs (n.score crash, batch cache, answer_query cap, truncated cache) + 11 tests (304)
-  - Round 2: neo4j singleton driver, empty project_id validation, delete_all_data cache, split index locks + 18 tests (324)
-  - Round 3: scroll_field crash, sync_deleted/sync_project cache, watcher._sync_deleted cache, http fallback scope, invalidate_project_cache tool + 15 tests (339)
-  - Round 4: orphan detection (Neo4j∪Qdrant), qdrant_backend.get_all_filepaths, reset_graph/vector_index + 18 tests (357)
-  - Round 5: batch ingest per-chunk error handling + 6 tests (363)
-  - Round 6: invalidate_cache full-project (per-scope indices) + 5 tests (368)
-  - Round 7: watcher._sync_changed pre-ingest cache invalidation + 3 tests (371)
-  - Rounds 8–9: no new bugs; 17 E2E scenarios verified
-
-## Completed (archived — 2026-03-03, robustness hardening)
-
-> Details in `MEMORY.md` Changelog v3.5/v3.6.
-
-- [x] cache.py invalidate_cache fixed (secondary Redis Set index); cache wired into ingest tools
-- [x] Exception sanitization (generic messages to clients, full detail to server logs)
-- [x] answer_query refactored (complexity 21→7); production config validation added
-- [x] Cache key collision fix (tool_type discriminator); scope optional on retrieval tools
-- [x] max_chars cache bypass fix; _apply_cap helper; MAX_CONTEXT_CHARS env var
-
-## Completed (archived — 2026-03-02, watcher + token optimization)
-
-> Details in `MEMORY.md` Changelog v3.0/v3.4.
-
-- [x] nexus/watcher.py RAG sync daemon (watchdog, debounce, thread-safe queue, 37 tests)
-- [x] sync.py fixes: GEMINI.md removed, agentic-trader added, _classify_file helper
-- [x] Token optimization: MAX_DOCUMENT_SIZE 512KB→4KB, RERANKER_TOP_N=2, max_chars cap
-- [x] Reranker import fix; Redis cache integrated; FlagEmbedding pinned; test isolation fixture
+**Highlights:**
+- Round 22 (2026-03-04): retry hardening + e2e verification (tools.py v4.6, config.py v2.9)
+  - Bug 1: Retry config guard — `OLLAMA_RETRY_COUNT` clamped to minimum 1
+  - Bug 2: Transient HTTP retry — added retries for `429/500/502/503/504`
+  - Added 3 unit tests for transient/non-transient HTTP behavior and retry-count safeguard
+  - Verification: `432 passed, 13 deselected` + integration `13 passed`
+- Round 21 (2026-03-04): 5 bug fixes + cache hit rate monitoring (tools.py v4.5, config.py v2.8, cache.py v1.6)
+  - Bug 1: answer_query cache validation — prevent caching empty/short LLM responses
+  - Bug 2: Ollama retry logic — exponential backoff on transient failures
+  - Bug 3: _dedup_cross_source logging — warn when ALL passages from a source are empty
+  - Bug 4: max_context_chars bounds — clamp to MAX_ANSWER_CONTEXT_LIMIT
+  - Bug 5: ingest_document_batches logging — warn when document missing text+file_path
+  - Feature: Cache hit rate monitoring with get_cache_hit_rate() + integrated into cache_stats()
+- Round 20: Extension validation + ingest_document warnings (tools.py v4.4)
+- Rounds 16–19: Final verification passes — sync.py, qdrant.py, neo4j.py, E2E scenarios confirmed correct
+- Rounds 10–15: Cache invalidation chain fixes, watcher reliability improvements
+- Rounds 1–9: Neo4j driver singleton, batch ingest error handling, orphan detection, scroll_field None handling
+- Robustness hardening: Exception sanitization, cache secondary index, answer_query refactor
+- Watcher + optimization: RAG sync daemon, token cost reduction (512KB→4KB chunks, max_chars caps)

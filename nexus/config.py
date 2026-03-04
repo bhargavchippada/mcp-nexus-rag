@@ -1,4 +1,4 @@
-# Version: v2.7
+# Version: v2.9
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -28,6 +28,13 @@ DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
 DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "32768"))
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
+
+# Ollama retry settings for transient network failures
+# Clamp to safe minimums to avoid invalid runtime behavior from env config.
+OLLAMA_RETRY_COUNT = max(1, int(os.environ.get("OLLAMA_RETRY_COUNT", "3")))
+OLLAMA_RETRY_BASE_DELAY = max(
+    0.0, float(os.environ.get("OLLAMA_RETRY_BASE_DELAY", "1.0"))
+)
 
 # ---------------------------------------------------------------------------
 # Document ingestion limits
@@ -59,6 +66,11 @@ RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 # 1500 chars ≈ 375 tokens — keeps retrieval tool responses small.
 # Set to 0 to disable (not recommended in production).
 MAX_CONTEXT_CHARS = int(os.environ.get("MAX_CONTEXT_CHARS", "1500"))
+
+# Maximum allowed value for answer_query's max_context_chars parameter.
+# Prevents callers from requesting excessively large contexts that could
+# blow up memory or token budgets. 24000 chars ≈ 6000 tokens.
+MAX_ANSWER_CONTEXT_LIMIT = int(os.environ.get("MAX_ANSWER_CONTEXT_LIMIT", "24000"))
 
 # ---------------------------------------------------------------------------
 # Allowlist — prevents Cypher key injection in dynamic MATCH clauses

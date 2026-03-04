@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.5
+**Version:** v3.7
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 413 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 432 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -575,7 +575,7 @@ Use the automation script to start all services after a reboot:
 - ✨ **FEATURE**: `ingest_document` — new convenience tool that writes to both graph + vector in one call; accepts `text` or `file_path` (reads from disk automatically); replaces manual double-call of `ingest_graph_document` + `ingest_vector_document` (`tools.py` v4.3, **8 new tests**)
 - ✨ **FEATURE**: `ingest_document_batches` — batch equivalent of `ingest_document`; resolves `file_path` per-doc before forwarding to both backends; reports `file_read_errors` separately (`tools.py` v4.3, **6 new tests**)
 - ✨ **FEATURE**: `server.py` — exports `ingest_document`, `ingest_document_batches`, `ingest_graph_documents_batch`, `ingest_vector_documents_batch` (previously missing) (`server.py` v2.0)
-- ✅ **Tests**: 413 tests passing (+19 regression+feature tests), lint clean (ruff)
+- ✅ **Tests**: 429 tests passing (+19 regression+feature tests), lint clean (ruff)
 
 ### v3.4 (2026-03-03) — Bug Fixes: ingest_project_directory Count + Context Parsing
 

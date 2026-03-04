@@ -1,4 +1,4 @@
-# Version: v1.5
+# Version: v1.6
 """
 nexus.cache — Semantic caching for repeated LLM queries.
 
@@ -28,6 +28,13 @@ CACHE_ENABLED = os.environ.get("CACHE_ENABLED", "true").lower() != "false"
 # ---------------------------------------------------------------------------
 _client: redis.Redis | None = None
 _lock = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Cache hit rate monitoring
+# ---------------------------------------------------------------------------
+_stats_lock = threading.Lock()
+_hit_count = 0
+_miss_count = 0
 
 
 def get_redis() -> redis.Redis:
@@ -97,16 +104,25 @@ def get_cached(
     Returns:
         Cached result dict or None if not found/disabled
     """
+    global _hit_count, _miss_count
+
     if not CACHE_ENABLED:
         return None
 
     try:
         cached = get_redis().get(cache_key(query, project_id, scope, tool_type))
         if cached:
+            with _stats_lock:
+                _hit_count += 1
             logger.debug(f"Cache hit for query: {query[:50]}...")
             return json.loads(cached)
+        else:
+            with _stats_lock:
+                _miss_count += 1
     except redis.RedisError as e:
         logger.warning(f"Redis get error: {e}")
+        with _stats_lock:
+            _miss_count += 1
 
     return None
 
@@ -249,12 +265,35 @@ def invalidate_all_cache() -> int:
     return 0
 
 
-def cache_stats() -> dict[str, Any]:
-    """
-    Get cache statistics.
+def get_cache_hit_rate() -> dict[str, Any]:
+    """Get cache hit/miss statistics for this session.
 
     Returns:
-        Dict with cache stats (keys, memory, etc.)
+        Dict with hits, misses, and hit_rate (0.0-1.0).
+    """
+    with _stats_lock:
+        total = _hit_count + _miss_count
+        return {
+            "hits": _hit_count,
+            "misses": _miss_count,
+            "hit_rate": round(_hit_count / total, 4) if total > 0 else 0.0,
+        }
+
+
+def reset_cache_hit_stats() -> None:
+    """Reset the cache hit/miss counters. Useful for testing."""
+    global _hit_count, _miss_count
+    with _stats_lock:
+        _hit_count = 0
+        _miss_count = 0
+
+
+def cache_stats() -> dict[str, Any]:
+    """
+    Get cache statistics including hit rate.
+
+    Returns:
+        Dict with cache stats (keys, memory, hit_rate, etc.)
     """
     try:
         client = get_redis()
@@ -269,6 +308,7 @@ def cache_stats() -> dict[str, Any]:
             "nexus_keys": nexus_keys,
             "used_memory_human": info.get("used_memory_human", "unknown"),
             "keyspace": keyspace,
+            **get_cache_hit_rate(),  # Include hits, misses, hit_rate
         }
     except redis.RedisError as e:
-        return {"enabled": CACHE_ENABLED, "error": str(e)}
+        return {"enabled": CACHE_ENABLED, "error": str(e), **get_cache_hit_rate()}

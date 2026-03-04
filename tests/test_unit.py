@@ -1,4 +1,4 @@
-# Version: v3.4
+# Version: v3.6
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -8,6 +8,7 @@ asyncio_mode=auto (set in pyproject.toml) removes the need for @pytest.mark.asyn
 import threading
 import pytest
 import redis
+import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from nexus import config as nexus_config
@@ -24,6 +25,7 @@ from nexus import tools as nexus_tools
 import nexus.cache as _nexus_cache
 
 _orig_set_cached = _nexus_cache.set_cached
+_orig_get_cached = _nexus_cache.get_cached
 _orig_invalidate_cache = _nexus_cache.invalidate_cache
 
 
@@ -1197,6 +1199,86 @@ class TestCacheSecondaryIndex:
 
 
 # ---------------------------------------------------------------------------
+# nexus.cache — cache hit rate monitoring
+# ---------------------------------------------------------------------------
+
+
+class TestCacheHitRateMonitoring:
+    """Tests for cache hit/miss tracking and hit rate calculation."""
+
+    def test_hit_rate_tracks_hits_and_misses(self):
+        """get_cached increments hit/miss counters correctly."""
+        # Use module-level reference to bypass conftest patching
+        _nexus_cache.reset_cache_hit_stats()
+        mock_redis = MagicMock()
+
+        # Simulate 2 cache hits
+        mock_redis.get.return_value = '{"data": "cached"}'
+        with (
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+            patch("nexus.cache.CACHE_ENABLED", True),
+        ):
+            _orig_get_cached("q1", "P", "S")
+            _orig_get_cached("q2", "P", "S")
+
+        # Simulate 1 cache miss
+        mock_redis.get.return_value = None
+        with (
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+            patch("nexus.cache.CACHE_ENABLED", True),
+        ):
+            _orig_get_cached("q3", "P", "S")
+
+        stats = _nexus_cache.get_cache_hit_rate()
+        assert stats["hits"] == 2
+        assert stats["misses"] == 1
+        assert stats["hit_rate"] == pytest.approx(0.6667, abs=0.01)
+
+    def test_hit_rate_zero_when_no_queries(self):
+        """hit_rate should be 0.0 when no queries have been made."""
+        _nexus_cache.reset_cache_hit_stats()
+        stats = _nexus_cache.get_cache_hit_rate()
+        assert stats["hits"] == 0
+        assert stats["misses"] == 0
+        assert stats["hit_rate"] == 0.0
+
+    def test_redis_error_counts_as_miss(self):
+        """Redis errors should be counted as misses."""
+        import redis as redis_lib
+
+        _nexus_cache.reset_cache_hit_stats()
+        mock_redis = MagicMock()
+        mock_redis.get.side_effect = redis_lib.RedisError("Connection refused")
+
+        with (
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+            patch("nexus.cache.CACHE_ENABLED", True),
+        ):
+            _orig_get_cached("q", "P", "S")
+
+        stats = _nexus_cache.get_cache_hit_rate()
+        assert stats["misses"] == 1
+        assert stats["hits"] == 0
+
+    def test_cache_stats_includes_hit_rate(self):
+        """cache_stats() should include hit rate information."""
+        _nexus_cache.reset_cache_hit_stats()
+        mock_redis = MagicMock()
+        mock_redis.info.return_value = {"used_memory_human": "1M"}
+        mock_redis.scan_iter.return_value = iter([])
+
+        with (
+            patch("nexus.cache.get_redis", return_value=mock_redis),
+            patch("nexus.cache.CACHE_ENABLED", True),
+        ):
+            stats = _nexus_cache.cache_stats()
+
+        assert "hits" in stats
+        assert "misses" in stats
+        assert "hit_rate" in stats
+
+
+# ---------------------------------------------------------------------------
 # nexus.tools — exception sanitization (no raw exception in client response)
 # ---------------------------------------------------------------------------
 
@@ -1453,6 +1535,26 @@ class TestAnswerQueryHelpers:
         assert len(result) == 1
         assert "[graph] real content" in result
 
+    def test_dedup_cross_source_warns_all_empty_graph(self, caplog):
+        """Warn when ALL graph passages are empty — may indicate backend issue."""
+        from nexus.tools import _dedup_cross_source
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = _dedup_cross_source(["", "  ", "\n"], ["valid vector"])
+        assert result == ["[vector] valid vector"]
+        assert "ALL graph passages were empty" in caplog.text
+
+    def test_dedup_cross_source_warns_all_empty_vector(self, caplog):
+        """Warn when ALL vector passages are empty — may indicate backend issue."""
+        from nexus.tools import _dedup_cross_source
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            result = _dedup_cross_source(["valid graph"], ["", "  "])
+        assert result == ["[graph] valid graph"]
+        assert "ALL vector passages were empty" in caplog.text
+
     async def test_fetch_graph_passages_returns_empty_on_error(self):
         """_fetch_graph_passages must return [] instead of raising on backend errors."""
         from nexus.tools import _fetch_graph_passages
@@ -1629,6 +1731,44 @@ class TestAnswerQueryCacheHit:
         with patch("nexus.tools.cache_module.get_cached", return_value=""):
             result = await nexus_tools.answer_query("q", "P")
         assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Regression: answer_query clamps max_context_chars to configured limit
+# ---------------------------------------------------------------------------
+
+
+class TestAnswerQueryMaxContextClamp:
+    """answer_query must clamp max_context_chars to prevent excessive usage."""
+
+    async def test_max_context_chars_clamped_to_limit(self, caplog):
+        """Excessive max_context_chars is clamped to MAX_ANSWER_CONTEXT_LIMIT."""
+        import logging
+
+        with (
+            patch("nexus.tools.cache_module.get_cached", return_value=None),
+            patch(
+                "nexus.tools._fetch_graph_passages",
+                new_callable=AsyncMock,
+                return_value=["graph passage"],
+            ),
+            patch(
+                "nexus.tools._fetch_vector_passages",
+                new_callable=AsyncMock,
+                return_value=["vector passage"],
+            ),
+            patch("nexus.tools.RERANKER_ENABLED", False),
+            patch(
+                "nexus.tools._call_ollama_with_retry",
+                new_callable=AsyncMock,
+                return_value={"message": {"content": "The answer is here."}},
+            ),
+            patch("nexus.tools.MAX_ANSWER_CONTEXT_LIMIT", 10000),
+            caplog.at_level(logging.WARNING),
+        ):
+            # Request 50000 chars, should be clamped to 10000
+            await nexus_tools.answer_query("Q?", "PROJ", max_context_chars=50000)
+            assert "exceeds limit 10000, clamping" in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -3637,6 +3777,31 @@ class TestIngestDocumentBatches:
         mock_vector.assert_awaited_once_with([], skip_duplicates=True, auto_chunk=True)
         assert result["file_read_errors"] == 0
 
+    async def test_warns_on_document_missing_text_and_file_path(self, caplog):
+        """Warn when a document has neither text nor file_path."""
+        import logging
+
+        doc = {"project_id": "P", "scope": "S"}  # Missing text AND file_path
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+            caplog.at_level(logging.WARNING),
+        ):
+            result = await nexus_tools.ingest_document_batches([doc])
+        assert result["file_read_errors"] == 1
+        assert "missing both 'text' and 'file_path'" in caplog.text
+        assert "project_id=P" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # Bug fixes: ingest_project_directory include_extensions validation
@@ -3767,3 +3932,220 @@ class TestIngestDocumentBothInputsWarning:
             )
         _, kwargs = mock_graph.call_args
         assert kwargs["text"] == "from file"
+
+
+# ---------------------------------------------------------------------------
+# nexus.tools — Ollama retry logic (_call_ollama_with_retry)
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaRetry:
+    """Unit tests for the Ollama retry helper."""
+
+    async def test_succeeds_on_first_attempt(self):
+        """Retry helper returns response on first successful attempt."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"message": {"content": "success"}}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            result = await nexus_tools._call_ollama_with_retry(
+                "http://test/api/chat", {"model": "test"}
+            )
+            assert result == {"message": {"content": "success"}}
+            # Should only call once
+            assert mock_client.post.call_count == 1
+
+    async def test_retries_on_connect_error(self):
+        """Retry helper retries on ConnectError and succeeds eventually."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"message": {"content": "recovered"}}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        # Fail twice, succeed on third
+        mock_client.post = AsyncMock(
+            side_effect=[
+                httpx.ConnectError("connection refused"),
+                httpx.ConnectError("connection refused"),
+                mock_response,
+            ]
+        )
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 3),
+            patch("nexus.tools.OLLAMA_RETRY_BASE_DELAY", 0.1),
+        ):
+            result = await nexus_tools._call_ollama_with_retry(
+                "http://test/api/chat", {"model": "test"}
+            )
+            assert result == {"message": {"content": "recovered"}}
+            assert mock_client.post.call_count == 3
+            # Should have slept twice (exponential backoff)
+            assert mock_sleep.call_count == 2
+
+    async def test_retries_on_timeout(self):
+        """Retry helper retries on TimeoutException."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"message": {"content": "after timeout"}}
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        # Fail once with timeout, succeed on second
+        mock_client.post = AsyncMock(
+            side_effect=[
+                httpx.TimeoutException("request timed out"),
+                mock_response,
+            ]
+        )
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 3),
+            patch("nexus.tools.OLLAMA_RETRY_BASE_DELAY", 0.1),
+        ):
+            result = await nexus_tools._call_ollama_with_retry(
+                "http://test/api/chat", {"model": "test"}
+            )
+            assert result == {"message": {"content": "after timeout"}}
+            assert mock_client.post.call_count == 2
+
+    async def test_raises_after_max_retries(self):
+        """Retry helper raises after exhausting all retries."""
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock),
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 3),
+            patch("nexus.tools.OLLAMA_RETRY_BASE_DELAY", 0.1),
+        ):
+            with pytest.raises(httpx.ConnectError):
+                await nexus_tools._call_ollama_with_retry(
+                    "http://test/api/chat", {"model": "test"}
+                )
+            assert mock_client.post.call_count == 3
+
+    async def test_exponential_backoff_delays(self):
+        """Verify exponential backoff delay calculation."""
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+
+        delays_captured = []
+
+        async def capture_sleep(delay):
+            delays_captured.append(delay)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", side_effect=capture_sleep),
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 4),
+            patch("nexus.tools.OLLAMA_RETRY_BASE_DELAY", 1.0),
+        ):
+            with pytest.raises(httpx.ConnectError):
+                await nexus_tools._call_ollama_with_retry(
+                    "http://test/api/chat", {"model": "test"}
+                )
+            # Delays should be: 1.0, 2.0, 4.0 (base * 2^attempt)
+            assert delays_captured == [1.0, 2.0, 4.0]
+
+    async def test_retries_on_transient_http_status(self):
+        """Retry helper retries on transient HTTP status codes (e.g. 503)."""
+        req = httpx.Request("POST", "http://test/api/chat")
+        transient_response = httpx.Response(503, request=req, text="service unavailable")
+
+        mock_ok_response = MagicMock()
+        mock_ok_response.status_code = 200
+        mock_ok_response.json.return_value = {"message": {"content": "recovered"}}
+        mock_ok_response.raise_for_status = MagicMock()
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=[
+            httpx.HTTPStatusError(
+                "503 Service Unavailable", request=req, response=transient_response
+            ),
+            mock_ok_response,
+        ])
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 3),
+            patch("nexus.tools.OLLAMA_RETRY_BASE_DELAY", 0.1),
+        ):
+            result = await nexus_tools._call_ollama_with_retry(
+                "http://test/api/chat", {"model": "test"}
+            )
+            assert result == {"message": {"content": "recovered"}}
+            assert mock_client.post.call_count == 2
+            assert mock_sleep.call_count == 1
+
+    async def test_does_not_retry_on_non_transient_http_status(self):
+        """Retry helper fails fast on non-transient HTTP status codes (e.g. 400)."""
+        req = httpx.Request("POST", "http://test/api/chat")
+        bad_response = httpx.Response(400, request=req, text="bad request")
+        http_error = httpx.HTTPStatusError(
+            "400 Bad Request", request=req, response=bad_response
+        )
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=http_error)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 3),
+        ):
+            with pytest.raises(httpx.HTTPStatusError):
+                await nexus_tools._call_ollama_with_retry(
+                    "http://test/api/chat", {"model": "test"}
+                )
+            assert mock_client.post.call_count == 1
+            mock_sleep.assert_not_called()
+
+    async def test_retry_count_guard_when_config_is_zero(self):
+        """Retry helper should still execute at least one attempt when retry count is 0."""
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(
+            side_effect=httpx.ConnectError("connection refused")
+        )
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_client),
+            patch("nexus.tools.OLLAMA_RETRY_COUNT", 0),
+        ):
+            with pytest.raises(httpx.ConnectError):
+                await nexus_tools._call_ollama_with_retry(
+                    "http://test/api/chat", {"model": "test"}
+                )
+            assert mock_client.post.call_count == 1

@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.3
+**Version:** v5.6
 
 ## Known Issues
 
@@ -17,6 +17,62 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-04] Code Review Round 22: Retry Hardening + E2E Verification (FIXED)
+
+**Bug R22-1: Invalid retry env config could break retry loop assumptions (`config.py` v2.9, `tools.py` v4.6)**
+`OLLAMA_RETRY_COUNT=0` is an invalid runtime config that can bypass retry iteration and
+produce undefined behavior in downstream retry logic.
+**Fix:** Clamp `OLLAMA_RETRY_COUNT` to at least 1 in config, and add a local safety guard
+in `_call_ollama_with_retry` (`retry_count = max(1, OLLAMA_RETRY_COUNT)`).
+
+**Bug R22-2: No retries for transient Ollama HTTP errors (`tools.py` v4.6)**
+Retry logic previously handled only network/connectivity exceptions, not transient HTTP
+status failures (e.g. 429/503) that are recoverable.
+**Fix:** Retry `HTTPStatusError` for transient statuses (`429, 500, 502, 503, 504`) with
+the same exponential backoff path. Non-transient HTTP errors still fail fast.
+
+**Verification:** Full suite pass + integration pass with healthy services:
+`432 passed, 13 deselected` (unit/full), `13 passed` (integration).
+
+> **Guideline:** Retry wrappers should handle both transport failures and transient HTTP
+> server errors. Always guard retry-loop config values against invalid environment input.
+
+### [2026-03-04] Code Review Round 21: 5 Bugs Fixed + 1 Feature + ~20 Tests (FIXED)
+
+**Bug R21-1: `answer_query` cached empty/short LLM responses (tools.py v4.5)**
+Empty or malformed Ollama responses (< 10 chars) were cached for 24 hours. Subsequent
+identical queries would return the error from cache instead of retrying the LLM.
+**Fix:** Validate answer length before caching. Return error without caching if response
+is empty or too short (< 10 chars).
+
+**Bug R21-2: Missing Ollama retry logic (tools.py v4.5, config.py v2.8)**
+Single HTTP call to Ollama failed on transient network blips with no recovery.
+**Fix:** Added `_call_ollama_with_retry()` helper with exponential backoff. Configurable
+via `OLLAMA_RETRY_COUNT` (default 3) and `OLLAMA_RETRY_BASE_DELAY` (default 1.0s).
+
+**Bug R21-3: `_dedup_cross_source` silently dropped empty passages (tools.py v4.5)**
+Empty passages from either backend were filtered without logging. If ALL passages from
+a source were empty (backend issue), there was no indication in logs.
+**Fix:** Log dropped passages at DEBUG level. WARN if ALL passages from a source are empty.
+
+**Bug R21-4: Unbounded `max_context_chars` in `answer_query` (config.py v2.8, tools.py v4.5)**
+Callers could pass arbitrarily large `max_context_chars`, potentially exhausting memory
+or exceeding LLM token limits.
+**Fix:** Added `MAX_ANSWER_CONTEXT_LIMIT` (default 24000) constant. Clamp parameter value
+and log warning when clamping occurs.
+
+**Bug R21-5: `ingest_document_batches` missing logging (tools.py v4.5)**
+Documents with neither `text` nor `file_path` incremented `file_read_errors` counter but
+didn't log any message — made debugging difficult.
+**Fix:** Log WARNING with project_id and scope when a document has neither field.
+
+**Feature: Cache hit rate monitoring (cache.py v1.6)**
+Added session-level hit/miss counters with thread-safe tracking. New functions:
+`get_cache_hit_rate()`, `reset_cache_hit_stats()`. `cache_stats()` now includes hit rate.
+
+> **Guideline:** Always validate LLM responses before caching. Add retry logic for external
+> service calls. Log dropped/filtered items at DEBUG; WARN when ALL items are dropped.
 
 ### [2026-03-03] Code Review Round 20: 2 Bugs Fixed + 5 Tests (FIXED)
 
@@ -435,8 +491,6 @@ Added as `@mcp.tool()` in tools.py. Exposes targeted Redis cache invalidation (b
 > **Lint Rule:** ruff B006 catches mutable default arguments.
 
 ---
-
-## Lessons Learned (Post-Fix Documentation)
 
 ### 2026-03-03 — Cache bypass of max_chars (FIXED)
 
