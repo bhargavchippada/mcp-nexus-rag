@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.0
+**Version:** v5.1
 
 ## Known Issues
 
@@ -17,6 +17,14 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] project-check: .env not gitignored, .env.example missing (FIXED via project-check)
+
+**Root Cause:** `.gitignore` had no `.env` entry — a committed `.env` would expose `NEO4J_PASSWORD` and other credentials. `.env.example` was absent, leaving new contributors without guidance on required env vars.
+
+**Fix Applied:** Added `.env` to `.gitignore`; created `.env.example` covering all 22 env vars across `config.py`, `cache.py`, and `watcher.py` with safe placeholder values and inline comments.
+
+> **Guideline:** Every project that reads from `os.environ` MUST have `.env` in `.gitignore` AND a matching `.env.example`. Run `comm -23 <(grep -E "^[A-Z_]+=") .env <.env.example)` as part of CI to detect drift.
 
 ### [2026-03-03] Bug Fixes: Chunked Ingest All-Fail + get_tenant_stats (FIXED)
 

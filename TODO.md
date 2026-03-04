@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.9
+**Version:** v3.0
 
 ## Pending
 
@@ -16,8 +16,19 @@
 
 ### Refactoring
 
-- [ ] [LOW] Consider splitting tools.py (1600+ lines) into tools/ingest.py, tools/query.py, tools/admin.py
+- [ ] [LOW] Consider splitting tools.py (1700+ lines) into tools/ingest.py, tools/query.py, tools/admin.py
+- [ ] [LOW] `http_query` in http_server.py has cyclomatic complexity 11 (threshold 10) — extract scope-result-parsing into helper functions
 - [x] [LOW] Chunked ingest returns "Successfully ingested 0 chunks (errors=N)" when all chunks fail — FIXED: now returns "Error: All N chunks failed..." (tools.py v4.1)
+
+### Dependencies (major — manual review required)
+
+- [ ] [LOW] `neo4j` 5.28.3 → 6.1.0 — MAJOR; review changelog for breaking API changes before upgrading
+- [ ] [LOW] `redis` 5.3.1 → 7.2.1 — MAJOR; review async client API changes
+- [ ] [LOW] `watchdog` 4.0.2 → 6.0.0 — MAJOR; review event handler API changes
+- [ ] [LOW] `huggingface-hub` 0.36.2 → 1.5.0 — MAJOR; review download API
+- [ ] [LOW] `transformers` 4.57.6 → 5.2.0 — MAJOR; review pipeline API changes
+- [ ] [LOW] `marshmallow` 3.26.2 → 4.2.2 — MAJOR; review Schema API changes
+- [ ] [LOW] `pytest-cov` 6.3.0 → 7.0.0 — MAJOR; low risk (dev dep)
 
 ### Features
 
