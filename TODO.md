@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v2.7
+**Version:** v2.9
 
 ## Pending
 
@@ -17,7 +17,7 @@
 ### Refactoring
 
 - [ ] [LOW] Consider splitting tools.py (1600+ lines) into tools/ingest.py, tools/query.py, tools/admin.py
-- [ ] [LOW] Chunked ingest returns "Successfully ingested 0 chunks (errors=N)" when all chunks fail — misleading; watcher would incorrectly log "synced" for a failed ingest
+- [x] [LOW] Chunked ingest returns "Successfully ingested 0 chunks (errors=N)" when all chunks fail — FIXED: now returns "Error: All N chunks failed..." (tools.py v4.1)
 
 ### Features
 
@@ -26,6 +26,15 @@
 - [ ] [LOW] Cache hit rate monitoring — track cache hits/misses in Redis (e.g., counter key)
 
 ---
+
+## Completed (archived — 2026-03-03, loops 16–18)
+
+> Full findings in `MEMORY.md` Lessons Learned (v4.9).
+
+- [x] Deep code review loops 16–18: 0 new bugs; dedup.py, indexes.py, reranker.py, config.py, chunking.py, retrieval/admin tools all verified correct
+  - Loop 16: SHA-256 dedup, singleton locks, reset functions — all verified
+  - Loop 17: ALLOWED_META_KEYS injection prevention, byte-length chunking — all verified
+  - Loop 18: retrieval pipeline, answer_query, admin tools — all verified; 1 LOW inconsistency (get_tenant_stats ValueError vs error string)
 
 ## Completed (archived — 2026-03-03, loops 13–15)
 

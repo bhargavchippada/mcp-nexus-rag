@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v4.8
+**Version:** v5.0
 
 ## Known Issues
 
@@ -17,6 +17,34 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Bug Fixes: Chunked Ingest All-Fail + get_tenant_stats (FIXED)
+
+**Bug: Chunked ingest all-fail returns "Successfully" (Root Cause)**
+Both `ingest_graph_document` and `ingest_vector_document` returned `"Successfully ingested 0 chunks (errors=N)"` when ALL chunks failed. The watcher's `"Error" not in result` check evaluated True → logged "synced" for a completely failed ingest. Only applies when `needs_chunking=True` AND every chunk insert throws.
+
+**Fix:** Added `if ingested == 0 and errors > 0: return "Error: All N chunks failed..."` before the "Successfully..." return in both functions (`tools.py` v4.1). All-skipped (duplicate) with `errors=0` correctly returns "Successfully ingested 0 chunks" — not an error.
+
+**Bug: get_tenant_stats raises ValueError (Root Cause)**
+`get_tenant_stats` raised `ValueError` on empty `project_id` — inconsistent with all other tools that return `"Error: ..."` strings. MCP converts exceptions to error responses either way, but consistency prevents surprise in callers that expect string returns.
+
+**Fix:** Changed to `return "Error: project_id must not be empty"`, updated type annotation to `str | dict[str, int]`. Updated existing test that expected `pytest.raises(ValueError)` to assert on the error string (`test_new_features.py` v2.1).
+
+> **Guideline:** Chunked ingest result strings must use `"Error" not in result` semantics. All-chunks-failed is an error even when `ingested=0` — the "Successfully ingested 0" message pattern is only safe for all-duplicate (skipped) cases. Confirm `errors` counter before returning "Successfully".
+
+### [2026-03-03] Deep Code Review Loops 16–18 — No New Bugs (exhaustive final verification)
+
+**Loop 16: dedup.py, indexes.py, reranker.py — verified correct**
+SHA-256 content hash uses `\x00` separators (no collision possible even with adversarial inputs). All singletons use double-checked locking. `reset_graph_index`/`reset_vector_index` symmetric with `reset_reranker`. `reranker.reset_reranker()` unlocked — acceptable for test-only use.
+
+**Loop 17: config.py, chunking.py — verified correct**
+`ALLOWED_META_KEYS` frozenset prevents Cypher key injection. `needs_chunking` uses byte-length (`.encode("utf-8")`) not char count — correct for `MAX_DOCUMENT_SIZE` in bytes. `int(os.environ.get(...))` crashes clearly at startup on bad env vars — acceptable.
+
+**Loop 18: Retrieval and admin tools in tools.py — verified correct, 1 LOW inconsistency**
+`get_vector_context`: cache hit cap, post-retrieval dedup, fail-open reranker all correct. `answer_query`: `asyncio.gather` for concurrent retrieval, `max_context_chars` on prompt (not output). `print_all_stats`: column widths safe (rows non-empty when `all_project_ids` non-empty). `ingest_project_directory`: `.copy()` on default list, `dirs[:]=[]` correct.
+**LOW inconsistency (not fixed):** `get_tenant_stats` raises `ValueError` for validation failure instead of returning `"Error: ..."` string like all other tools. MCP framework converts exceptions to error responses either way — practical impact nil.
+
+> **Guideline:** After 18 rounds of deep review (14 bugs fixed total, 279 → 379 tests), all known failure modes are handled. Remaining LOWs are stylistic (`get_tenant_stats` ValueError) or future features (tools.py split, JSONL logging, async parallelism, rate limiting).
 
 ### [2026-03-03] Deep Code Review Loops 13–15 — No New Bugs (final verification)
 

@@ -1,4 +1,4 @@
-# Version: v4.0
+# Version: v4.1
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -197,6 +197,13 @@ async def ingest_graph_document(
         )
         if ingested > 0:
             cache_module.invalidate_cache(project_id, scope)
+        # Bug fix: when ALL chunks fail, return an error string so callers
+        # (watcher, sync) correctly detect failure via "Error" in result.
+        if ingested == 0 and errors > 0:
+            return (
+                f"Error: All {len(chunks)} chunks failed to ingest into GraphRAG for "
+                f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
+            )
         return (
             f"Successfully ingested {ingested} chunks into GraphRAG for "
             f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
@@ -527,6 +534,13 @@ async def ingest_vector_document(
         )
         if ingested > 0:
             cache_module.invalidate_cache(project_id, scope)
+        # Bug fix: when ALL chunks fail, return an error string so callers
+        # (watcher, sync) correctly detect failure via "Error" in result.
+        if ingested == 0 and errors > 0:
+            return (
+                f"Error: All {len(chunks)} chunks failed to ingest into VectorRAG for "
+                f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
+            )
         return (
             f"Successfully ingested {ingested} chunks into VectorRAG for "
             f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
@@ -1147,7 +1161,7 @@ async def delete_tenant_data(project_id: str, scope: str = "") -> str:
 
 
 @mcp.tool()
-async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
+async def get_tenant_stats(project_id: str, scope: str = "") -> str | dict[str, int]:
     """Get statistics for a project (and optionally a specific scope).
 
     Returns document counts from both GraphRAG and VectorRAG backends,
@@ -1165,9 +1179,10 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> dict[str, int]:
         - ``graph_entity_nodes``: LLM-extracted entity nodes (no content_hash)
         - ``vector_docs``: Qdrant points
         - ``total_docs``: graph_nodes_total + vector_docs
+        Or an error string on invalid input.
     """
     if not project_id or not project_id.strip():
-        raise ValueError("project_id must not be empty")
+        return "Error: project_id must not be empty"
 
     logger.info(f"Getting stats: project_id={project_id!r} scope={scope!r}")
 

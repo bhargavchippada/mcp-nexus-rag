@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.2
+**Version:** v3.3
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 379 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 387 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -565,6 +565,12 @@ Use the automation script to start all services after a reboot:
 ---
 
 ## Recent Updates
+
+### v3.3 (2026-03-03) — Bug Fixes: Chunked Ingest All-Fail + get_tenant_stats
+
+- 🐛 **BUGFIX**: `ingest_graph_document` / `ingest_vector_document` — chunked ingest returned `"Successfully ingested 0 chunks (errors=N)"` when ALL chunks failed; watcher incorrectly logged "synced" because `"Error" not in result` was True; now returns `"Error: All N chunks failed..."` (`tools.py` v4.1, **regression: 5 new tests**)
+- 🐛 **BUGFIX**: `get_tenant_stats` raised `ValueError` on empty `project_id` — inconsistent with all other tools that return `"Error: ..."` strings; changed to return error string, updated type annotation to `str | dict[str, int]` (`tools.py` v4.1, **regression: 3 new tests**)
+- ✅ **Tests**: 387 tests passing (+8 regression tests), lint clean (ruff)
 
 ### v3.2 (2026-03-03) — Deep Code Review Loops 10–12: 3 Bugs Fixed
 

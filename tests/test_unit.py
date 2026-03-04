@@ -1,4 +1,4 @@
-# Version: v3.0
+# Version: v3.1
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -3026,3 +3026,152 @@ class TestInvalidateCacheFullProject:
         mock_redis.scan_iter.assert_called_once_with(
             match="nexus:idx:MY_PROJECT:*", count=100
         )
+
+
+# ---------------------------------------------------------------------------
+# Bug fixes: chunked ingest all-fail returns "Error:", get_tenant_stats
+# ---------------------------------------------------------------------------
+
+
+class TestChunkedIngestAllFail:
+    """Regression tests for bug fix: chunked ingest returns 'Error:' when
+    ALL chunks fail so that watcher correctly detects failure via
+    'Error' not in result check."""
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"])
+    @patch("nexus.tools.content_hash", return_value="HASH")
+    @patch("nexus.tools.cache_module.invalidate_cache")
+    async def test_graph_all_chunks_fail_returns_error_string(
+        self, mock_cache, _mock_hash, _mock_chunk, _mock_needs
+    ):
+        """ingest_graph_document: all chunks fail → 'Error:' in result (not 'Successfully')."""
+        mock_index = MagicMock()
+        mock_index.insert.side_effect = RuntimeError("DB unavailable")
+
+        with (
+            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_graph_index", return_value=mock_index),
+        ):
+            result = await nexus_tools.ingest_graph_document(
+                "big text", "PROJ", "SCOPE"
+            )
+
+        assert "Error" in result
+        assert "Successfully" not in result
+        mock_cache.assert_not_called()  # No cache invalidation when nothing ingested
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"])
+    @patch("nexus.tools.content_hash", return_value="HASH")
+    @patch("nexus.tools.cache_module.invalidate_cache")
+    async def test_vector_all_chunks_fail_returns_error_string(
+        self, mock_cache, _mock_hash, _mock_chunk, _mock_needs
+    ):
+        """ingest_vector_document: all chunks fail → 'Error:' in result (not 'Successfully')."""
+        mock_index = MagicMock()
+        mock_index.insert.side_effect = RuntimeError("DB unavailable")
+
+        with (
+            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_vector_index", return_value=mock_index),
+        ):
+            result = await nexus_tools.ingest_vector_document(
+                "big text", "PROJ", "SCOPE"
+            )
+
+        assert "Error" in result
+        assert "Successfully" not in result
+        mock_cache.assert_not_called()
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"])
+    @patch("nexus.tools.content_hash", return_value="HASH")
+    @patch("nexus.tools.cache_module.invalidate_cache")
+    async def test_graph_partial_fail_still_returns_successfully(
+        self, mock_cache, _mock_hash, _mock_chunk, _mock_needs
+    ):
+        """ingest_graph_document: partial failure (some ok) still returns 'Successfully'."""
+        mock_index = MagicMock()
+        call_count = {"n": 0}
+
+        def insert_side_effect(doc):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("first chunk fails")
+
+        mock_index.insert.side_effect = insert_side_effect
+
+        with (
+            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch("nexus.tools.get_graph_index", return_value=mock_index),
+        ):
+            result = await nexus_tools.ingest_graph_document(
+                "big text", "PROJ", "SCOPE"
+            )
+
+        assert "Successfully" in result
+        mock_cache.assert_called_once_with("PROJ", "SCOPE")
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"])
+    @patch("nexus.tools.content_hash", return_value="HASH")
+    async def test_graph_all_chunks_skipped_no_error(
+        self, _mock_hash, _mock_chunk, _mock_needs
+    ):
+        """ingest_graph_document: all chunks already ingested (skipped) → 'Successfully 0'
+        with no errors — not an error condition, content was already there."""
+        with patch.object(neo4j_backend, "is_duplicate", return_value=True):
+            result = await nexus_tools.ingest_graph_document(
+                "big text", "PROJ", "SCOPE"
+            )
+
+        assert "Error" not in result
+        assert "skipped=2" in result
+
+    @patch("nexus.tools.needs_chunking", return_value=True)
+    @patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"])
+    @patch("nexus.tools.content_hash", return_value="HASH")
+    async def test_vector_all_chunks_skipped_no_error(
+        self, _mock_hash, _mock_chunk, _mock_needs
+    ):
+        """ingest_vector_document: all chunks already ingested (skipped) → no error."""
+        with patch.object(qdrant_backend, "is_duplicate", return_value=True):
+            result = await nexus_tools.ingest_vector_document(
+                "big text", "PROJ", "SCOPE"
+            )
+
+        assert "Error" not in result
+        assert "skipped=2" in result
+
+
+class TestGetTenantStatsValidation:
+    """Regression tests for bug fix: get_tenant_stats returns 'Error:' string
+    on empty project_id (instead of raising ValueError)."""
+
+    async def test_empty_project_id_returns_error_string(self):
+        """Empty project_id must return 'Error:' string, not raise ValueError."""
+        result = await nexus_tools.get_tenant_stats("")
+        assert isinstance(result, str)
+        assert "Error" in result
+
+    async def test_whitespace_project_id_returns_error_string(self):
+        """Whitespace-only project_id must return 'Error:' string, not raise."""
+        result = await nexus_tools.get_tenant_stats("   ")
+        assert isinstance(result, str)
+        assert "Error" in result
+
+    async def test_valid_project_id_returns_dict(self):
+        """Valid project_id must return a dict with expected keys."""
+        with (
+            patch.object(neo4j_backend, "get_document_count", return_value=5),
+            patch.object(neo4j_backend, "get_chunk_node_count", return_value=3),
+            patch.object(neo4j_backend, "get_entity_node_count", return_value=2),
+            patch.object(qdrant_backend, "get_document_count", return_value=4),
+        ):
+            result = await nexus_tools.get_tenant_stats("PROJ")
+
+        assert isinstance(result, dict)
+        assert result["graph_nodes_total"] == 5
+        assert result["vector_docs"] == 4
+        assert result["total_docs"] == 9

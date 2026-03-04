@@ -1,4 +1,4 @@
-# Version: v2.0
+# Version: v2.1
 """
 Unit tests for new v1.9 features: batch ingestion and tenant statistics.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -54,11 +54,10 @@ class TestGetTenantStats:
                         assert result["total_docs"] == 25
 
     async def test_rejects_empty_project_id(self):
-        """Verify empty project_id raises ValueError."""
-        import pytest
-
-        with pytest.raises(ValueError, match="project_id must not be empty"):
-            await nexus_tools.get_tenant_stats("")
+        """Verify empty project_id returns an error string (not raises ValueError)."""
+        result = await nexus_tools.get_tenant_stats("")
+        assert isinstance(result, str)
+        assert "Error" in result
 
     async def test_handles_backend_zeros(self):
         """Verify zero counts are returned correctly."""
