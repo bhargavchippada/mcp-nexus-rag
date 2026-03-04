@@ -1,0 +1,15 @@
+# Version: v1.0
+.git
+.gitignore
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+artifacts
+tests
+*.pyc
+*.pyo
+*.pyd
+*.log
