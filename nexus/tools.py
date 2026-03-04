@@ -1,4 +1,4 @@
-# Version: v4.8
+# Version: v4.9
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -153,13 +153,26 @@ def _make_metadata(
         Metadata dict with created_at timestamp.
     """
     now = _utc_now_iso()
+    normalized_path = file_path
+    if file_path:
+        try:
+            p = Path(file_path)
+            if p.is_absolute():
+                workspace_root = Path(
+                    os.environ.get("WORKSPACE_ROOT", "/home/turiya/antigravity")
+                )
+                normalized_path = str(p.relative_to(workspace_root))
+        except Exception:
+            # Keep original value on any normalization failure.
+            normalized_path = file_path
+
     return {
         "project_id": project_id,
         "tenant_scope": scope,
         "scope": scope,  # Duplicate for Qdrant compatibility
         "source": source,
         "content_hash": content_hash,
-        "file_path": file_path,
+        "file_path": normalized_path,
         "created_at": now,
         "updated_at": now,
     }
@@ -841,12 +854,22 @@ async def ingest_document(
         Combined status string: "Graph: <result>. Vector: <result>"
     """
     # Resolve content — file_path takes priority; warn if caller passes both
+    effective_file_path = file_path
     if file_path:
         if text:
             logger.warning(
                 "ingest_document: both 'text' and 'file_path' provided — "
                 "file_path takes priority, 'text' is ignored"
             )
+        try:
+            path_obj = Path(file_path)
+            if path_obj.is_absolute():
+                workspace_root = Path(
+                    os.environ.get("WORKSPACE_ROOT", "/home/turiya/antigravity")
+                )
+                effective_file_path = str(path_obj.relative_to(workspace_root))
+        except Exception:
+            effective_file_path = file_path
         try:
             with open(file_path, "r", encoding="utf-8") as fh:
                 content = fh.read()
@@ -859,7 +882,7 @@ async def ingest_document(
             return f"Error: Failed to read '{file_path}'. Check server logs."
         effective_text = content
         effective_source = (
-            source_identifier if source_identifier != "manual" else file_path
+            source_identifier if source_identifier != "manual" else effective_file_path
         )
     elif text:
         effective_text = text
@@ -873,7 +896,7 @@ async def ingest_document(
         scope=scope,
         source_identifier=effective_source,
         auto_chunk=auto_chunk,
-        file_path=file_path,
+        file_path=effective_file_path,
     )
     vector_result = await ingest_vector_document(
         text=effective_text,
@@ -881,7 +904,7 @@ async def ingest_document(
         scope=scope,
         source_identifier=effective_source,
         auto_chunk=auto_chunk,
-        file_path=file_path,
+        file_path=effective_file_path,
     )
     return f"Graph: {graph_result}. Vector: {vector_result}"
 

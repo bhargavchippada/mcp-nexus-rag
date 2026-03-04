@@ -1,4 +1,4 @@
-# Version: v3.7
+# Version: v3.8
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -6,6 +6,7 @@ asyncio_mode=auto (set in pyproject.toml) removes the need for @pytest.mark.asyn
 """
 
 import threading
+from pathlib import Path
 import pytest
 import redis
 import httpx
@@ -3594,6 +3595,29 @@ class TestIngestDocument:
         assert graph_kwargs["text"] == "file content here"
         mock_vector.assert_awaited_once()
         assert "g" in result and "v" in result
+
+    async def test_file_path_under_workspace_is_normalized_relative(self):
+        """Absolute workspace file paths should be normalized to relative metadata."""
+        workspace_file = Path("/home/turiya/antigravity/projects/mcp-nexus-rag/TODO.md")
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="g",
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="v",
+            ),
+        ):
+            await nexus_tools.ingest_document(
+                project_id="PROJ", scope="CORE_CODE", file_path=str(workspace_file)
+            )
+        _, graph_kwargs = mock_graph.call_args
+        assert graph_kwargs["file_path"] == "projects/mcp-nexus-rag/TODO.md"
 
     async def test_file_path_overrides_source_identifier(self, tmp_path):
         """When file_path given and source_identifier is default 'manual', use file_path as source."""

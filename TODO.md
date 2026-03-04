@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v3.7
+**Version:** v3.8
 
 ## Pending
 
@@ -54,6 +54,9 @@
 > **Summary:** 22 deep code review rounds completed. 26 bugs fixed, ~23 regression tests added (413→432 total currently passing). All findings documented in `MEMORY.md` Lessons Learned section with root causes and prevention guidelines.
 
 **Highlights:**
+- Follow-up verification run (2026-03-04): fixed absolute-path metadata leak in `ingest_document` and narrowed `safe_cleanup.py` dedup scope to `:Chunk` nodes only
+  - Verified by full tests + manual watcher/db probes
+  - Integrity report: duplicate groups `0`, unscoped chunks `0`, absolute paths `0`
 - Inspection run (2026-03-04): database/watcher/code-graph audit completed
   - Detected duplicate hash groups in both Neo4j and Qdrant
   - Detected 52 unscoped Neo4j chunk nodes

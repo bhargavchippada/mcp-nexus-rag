@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.7
+**Version:** v1.8
 
 ## Services — Full Startup
 
@@ -189,6 +189,20 @@ poetry run python -c "from nexus.reranker import get_reranker; r = get_reranker(
 cd ~/antigravity/projects/mcp-nexus-rag
 PYTHONPATH=. poetry run python scripts/safe_cleanup.py
 PYTHONPATH=. poetry run python scripts/safe_cleanup.py --apply
+
+# Manual ingest path-normalization probe (absolute path -> relative metadata)
+PYTHONPATH=. poetry run python - <<'PY'
+import asyncio
+from nexus.tools import ingest_document
+async def main():
+    print(await ingest_document(
+        project_id='MCP_NEXUS_RAG',
+        scope='USER_SESSIONS',
+        file_path='/home/turiya/antigravity/projects/mcp-nexus-rag/TODO.md',
+        source_identifier='manual-probe'
+    ))
+asyncio.run(main())
+PY
 ```
 
 ## Watcher (Code-Graph-RAG)

@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.8
+**Version:** v5.9
 
 ## Known Issues
 
@@ -17,6 +17,26 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-04] Follow-up Verification Round: E2E + Manual Watcher Validation (FIXED)
+
+**Bug F1: `ingest_document` leaked absolute file paths into metadata**
+- `ingest_document(file_path='/home/turiya/antigravity/...')` passed the absolute path through to graph/vector ingestion.
+- This could reintroduce mixed path formats despite watcher/sync canonicalization.
+- **Fix:** normalize workspace-absolute paths to workspace-relative in `ingest_document` before forwarding to backends.
+
+**Bug F2: `safe_cleanup.py` Neo4j dedup query was over-broad**
+- Duplicate detection matched all nodes with `(project_id, tenant_scope, content_hash)`, including non-Chunk graph nodes.
+- This reported false positives and risked over-deletion.
+- **Fix:** restrict Neo4j dedup query and delete to `:Chunk` nodes only.
+
+**Verification (automated + manual):**
+- Full unit suite: `437 passed, 13 deselected`
+- Integration suite: `13 passed`
+- Manual watcher probes:
+  - Core-doc change sync completed without integrity drift
+  - Absolute path ingest probe no longer creates absolute metadata paths
+  - Post-check integrity: duplicate groups `0`, unscoped chunks `0`, absolute paths `0`
 
 ### [2026-03-04] Integrity + Watcher Root-Cause Fixes (FIXED)
 

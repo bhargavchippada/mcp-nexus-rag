@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.9
+**Version:** v4.0
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 432 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 437 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -148,6 +148,8 @@ Models auto-pulled by `ollama-init` on first start:
 - `file_path` metadata normalization completed in both stores (absolute `/home/turiya/antigravity/...` paths converted to workspace-relative).
 - `nexus.watcher` daemon startup hardened via `start-services.sh` process-stability checks.
 - Code-Graph-RAG ignore filters hardened (`.playwright-mcp/*.log`, `.coverage`, transient `sed*`) and stale Memgraph file nodes purged after clean re-index.
+- Follow-up hardening: `ingest_document` now normalizes workspace-absolute `file_path` inputs to relative metadata before graph/vector ingest.
+- Follow-up hardening: `scripts/safe_cleanup.py` now deduplicates Neo4j `:Chunk` nodes only (avoids false-positive dedup against non-chunk graph nodes).
 
 ```bash
 # Integrity audit / cleanup (dry-run first, then apply)

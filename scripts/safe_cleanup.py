@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Version: v1.2
+# Version: v1.3
 """Safe integrity cleanup for Nexus RAG + Code-Graph-RAG backends.
 
 Default mode is dry-run. Use --apply to perform deletions.
@@ -68,7 +68,7 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
     with driver.session() as s:
         dup = s.run(
             """
-            MATCH (n)
+            MATCH (n:Chunk)
             WHERE n.project_id IS NOT NULL AND n.tenant_scope IS NOT NULL AND n.content_hash IS NOT NULL
             WITH n.project_id AS pid, n.tenant_scope AS scope, n.content_hash AS h, count(*) AS c
             WHERE c > 1
@@ -99,7 +99,7 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
         if apply:
             dedup_res = s.run(
                 """
-                MATCH (n)
+                MATCH (n:Chunk)
                 WHERE n.project_id IS NOT NULL AND n.tenant_scope IS NOT NULL AND n.content_hash IS NOT NULL
                 WITH n.project_id AS pid, n.tenant_scope AS scope, n.content_hash AS h, collect(n) AS nodes
                 WHERE size(nodes) > 1
