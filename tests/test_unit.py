@@ -1,4 +1,4 @@
-# Version: v3.2
+# Version: v3.3
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -3336,3 +3336,303 @@ class TestParseContextResultsNoContextGuard:
         results = _parse_context_results(ctx, "PROJ", "")
         assert len(results) == 1
         assert results[0]["text"] == "some content here"
+
+
+# ---------------------------------------------------------------------------
+# ingest_document — single-call convenience wrapper (graph + vector)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestDocument:
+    """ingest_document calls both ingest_graph_document and ingest_vector_document."""
+
+    async def test_text_calls_both_backends(self):
+        """text input → both graph and vector backends are called once each."""
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="ok-graph",
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="ok-vector",
+            ) as mock_vector,
+        ):
+            result = await nexus_tools.ingest_document(
+                project_id="PROJ", scope="ARCHITECTURE", text="some content"
+            )
+        mock_graph.assert_awaited_once()
+        mock_vector.assert_awaited_once()
+        assert "ok-graph" in result
+        assert "ok-vector" in result
+
+    async def test_file_path_reads_and_calls_both(self, tmp_path):
+        """file_path → file is read, then both backends are called with file content."""
+        f = tmp_path / "doc.md"
+        f.write_text("file content here")
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="g",
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="v",
+            ) as mock_vector,
+        ):
+            result = await nexus_tools.ingest_document(
+                project_id="PROJ", scope="ARCHITECTURE", file_path=str(f)
+            )
+        _, graph_kwargs = mock_graph.call_args
+        assert graph_kwargs["text"] == "file content here"
+        mock_vector.assert_awaited_once()
+        assert "g" in result and "v" in result
+
+    async def test_file_path_overrides_source_identifier(self, tmp_path):
+        """When file_path given and source_identifier is default 'manual', use file_path as source."""
+        f = tmp_path / "note.txt"
+        f.write_text("content")
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="g",
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="v",
+            ),
+        ):
+            await nexus_tools.ingest_document(
+                project_id="PROJ", scope="CORE_CODE", file_path=str(f)
+            )
+        _, graph_kwargs = mock_graph.call_args
+        assert graph_kwargs["source_identifier"] == str(f)
+
+    async def test_custom_source_identifier_preserved(self, tmp_path):
+        """A non-default source_identifier must be kept even when file_path is given."""
+        f = tmp_path / "note.txt"
+        f.write_text("content")
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="g",
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="v",
+            ),
+        ):
+            await nexus_tools.ingest_document(
+                project_id="PROJ",
+                scope="CORE_CODE",
+                file_path=str(f),
+                source_identifier="custom",
+            )
+        _, graph_kwargs = mock_graph.call_args
+        assert graph_kwargs["source_identifier"] == "custom"
+
+    async def test_neither_text_nor_file_path_returns_error(self):
+        """Providing neither text nor file_path must return an error string."""
+        result = await nexus_tools.ingest_document(
+            project_id="PROJ", scope="ARCHITECTURE"
+        )
+        assert result.startswith("Error:")
+        assert "text" in result.lower() or "file_path" in result.lower()
+
+    async def test_file_not_found_returns_error(self):
+        """A non-existent file_path returns an error string without raising."""
+        result = await nexus_tools.ingest_document(
+            project_id="PROJ", scope="ARCHITECTURE", file_path="/nonexistent/file.md"
+        )
+        assert result.startswith("Error:")
+        assert "not found" in result.lower() or "/nonexistent/file.md" in result
+
+    async def test_permission_error_returns_error(self, tmp_path):
+        """PermissionError reading a file returns an error string without raising."""
+        f = tmp_path / "locked.txt"
+        f.write_text("secret")
+        with patch("builtins.open", side_effect=PermissionError("denied")):
+            result = await nexus_tools.ingest_document(
+                project_id="PROJ", scope="ARCHITECTURE", file_path=str(f)
+            )
+        assert result.startswith("Error:")
+        assert "permission" in result.lower()
+
+    async def test_graph_error_still_returns_both_results(self):
+        """If graph backend fails, the combined string still includes both partial results."""
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="Error: graph failed",
+            ),
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="ok-vector",
+            ),
+        ):
+            result = await nexus_tools.ingest_document(
+                project_id="PROJ", scope="ARCHITECTURE", text="content"
+            )
+        assert "Error: graph failed" in result
+        assert "ok-vector" in result
+
+
+# ---------------------------------------------------------------------------
+# ingest_document_batches — batch convenience wrapper (graph + vector)
+# ---------------------------------------------------------------------------
+
+
+class TestIngestDocumentBatches:
+    """ingest_document_batches resolves file_paths then calls both batch backends."""
+
+    async def test_calls_both_batch_backends(self):
+        """Both ingest_graph_documents_batch and ingest_vector_documents_batch are called."""
+        docs = [{"text": "doc A", "project_id": "P", "scope": "S"}]
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 1, "skipped": 0, "errors": 0, "chunks": 0},
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 1, "skipped": 0, "errors": 0, "chunks": 0},
+            ) as mock_vector,
+        ):
+            result = await nexus_tools.ingest_document_batches(docs)
+        mock_graph.assert_awaited_once()
+        mock_vector.assert_awaited_once()
+        assert result["file_read_errors"] == 0
+
+    async def test_file_path_docs_are_resolved(self, tmp_path):
+        """Docs with file_path have their text read before being passed to batch backends."""
+        f = tmp_path / "data.txt"
+        f.write_text("file data")
+        docs = [{"file_path": str(f), "project_id": "P", "scope": "S"}]
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 1, "skipped": 0, "errors": 0, "chunks": 0},
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 1, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+        ):
+            result = await nexus_tools.ingest_document_batches(docs)
+        passed_docs = mock_graph.call_args[0][0]
+        assert passed_docs[0]["text"] == "file data"
+        assert result["file_read_errors"] == 0
+
+    async def test_unreadable_file_increments_file_read_errors(self):
+        """A file_path that cannot be read increments file_read_errors and is omitted."""
+        docs = [{"file_path": "/no/such/file.txt", "project_id": "P", "scope": "S"}]
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+        ):
+            result = await nexus_tools.ingest_document_batches(docs)
+        assert result["file_read_errors"] == 1
+        # The bad doc must NOT be forwarded to the batch backends
+        passed_docs = mock_graph.call_args[0][0]
+        assert passed_docs == []
+
+    async def test_empty_text_and_no_file_path_increments_errors(self):
+        """A doc with neither text nor file_path increments file_read_errors."""
+        docs = [{"project_id": "P", "scope": "S"}]
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+        ):
+            result = await nexus_tools.ingest_document_batches(docs)
+        assert result["file_read_errors"] == 1
+
+    async def test_returns_graph_and_vector_keys(self):
+        """Return dict contains 'graph', 'vector', and 'file_read_errors' keys."""
+        docs = [{"text": "x", "project_id": "P", "scope": "S"}]
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 1, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 1, "skipped": 0, "errors": 0, "chunks": 0},
+            ),
+        ):
+            result = await nexus_tools.ingest_document_batches(docs)
+        assert "graph" in result
+        assert "vector" in result
+        assert "file_read_errors" in result
+
+    async def test_empty_documents_list(self):
+        """Empty input → both batch backends called with empty list, no errors."""
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_documents_batch",
+                new_callable=AsyncMock,
+                return_value={"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0},
+            ) as mock_vector,
+        ):
+            result = await nexus_tools.ingest_document_batches([])
+        mock_graph.assert_awaited_once_with([], skip_duplicates=True, auto_chunk=True)
+        mock_vector.assert_awaited_once_with([], skip_duplicates=True, auto_chunk=True)
+        assert result["file_read_errors"] == 0

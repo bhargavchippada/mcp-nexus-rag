@@ -1,4 +1,4 @@
-# Version: v4.2
+# Version: v4.3
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -707,6 +707,134 @@ async def ingest_vector_documents_batch(
         "errors": errors,
         "chunks": chunks_created,
     }
+
+
+@mcp.tool()
+async def ingest_document(
+    project_id: str,
+    scope: str,
+    text: str = "",
+    file_path: str = "",
+    source_identifier: str = "manual",
+    auto_chunk: bool = True,
+) -> str:
+    """Ingest into both graph AND vector databases in one call.
+
+    Accepts either text content or a file path (reads automatically).
+    Replaces the manual double-call of ingest_graph_document + ingest_vector_document.
+
+    Args:
+        project_id: Tenant project ID (e.g., 'ANTIGRAVITY', 'MCP_NEXUS_RAG').
+        scope: Tenant scope (e.g., 'ARCHITECTURE', 'CORE_CODE', 'USER_SESSIONS').
+        text: Document content. Mutually exclusive with file_path.
+        file_path: Absolute path to a file to read. Mutually exclusive with text.
+            When provided, the file contents are read and used as the document text.
+            source_identifier defaults to the file_path value if not overridden.
+        source_identifier: Source label stored as metadata (default: 'manual').
+        auto_chunk: If True (default), automatically chunks large documents.
+
+    Returns:
+        Combined status string: "Graph: <result>. Vector: <result>"
+    """
+    # Resolve content
+    if file_path:
+        try:
+            with open(file_path, "r", encoding="utf-8") as fh:
+                content = fh.read()
+        except FileNotFoundError:
+            return f"Error: File not found: '{file_path}'."
+        except PermissionError:
+            return f"Error: Permission denied reading: '{file_path}'."
+        except Exception:
+            logger.exception("ingest_document: failed to read %s", file_path)
+            return f"Error: Failed to read '{file_path}'. Check server logs."
+        effective_text = content
+        effective_source = (
+            source_identifier if source_identifier != "manual" else file_path
+        )
+    elif text:
+        effective_text = text
+        effective_source = source_identifier
+    else:
+        return "Error: Either 'text' or 'file_path' must be provided."
+
+    graph_result = await ingest_graph_document(
+        text=effective_text,
+        project_id=project_id,
+        scope=scope,
+        source_identifier=effective_source,
+        auto_chunk=auto_chunk,
+        file_path=file_path,
+    )
+    vector_result = await ingest_vector_document(
+        text=effective_text,
+        project_id=project_id,
+        scope=scope,
+        source_identifier=effective_source,
+        auto_chunk=auto_chunk,
+        file_path=file_path,
+    )
+    return f"Graph: {graph_result}. Vector: {vector_result}"
+
+
+@mcp.tool()
+async def ingest_document_batches(
+    documents: list[dict[str, str]],
+    skip_duplicates: bool = True,
+    auto_chunk: bool = True,
+) -> dict:
+    """Batch-ingest into both graph AND vector databases.
+
+    Each document dict requires 'project_id', 'scope', and one of 'text'/'file_path'.
+    Optional key: 'source_identifier'.
+
+    File paths are read from disk automatically before batching. Unreadable files
+    increment the 'file_read_errors' counter and are omitted from ingestion.
+
+    Args:
+        documents: List of dicts, each with:
+            - project_id: Tenant project ID (required)
+            - scope: Tenant scope (required)
+            - text: Document content (required unless file_path is given)
+            - file_path: Path to file to read (used when text is absent)
+            - source_identifier: Optional label (defaults to file_path when reading a file)
+        skip_duplicates: If True (default), skips documents already ingested.
+        auto_chunk: If True (default), automatically chunks large documents.
+
+    Returns:
+        {"graph": {ingested, skipped, errors, chunks}, "vector": {...}, "file_read_errors": N}
+    """
+    resolved: list[dict] = []
+    file_read_errors = 0
+    for doc in documents:
+        fp = doc.get("file_path", "")
+        txt = doc.get("text", "")
+        if fp and not txt:
+            try:
+                with open(fp, "r", encoding="utf-8") as fh:
+                    txt = fh.read()
+                resolved.append(
+                    {
+                        **doc,
+                        "text": txt,
+                        "source_identifier": doc.get("source_identifier", fp),
+                    }
+                )
+            except Exception:
+                logger.exception("ingest_document_batches: failed to read %s", fp)
+                file_read_errors += 1
+        elif txt:
+            resolved.append(doc)
+        else:
+            file_read_errors += 1
+
+    graph = await ingest_graph_documents_batch(
+        resolved, skip_duplicates=skip_duplicates, auto_chunk=auto_chunk
+    )
+    vector = await ingest_vector_documents_batch(
+        resolved, skip_duplicates=skip_duplicates, auto_chunk=auto_chunk
+    )
+    return {"graph": graph, "vector": vector, "file_read_errors": file_read_errors}
 
 
 @mcp.tool()

@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.0
 # ruff: noqa: E402
 """
 Nexus RAG MCP Server — entry point.
@@ -24,9 +24,13 @@ from nexus.config import mcp, logger, validate_config
 # ---------------------------------------------------------------------------
 from nexus.tools import (  # noqa: F401
     ingest_graph_document,
+    ingest_graph_documents_batch,
     get_graph_context,
     ingest_vector_document,
+    ingest_vector_documents_batch,
     get_vector_context,
+    ingest_document,
+    ingest_document_batches,
     health_check,
     get_all_project_ids,
     get_all_tenant_scopes,
