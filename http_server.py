@@ -1,4 +1,4 @@
-# Version: v1.8
+# Version: v1.9
 """
 HTTP API server for Nexus RAG.
 
@@ -177,7 +177,10 @@ def _parse_context_results(context_str: str, default_project: str, default_scope
     Content without score prefix is appended to the previous result.
     """
     results = []
-    if "No " in context_str and "context found" in context_str:
+    # Guard against "No Vector/Graph context found for ..." response strings.
+    # Use startswith to avoid false-positive matches when retrieved document
+    # content itself contains the phrase "No ... context found".
+    if context_str.startswith("No ") and "context found" in context_str:
         return results
 
     # Pattern to match: - [score: X.XXXX] content (including negative scores)

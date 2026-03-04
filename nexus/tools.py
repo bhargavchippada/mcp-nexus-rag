@@ -1,4 +1,4 @@
-# Version: v4.1
+# Version: v4.2
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -1118,8 +1118,8 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
         return sorted(set(graph_scopes) | vector_scopes)
     else:
         graph_scopes = neo4j_backend.get_distinct_metadata("tenant_scope")
-        vector_scopes2 = qdrant_backend.get_distinct_metadata("tenant_scope")
-        return sorted(set(graph_scopes) | set(vector_scopes2))
+        vector_scopes = qdrant_backend.get_distinct_metadata("tenant_scope")
+        return sorted(set(graph_scopes) | set(vector_scopes))
 
 
 @mcp.tool()
@@ -1457,7 +1457,7 @@ async def ingest_project_directory(
                     content = f.read()
 
                 # Ingest into GraphRAG
-                await ingest_graph_document(
+                graph_result = await ingest_graph_document(
                     text=content,
                     project_id=project_id,
                     scope=scope,
@@ -1467,7 +1467,7 @@ async def ingest_project_directory(
                 )
 
                 # Ingest into VectorRAG
-                await ingest_vector_document(
+                vector_result = await ingest_vector_document(
                     text=content,
                     project_id=project_id,
                     scope=scope,
@@ -1475,7 +1475,15 @@ async def ingest_project_directory(
                     auto_chunk=auto_chunk,
                     file_path=rel_path,
                 )
-                count += 1
+
+                # Only count as success if neither ingest returned an error
+                if "Error" not in graph_result and "Error" not in vector_result:
+                    count += 1
+                else:
+                    errors.append(
+                        f"{rel_path}: graph={graph_result[:80]!r}, "
+                        f"vector={vector_result[:80]!r}"
+                    )
             except Exception as e:
                 errors.append(f"{rel_path}: {e}")
 
@@ -1681,8 +1689,9 @@ async def invalidate_project_cache(project_id: str, scope: str = "") -> str:
 
     Args:
         project_id: Tenant project ID. Must not be empty.
-        scope: Optional tenant scope. If empty, invalidates cached cross-scope
-            (all-scopes) queries. If provided, also invalidates cross-scope queries
+        scope: Optional tenant scope. If empty, invalidates ALL cached queries
+            for the project (both per-scope and cross-scope queries). If provided,
+            invalidates cache for that specific scope plus cross-scope queries,
             since scoped additions make them stale.
 
     Returns:

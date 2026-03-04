@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.3
+**Version:** v3.4
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 387 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 394 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -565,6 +565,14 @@ Use the automation script to start all services after a reboot:
 ---
 
 ## Recent Updates
+
+### v3.4 (2026-03-03) — Code Review Round 19: 3 Bugs Fixed
+
+- 🐛 **BUGFIX**: `ingest_project_directory` — `count` incremented unconditionally even when both `ingest_graph_document` and `ingest_vector_document` returned `"Error: ..."` strings; misleading "Successfully ingested N files" on total ingest failure; now captures results and only counts on non-error (`tools.py` v4.2, **regression: 4 new tests**)
+- 🐛 **BUGFIX**: `_parse_context_results` in `http_server.py` — "no results" guard used `"No " in ctx` (substring anywhere); real retrieved content containing "No" and "context found" would silently return empty results; fixed with `ctx.startswith("No ")` (`http_server.py` v1.9, **regression: 3 new tests**)
+- 🔧 **CLEANUP**: `get_all_tenant_scopes` — renamed stale `vector_scopes2` variable to `vector_scopes` in else-branch (`tools.py` v4.2)
+- 📝 **DOCS**: `invalidate_project_cache` docstring corrected — empty scope invalidates ALL project cache entries (not just cross-scope queries); `check_file_changed` comment clarified to match actual `not (A and B)` semantics
+- ✅ **Tests**: 394 tests passing (+7 regression tests), lint clean (ruff)
 
 ### v3.3 (2026-03-03) — Bug Fixes: Chunked Ingest All-Fail + get_tenant_stats
 

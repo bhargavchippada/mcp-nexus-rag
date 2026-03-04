@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v3.0
+**Version:** v3.1
 
 ## Pending
 
@@ -37,6 +37,13 @@
 - [ ] [LOW] Cache hit rate monitoring — track cache hits/misses in Redis (e.g., counter key)
 
 ---
+
+## Completed (archived — 2026-03-03, round 19)
+
+- [x] Code review round 19: 3 bugs fixed, 7 regression tests (387→394 total), ruff clean
+  - R19-1: `ingest_project_directory` count incremented on ingest error (tools.py v4.2)
+  - R19-2: `_parse_context_results` over-broad "no results" guard (http_server.py v1.9)
+  - R19-3: `get_all_tenant_scopes` stale `vector_scopes2` variable name (tools.py v4.2)
 
 ## Completed (archived — 2026-03-03, loops 16–18)
 

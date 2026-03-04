@@ -1,4 +1,4 @@
-# Version: v3.1
+# Version: v3.2
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -3175,3 +3175,164 @@ class TestGetTenantStatsValidation:
         assert result["graph_nodes_total"] == 5
         assert result["vector_docs"] == 4
         assert result["total_docs"] == 9
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: ingest_project_directory counts only truly successful ingests
+# ---------------------------------------------------------------------------
+
+
+class TestIngestProjectDirectorySuccessCount:
+    """Regression tests for Bug #1: count was incremented even when ingest returned Error.
+
+    Fix (tools.py v4.2): count only incremented when neither ingest_graph_document
+    nor ingest_vector_document returns an "Error" string.
+    """
+
+    async def test_both_ingests_error_not_counted(self, tmp_path, monkeypatch):
+        """If both graph and vector ingests fail, count must remain 0."""
+        (tmp_path / "test.py").write_text("x = 1")
+
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_graph_document",
+            AsyncMock(return_value="Error: Graph ingestion failed."),
+        )
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_vector_document",
+            AsyncMock(return_value="Error: Vector ingestion failed."),
+        )
+
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+        )
+
+        assert "0 files" in result
+        assert "Errors" in result
+
+    async def test_graph_error_not_counted(self, tmp_path, monkeypatch):
+        """If only graph ingest fails, count must remain 0 and error recorded."""
+        (tmp_path / "test.py").write_text("x = 1")
+
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_graph_document",
+            AsyncMock(return_value="Error: Graph ingestion failed."),
+        )
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_vector_document",
+            AsyncMock(return_value="Successfully ingested Vector document for 'PROJ'"),
+        )
+
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+        )
+
+        assert "0 files" in result
+        assert "Errors" in result
+
+    async def test_both_ingests_success_counted(self, tmp_path, monkeypatch):
+        """If both ingests succeed, count must be incremented."""
+        (tmp_path / "test.py").write_text("x = 1")
+
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_graph_document",
+            AsyncMock(return_value="Successfully ingested Graph document for 'PROJ'"),
+        )
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_vector_document",
+            AsyncMock(return_value="Successfully ingested Vector document for 'PROJ'"),
+        )
+
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+        )
+
+        assert "1 files" in result
+        assert "Errors" not in result
+
+    async def test_skipped_duplicate_still_counted(self, tmp_path, monkeypatch):
+        """'Skipped: duplicate' is not an error — must be counted as success."""
+        (tmp_path / "test.py").write_text("x = 1")
+
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_graph_document",
+            AsyncMock(
+                return_value="Skipped: duplicate content already exists in GraphRAG"
+            ),
+        )
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_vector_document",
+            AsyncMock(
+                return_value="Skipped: duplicate content already exists in VectorRAG"
+            ),
+        )
+
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+        )
+
+        assert "1 files" in result
+        assert "Errors" not in result
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: _parse_context_results "no context" guard uses startswith
+# ---------------------------------------------------------------------------
+
+
+class TestParseContextResultsNoContextGuard:
+    """Regression tests for Bug #3 in http_server._parse_context_results.
+
+    Old guard: "No " in ctx and "context found" in ctx  (substring anywhere)
+    New guard: ctx.startswith("No ") and "context found" in ctx  (anchored to start)
+
+    The old guard caused false-positives when retrieved document content itself
+    contained "No " and "context found" anywhere in the text.
+    """
+
+    def test_actual_no_context_string_returns_empty(self):
+        from http_server import _parse_context_results
+
+        no_ctx = (
+            "No Vector context found for PROJ in scope SCOPE for query: 'what is x'"
+        )
+        assert _parse_context_results(no_ctx, "PROJ", "SCOPE") == []
+
+    def test_content_containing_no_context_phrase_not_filtered(self):
+        """Content mentioning 'No context found' in a scored passage must not be suppressed."""
+        from http_server import _parse_context_results
+
+        real_ctx = (
+            "Vector Context retrieved for PROJ in scope SCOPE:\n"
+            "- [score: 0.9500] No context found in the old system before migration.\n"
+        )
+        results = _parse_context_results(real_ctx, "PROJ", "SCOPE")
+        assert len(results) == 1
+        assert "No context found" in results[0]["text"]
+
+    def test_header_line_does_not_produce_a_result(self):
+        """The 'Vector Context retrieved for ...' header must not become a result."""
+        from http_server import _parse_context_results
+
+        ctx = (
+            "Vector Context retrieved for PROJ in scope all scopes:\n"
+            "- [score: 0.8000] some content here\n"
+        )
+        results = _parse_context_results(ctx, "PROJ", "")
+        assert len(results) == 1
+        assert results[0]["text"] == "some content here"

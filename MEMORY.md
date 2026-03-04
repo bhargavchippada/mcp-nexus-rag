@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.1
+**Version:** v5.2
 
 ## Known Issues
 
@@ -17,6 +17,28 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Code Review Round 19: 3 Bugs Fixed (FIXED)
+
+**Bug R19-1: `ingest_project_directory` silent success on ingest failure (tools.py v4.2)**
+`count` was incremented unconditionally after calling `ingest_graph_document` and
+`ingest_vector_document` — even if both returned `"Error: ..."` strings. The result
+message claimed N files ingested when N files actually failed silently.
+**Fix:** Capture return values and only increment `count` when neither ingest contains
+`"Error"`. Failures are appended to the `errors` list instead.
+
+**Bug R19-2: `_parse_context_results` over-broad "no results" guard (http_server.py v1.9)**
+Guard was `"No " in context_str and "context found" in context_str` — substring match
+anywhere in the string. If retrieved document content contained those phrases, the
+function returned empty results for a real hit.
+**Fix:** Changed to `context_str.startswith("No ") and "context found" in context_str`.
+
+**Bug R19-3: `get_all_tenant_scopes` stale variable name (tools.py v4.2)**
+`vector_scopes2` renamed to `vector_scopes` for clarity.
+
+> **Guideline:** For directory-ingestion tools, always capture and validate the return
+> string before updating counters. Anchor sentinel-value checks to string start/end
+> rather than substring-matching when the sentinel and real content could overlap.
 
 ### [2026-03-03] project-check: .env not gitignored, .env.example missing (FIXED via project-check)
 

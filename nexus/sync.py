@@ -1,4 +1,4 @@
-# Version: v1.2
+# Version: v1.3
 """
 nexus.sync — File synchronization for core documentation.
 
@@ -195,7 +195,8 @@ def check_file_changed(filepath: Path, project_id: str, scope: str) -> bool:
     neo4j_dup = neo4j_backend.is_duplicate(chash, project_id, scope)
     qdrant_dup = qdrant_backend.is_duplicate(chash, project_id, scope)
 
-    # File changed if not in either store
+    # Re-ingest if content is absent from EITHER store — ensures both backends stay
+    # in sync (recovers from partial-failure ingests where only one store was written).
     return not (neo4j_dup and qdrant_dup)
 
 
