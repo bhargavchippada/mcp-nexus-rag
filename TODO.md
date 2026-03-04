@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v3.1
+**Version:** v3.2
 
 ## Pending
 
@@ -37,6 +37,12 @@
 - [ ] [LOW] Cache hit rate monitoring — track cache hits/misses in Redis (e.g., counter key)
 
 ---
+
+## Completed (archived — 2026-03-03, round 20)
+
+- [x] Code review round 20: 2 bugs fixed, 5 regression tests (408→413 total), ruff clean
+  - R20-1: `ingest_project_directory` empty string extension matched all files (tools.py v4.4)
+  - R20-2: `ingest_document` silently ignored `text` when `file_path` also given — now warns
 
 ## Completed (archived — 2026-03-03, round 19)
 

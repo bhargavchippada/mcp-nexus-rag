@@ -1,4 +1,4 @@
-# Version: v4.3
+# Version: v4.4
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -736,8 +736,13 @@ async def ingest_document(
     Returns:
         Combined status string: "Graph: <result>. Vector: <result>"
     """
-    # Resolve content
+    # Resolve content — file_path takes priority; warn if caller passes both
     if file_path:
+        if text:
+            logger.warning(
+                "ingest_document: both 'text' and 'file_path' provided — "
+                "file_path takes priority, 'text' is ignored"
+            )
         try:
             with open(file_path, "r", encoding="utf-8") as fh:
                 content = fh.read()
@@ -1544,6 +1549,23 @@ async def ingest_project_directory(
     """
     if include_extensions is None:
         include_extensions = DEFAULT_INCLUDE_EXTENSIONS.copy()
+
+    # Validate extensions: empty string matches every file (str.endswith("") is always True).
+    # Normalise so callers can pass "py" or ".py" interchangeably.
+    normalised_exts: list[str] = []
+    for ext in include_extensions:
+        ext = ext.strip()
+        if not ext:
+            logger.warning(
+                "ingest_project_directory: ignoring empty extension in include_extensions"
+            )
+            continue
+        if not ext.startswith("."):
+            ext = f".{ext}"
+        normalised_exts.append(ext)
+    if not normalised_exts:
+        return "Error: include_extensions contains no valid extensions after normalisation."
+    include_extensions = normalised_exts
 
     base_path = Path(directory_path)
     if not base_path.is_dir():

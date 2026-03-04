@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.4
+**Version:** v3.5
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 394 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 413 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -567,6 +567,17 @@ Use the automation script to start all services after a reboot:
 ## Recent Updates
 
 ### v3.4 (2026-03-03) — Code Review Round 19: 3 Bugs Fixed
+
+### v3.5 (2026-03-03) — Bug Fixes: Extension Validation + ingest_document + Convenience Wrappers
+
+- 🐛 **BUGFIX**: `ingest_project_directory` — `include_extensions` accepted empty strings (`""`) which always match (`str.endswith("")` is `True`) causing all files to be ingested; now validates + normalises extensions at entry, strips whitespace, auto-prefixes dot (`py` → `.py`), returns error on empty-after-normalisation (`tools.py` v4.4, **regression: 3 new tests**)
+- 🐛 **BUGFIX**: `ingest_document` — when both `text` and `file_path` were provided, `text` was silently discarded; now logs `WARNING` so callers detect the conflict (`tools.py` v4.4, **regression: 2 new tests**)
+- ✨ **FEATURE**: `ingest_document` — new convenience tool that writes to both graph + vector in one call; accepts `text` or `file_path` (reads from disk automatically); replaces manual double-call of `ingest_graph_document` + `ingest_vector_document` (`tools.py` v4.3, **8 new tests**)
+- ✨ **FEATURE**: `ingest_document_batches` — batch equivalent of `ingest_document`; resolves `file_path` per-doc before forwarding to both backends; reports `file_read_errors` separately (`tools.py` v4.3, **6 new tests**)
+- ✨ **FEATURE**: `server.py` — exports `ingest_document`, `ingest_document_batches`, `ingest_graph_documents_batch`, `ingest_vector_documents_batch` (previously missing) (`server.py` v2.0)
+- ✅ **Tests**: 413 tests passing (+19 regression+feature tests), lint clean (ruff)
+
+### v3.4 (2026-03-03) — Bug Fixes: ingest_project_directory Count + Context Parsing
 
 - 🐛 **BUGFIX**: `ingest_project_directory` — `count` incremented unconditionally even when both `ingest_graph_document` and `ingest_vector_document` returned `"Error: ..."` strings; misleading "Successfully ingested N files" on total ingest failure; now captures results and only counts on non-error (`tools.py` v4.2, **regression: 4 new tests**)
 - 🐛 **BUGFIX**: `_parse_context_results` in `http_server.py` — "no results" guard used `"No " in ctx` (substring anywhere); real retrieved content containing "No" and "context found" would silently return empty results; fixed with `ctx.startswith("No ")` (`http_server.py` v1.9, **regression: 3 new tests**)

@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.2
+**Version:** v5.3
 
 ## Known Issues
 
@@ -17,6 +17,25 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-03] Code Review Round 20: 2 Bugs Fixed + 5 Tests (FIXED)
+
+**Bug R20-1: `ingest_project_directory` empty extension matches all files (tools.py v4.4)**
+`str.endswith("")` is always `True` in Python. If a caller passed `include_extensions=[""]`
+or any list containing empty/whitespace strings, every file in the directory would be
+ingested regardless of extension.
+**Fix:** Normalise extensions at function entry: strip whitespace, skip empty entries, prefix
+with `.` if missing. Return early with error if the normalised list is empty.
+
+**Bug R20-2: `ingest_document` silently ignored `text` when `file_path` also given**
+Both parameters being provided was undocumented and produced silent data loss (the
+passed `text` was discarded). This was also an inconsistency with `ingest_document_batches`,
+which prioritises `text` when both are given.
+**Fix:** Log a `WARNING` when both are provided so callers detect the conflict immediately.
+`file_path` still takes priority (documented behavior preserved, now made explicit).
+
+> **Guideline:** Python's `str.endswith("")` always returns `True` — validate user-supplied
+> extension lists before use. Warn explicitly when a function has undocumented priority rules.
 
 ### [2026-03-03] Code Review Round 19: 3 Bugs Fixed (FIXED)
 

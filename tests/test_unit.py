@@ -1,4 +1,4 @@
-# Version: v3.3
+# Version: v3.4
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -3636,3 +3636,134 @@ class TestIngestDocumentBatches:
         mock_graph.assert_awaited_once_with([], skip_duplicates=True, auto_chunk=True)
         mock_vector.assert_awaited_once_with([], skip_duplicates=True, auto_chunk=True)
         assert result["file_read_errors"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Bug fixes: ingest_project_directory include_extensions validation
+# ---------------------------------------------------------------------------
+
+
+class TestIngestProjectDirectoryExtensionValidation:
+    """Bug fix: empty string in include_extensions matches all files (str.endswith('') is True).
+    Also verifies normalisation: 'py' → '.py'.
+    """
+
+    async def test_empty_extension_string_returns_error(self, tmp_path):
+        """An include_extensions list containing only empty strings must return an error."""
+        (tmp_path / "file.py").write_text("x = 1")
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+            include_extensions=[""],
+        )
+        assert result.startswith("Error:")
+        assert "no valid extensions" in result.lower()
+
+    async def test_extension_without_dot_normalised(self, tmp_path, monkeypatch):
+        """Extensions like 'py' (without leading dot) are normalised to '.py'."""
+        (tmp_path / "file.py").write_text("x = 1")
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_graph_document",
+            AsyncMock(return_value="Successfully ingested"),
+        )
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_vector_document",
+            AsyncMock(return_value="Successfully ingested"),
+        )
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+            include_extensions=["py"],
+        )
+        assert "1 files" in result
+
+    async def test_mixed_empty_and_valid_extensions(self, tmp_path, monkeypatch):
+        """Empty entries in include_extensions are silently dropped; valid ones kept."""
+        (tmp_path / "file.py").write_text("x = 1")
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_graph_document",
+            AsyncMock(return_value="Successfully ingested"),
+        )
+        monkeypatch.setattr(
+            nexus_tools,
+            "ingest_vector_document",
+            AsyncMock(return_value="Successfully ingested"),
+        )
+        result = await nexus_tools.ingest_project_directory(
+            directory_path=str(tmp_path),
+            project_id="PROJ",
+            scope="TEST",
+            include_extensions=["", ".py", "  "],
+        )
+        # Empty entries dropped, ".py" kept — must succeed
+        assert "1 files" in result
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: ingest_document warns when both text and file_path are provided
+# ---------------------------------------------------------------------------
+
+
+class TestIngestDocumentBothInputsWarning:
+    """ingest_document logs a warning when both text and file_path are supplied."""
+
+    async def test_both_provided_logs_warning(self, tmp_path, caplog):
+        """A warning is emitted when both text and file_path are given."""
+        import logging
+
+        f = tmp_path / "file.txt"
+        f.write_text("file content")
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="g",
+            ),
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="v",
+            ),
+        ):
+            with caplog.at_level(logging.WARNING, logger="mcp-nexus-rag"):
+                await nexus_tools.ingest_document(
+                    project_id="P",
+                    scope="S",
+                    text="override text",
+                    file_path=str(f),
+                )
+        assert any("file_path takes priority" in r.message for r in caplog.records)
+
+    async def test_both_provided_uses_file_content(self, tmp_path):
+        """When both text and file_path given, file content is used (file_path wins)."""
+        f = tmp_path / "file.txt"
+        f.write_text("from file")
+        with (
+            patch.object(
+                nexus_tools,
+                "ingest_graph_document",
+                new_callable=AsyncMock,
+                return_value="g",
+            ) as mock_graph,
+            patch.object(
+                nexus_tools,
+                "ingest_vector_document",
+                new_callable=AsyncMock,
+                return_value="v",
+            ),
+        ):
+            await nexus_tools.ingest_document(
+                project_id="P",
+                scope="S",
+                text="this should be ignored",
+                file_path=str(f),
+            )
+        _, kwargs = mock_graph.call_args
+        assert kwargs["text"] == "from file"
