@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.6
+**Version:** v5.8
 
 ## Known Issues
 
@@ -17,6 +17,59 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-04] Integrity + Watcher Root-Cause Fixes (FIXED)
+
+**Root Cause 1: Path-format drift created duplicate persistence paths**
+- `file_path` metadata was mixed (absolute and relative) across sync/watcher paths.
+- Pre-delete by filepath could miss previously ingested variants, allowing duplicate accumulation.
+- **Fix:** Added canonical workspace-relative path normalization in `nexus/sync.py`, `nexus/watcher.py`, and `nexus/tools.py`.
+
+**Root Cause 2: No explicit integrity cleanup workflow**
+- Duplicate hash groups, unscoped chunks, and absolute file paths needed operational cleanup.
+- **Fix:** Added `scripts/safe_cleanup.py` with dry-run/apply mode for Neo4j/Qdrant integrity cleanup and file-path normalization.
+
+**Root Cause 3: Watcher startup fragility and code-graph noise ingestion**
+- Detached watcher processes were not startup-verified, and code graph indexed transient files.
+- **Fix:** `start-services.sh` now uses stable-process confirmation for both watchers.
+- **Fix:** Code-Graph filters now exclude `.playwright-mcp/*.log`, `.coverage`, and `sed*` temp files; stale nodes were purged and graph reindexed cleanly.
+
+**Verification Snapshot (2026-03-04):**
+- `mcp-nexus-rag` tests: `432 passed, 13 deselected`
+- Post-cleanup audit: Neo4j/Qdrant duplicate groups `0`, unscoped Neo4j chunks `0`, absolute paths `0`
+- Live watcher probes: both watchers stayed up; noise-file probe returned zero indexed nodes in Memgraph
+
+### [2026-03-04] Database + Watcher + Code-Graph Audit (INSPECTION)
+
+**Finding A: Large duplicate `content_hash` groups in Neo4j and Qdrant**
+- Neo4j duplicate hash groups are high across core docs (e.g. `MCP_NEXUS_RAG/CORE_DOCS` has repeated hashes for `README.md`, `MEMORY.md`, `AGENTS.md`, `TODO.md`; some groups count > 20).
+- Qdrant also has duplicate hash groups (lower cardinality, mostly x2 per hash in `MCP_NEXUS_RAG/CORE_DOCS`).
+- Cross-store mismatch remains significant for chunk-level counts.
+
+**Evidence snapshot (2026-03-04):**
+- `MCP_NEXUS_RAG | CORE_DOCS` -> Neo4j chunk nodes: `150`, Qdrant docs: `25`
+- Sample duplicated hash: `608ad8729119...` for `README.md:chunk_1_of_9` appears repeatedly in Neo4j.
+
+**Finding B: Unscoped Neo4j chunk nodes exist**
+- Query on nodes missing `project_id` or `tenant_scope` returned:
+  - labels `['__Node__', 'Chunk']`: `52` nodes
+- This is a tenant-isolation integrity concern for graph content.
+
+**Finding C: RAG watcher logic works in foreground, but daemonization is unreliable**
+- Foreground smoke test (`timeout ... python -m nexus.watcher`) starts and processes change events correctly.
+- Live event test (touch `TODO.md`) showed full sync completion:
+  - `Watcher: synced projects/mcp-nexus-rag/TODO.md (MCP_NEXUS_RAG/CORE_DOCS)`
+- However, detached/background attempts in this environment frequently exit shortly after startup (no persistent watcher process visible).
+
+**Finding D: Code-Graph-RAG indexing includes stale/unwanted files**
+- Memgraph `File` nodes include stale missing-on-disk entries:
+  - `projects/mcp-nexus-rag/tests/sed*` and `projects/mission-control/*/sed*`
+- Also indexes unwanted log/artifact-like files:
+  - `.playwright-mcp/console-*.log`
+  - `projects/web-scrapers/.coverage`
+- `missing_on_disk` from Memgraph file audit: `8` paths.
+
+> **Guideline:** Add periodic integrity checks for (1) duplicate `content_hash` groups per `(project_id, scope)`, (2) unscoped graph nodes, (3) watcher liveness, and (4) stale/unwanted Memgraph file paths.
 
 ### [2026-03-04] Code Review Round 22: Retry Hardening + E2E Verification (FIXED)
 

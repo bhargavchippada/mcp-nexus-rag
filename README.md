@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v3.7
+**Version:** v3.9
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -141,6 +141,20 @@ Models auto-pulled by `ollama-init` on first start:
 - `llama3.1:8b` — graph extraction
 
 > **Note**: `BAAI/bge-reranker-v2-m3` is loaded directly from HuggingFace Hub by `llama-index-postprocessor-flag-embedding-reranker` — it does **not** require an Ollama pull. Requires `FlagEmbedding>=1.3.5,<2.0.0` and `transformers>=4.40.0,<5.0.0`.
+
+### Operational Audit Notes (2026-03-04)
+
+- Integrity cleanup completed: duplicate `content_hash` groups and unscoped Neo4j chunks removed.
+- `file_path` metadata normalization completed in both stores (absolute `/home/turiya/antigravity/...` paths converted to workspace-relative).
+- `nexus.watcher` daemon startup hardened via `start-services.sh` process-stability checks.
+- Code-Graph-RAG ignore filters hardened (`.playwright-mcp/*.log`, `.coverage`, transient `sed*`) and stale Memgraph file nodes purged after clean re-index.
+
+```bash
+# Integrity audit / cleanup (dry-run first, then apply)
+cd ~/antigravity/projects/mcp-nexus-rag
+PYTHONPATH=. poetry run python scripts/safe_cleanup.py
+PYTHONPATH=. poetry run python scripts/safe_cleanup.py --apply
+```
 
 ```bash
 docker-compose up -d

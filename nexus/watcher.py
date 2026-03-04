@@ -1,4 +1,4 @@
-# Version: v1.3
+# Version: v1.4
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -32,6 +32,7 @@ from nexus.sync import (
     PERSONA_FILES,
     PROJECT_MAPPINGS,
     _classify_file,
+    canonical_file_path,
     check_file_changed,
 )
 from nexus.backends import neo4j as neo4j_backend
@@ -131,7 +132,7 @@ class CoreDocEventHandler(FileSystemEventHandler):
 
 
 def _delete_from_rag(project_id: str, filepath_str: str, scope: str) -> None:
-    """Remove all RAG documents tagged with *filepath_str* from both stores."""
+    """Remove all RAG documents tagged with canonical *filepath_str* from both stores."""
     try:
         neo4j_backend.delete_by_filepath(project_id, filepath_str, scope)
     except Exception as e:
@@ -169,10 +170,12 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
             except ValueError:
                 source_id = abs_path_str
 
-            # Delete old chunks (by file_path metadata) before re-ingesting.
+            canonical_path = canonical_file_path(filepath, workspace_root)
+
+            # Delete old chunks (by canonical file_path metadata) before re-ingesting.
             # Invalidate cache immediately so stale results aren't served if
             # either ingest call below fails (fail-open: empty > stale).
-            _delete_from_rag(project_id, abs_path_str, scope)
+            _delete_from_rag(project_id, canonical_path, scope)
             cache_module.invalidate_cache(project_id, scope)
 
             graph_result = await ingest_graph_document(
@@ -180,14 +183,14 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
                 project_id=project_id,
                 scope=scope,
                 source_identifier=source_id,
-                file_path=abs_path_str,
+                file_path=canonical_path,
             )
             vector_result = await ingest_vector_document(
                 text=content,
                 project_id=project_id,
                 scope=scope,
                 source_identifier=source_id,
-                file_path=abs_path_str,
+                file_path=canonical_path,
             )
 
             # Bug L12-4 fix: use "Error" not in instead of "Successfully" in.
@@ -212,9 +215,10 @@ async def _sync_deleted(paths: list[str], workspace_root: Path) -> None:
         if not classification:
             continue
         project_id, scope = classification
-        _delete_from_rag(project_id, abs_path_str, scope)
+        canonical_path = canonical_file_path(filepath, workspace_root)
+        _delete_from_rag(project_id, canonical_path, scope)
         cache_module.invalidate_cache(project_id, scope)
-        logger.info(f"Watcher: removed deleted file from RAG: {abs_path_str}")
+        logger.info(f"Watcher: removed deleted file from RAG: {canonical_path}")
 
 
 # ---------------------------------------------------------------------------

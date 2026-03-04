@@ -1,4 +1,4 @@
-# Version: v4.6
+# Version: v4.8
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -267,6 +267,16 @@ async def ingest_graph_document(
             f"skipped={skipped}, errors={errors}"
         )
         if ingested > 0:
+            if file_path:
+                updated = neo4j_backend.backfill_file_metadata(
+                    project_id, scope, file_path
+                )
+                if updated:
+                    logger.warning(
+                        "Graph metadata backfill updated %d unscoped node(s) for %s",
+                        updated,
+                        file_path,
+                    )
             cache_module.invalidate_cache(project_id, scope)
         # Bug fix: when ALL chunks fail, return an error string so callers
         # (watcher, sync) correctly detect failure via "Error" in result.
@@ -301,6 +311,14 @@ async def ingest_graph_document(
             ),
         )
         index.insert(doc)
+        if file_path:
+            updated = neo4j_backend.backfill_file_metadata(project_id, scope, file_path)
+            if updated:
+                logger.warning(
+                    "Graph metadata backfill updated %d unscoped node(s) for %s",
+                    updated,
+                    file_path,
+                )
         cache_module.invalidate_cache(project_id, scope)
         return f"Successfully ingested Graph document for '{project_id}' in scope '{scope}'."
     except Exception as e:
@@ -348,6 +366,8 @@ async def ingest_graph_documents_batch(
     chunks_created = 0
     # Track (project_id, scope) pairs with at least one successful ingestion
     invalidation_keys: set[tuple[str, str]] = set()
+    # Track unique (project_id, scope, file_path) targets for post-ingest backfill
+    backfill_targets: set[tuple[str, str, str]] = set()
 
     for doc_dict in documents:
         try:
@@ -395,6 +415,8 @@ async def ingest_graph_documents_batch(
                         index.insert(doc)
                         ingested += 1
                         invalidation_keys.add((project_id, scope))
+                        if file_path:
+                            backfill_targets.add((project_id, scope, file_path))
                     except Exception as chunk_err:
                         logger.error(
                             f"Error in batch Graph chunk {i + 1}/{len(chunks)}: {chunk_err}"
@@ -420,6 +442,8 @@ async def ingest_graph_documents_batch(
             index.insert(doc)
             ingested += 1
             invalidation_keys.add((project_id, scope))
+            if file_path:
+                backfill_targets.add((project_id, scope, file_path))
 
         except Exception as e:
             logger.error(f"Error in batch Graph ingest: {e}")
@@ -428,6 +452,15 @@ async def ingest_graph_documents_batch(
     # Invalidate cache for all (project_id, scope) pairs that received new data
     for pid, sc in invalidation_keys:
         cache_module.invalidate_cache(pid, sc)
+
+    for pid, sc, fp in backfill_targets:
+        updated = neo4j_backend.backfill_file_metadata(pid, sc, fp)
+        if updated:
+            logger.warning(
+                "Graph metadata backfill updated %d unscoped node(s) for %s",
+                updated,
+                fp,
+            )
 
     logger.info(
         f"Batch Graph ingest complete: ingested={ingested}, skipped={skipped}, "
@@ -1833,6 +1866,7 @@ async def sync_project_files(
     Returns:
         Summary of files synced or needing sync.
     """
+    workspace_root_path = Path(workspace_root)
     files_to_sync = sync_module.get_files_needing_sync(workspace_root)
 
     if not files_to_sync:
@@ -1852,16 +1886,17 @@ async def sync_project_files(
         filepath = f["filepath"]
         try:
             content = filepath.read_text(encoding="utf-8")
+            canonical_path = sync_module.canonical_file_path(filepath, workspace_root_path)
 
             # Delete old version first (by filepath).
             # Bug L10-1 fix: log + skip on connection error (bare pass hid failures,
             # leaving old chunks alongside newly ingested ones = duplicate content).
             try:
                 neo4j_backend.delete_by_filepath(
-                    f["project_id"], str(filepath), f["scope"]
+                    f["project_id"], canonical_path, f["scope"]
                 )
                 qdrant_backend.delete_by_filepath(
-                    f["project_id"], str(filepath), f["scope"]
+                    f["project_id"], canonical_path, f["scope"]
                 )
             except Exception as e:
                 logger.warning(f"Pre-delete error for {f['source']}: {e}")
@@ -1878,14 +1913,14 @@ async def sync_project_files(
                 project_id=f["project_id"],
                 scope=f["scope"],
                 source_identifier=f["source"],
-                file_path=str(filepath),
+                file_path=canonical_path,
             )
             vector_result = await ingest_vector_document(
                 text=content,
                 project_id=f["project_id"],
                 scope=f["scope"],
                 source_identifier=f["source"],
-                file_path=str(filepath),
+                file_path=canonical_path,
             )
 
             if "Error" not in graph_result and "Error" not in vector_result:

@@ -1,10 +1,12 @@
-# Version: v2.2
+# Version: v2.3
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
 
 v2.2: Add get_driver() singleton to avoid creating a new connection pool per
 call. Previously every function did ``with neo4j_driver() as driver:`` which
 called driver.close() on __exit__, destroying the pool on every query.
+v2.3: delete_by_filepath now removes chunk-suffixed variants; added
+backfill_file_metadata() for unscoped node repair by file_path.
 """
 
 import logging
@@ -168,25 +170,72 @@ def get_all_filepaths(project_id: str, scope: str = "") -> list[str]:
 
 
 def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
-    """Delete Neo4j nodes matching project_id, scope, and file_path."""
+    """Delete Neo4j nodes matching project_id, scope, and file_path.
+
+    Also deletes chunked variants with ``:chunk_`` suffix so pre-delete works
+    for auto-chunked ingest paths.
+    """
     try:
         with get_driver().session() as session:
+            chunk_prefix = f"{filepath}:chunk_"
             if scope:
                 session.run(
-                    "MATCH (n {project_id: $project_id, tenant_scope: $scope, file_path: $filepath}) DETACH DELETE n",
+                    "MATCH (n) "
+                    "WHERE n.project_id = $project_id "
+                    "AND n.tenant_scope = $scope "
+                    "AND n.file_path IS NOT NULL "
+                    "AND (n.file_path = $filepath OR n.file_path STARTS WITH $chunk_prefix) "
+                    "DETACH DELETE n",
                     project_id=project_id,
                     scope=scope,
                     filepath=filepath,
+                    chunk_prefix=chunk_prefix,
                 )
             else:
                 session.run(
-                    "MATCH (n {project_id: $project_id, file_path: $filepath}) DETACH DELETE n",
+                    "MATCH (n) "
+                    "WHERE n.project_id = $project_id "
+                    "AND n.file_path IS NOT NULL "
+                    "AND (n.file_path = $filepath OR n.file_path STARTS WITH $chunk_prefix) "
+                    "DETACH DELETE n",
                     project_id=project_id,
                     filepath=filepath,
+                    chunk_prefix=chunk_prefix,
                 )
     except Exception as e:
         logger.error(f"Neo4j delete_by_filepath error: {e}")
         raise
+
+
+def backfill_file_metadata(project_id: str, scope: str, filepath: str) -> int:
+    """Backfill missing project/scope metadata for nodes from *filepath*.
+
+    Returns number of updated nodes. This is used as a safety net when graph
+    extraction inserts Chunk-like nodes without tenant metadata.
+    """
+    if not filepath:
+        return 0
+
+    try:
+        with get_driver().session() as session:
+            chunk_prefix = f"{filepath}:chunk_"
+            result = session.run(
+                "MATCH (n) "
+                "WHERE n.file_path IS NOT NULL "
+                "AND (n.file_path = $filepath OR n.file_path STARTS WITH $chunk_prefix) "
+                "AND (n.project_id IS NULL OR n.tenant_scope IS NULL "
+                "OR trim(toString(n.project_id)) = '' OR trim(toString(n.tenant_scope)) = '') "
+                "SET n.project_id = $project_id, n.tenant_scope = $scope "
+                "RETURN count(n) AS updated",
+                filepath=filepath,
+                chunk_prefix=chunk_prefix,
+                project_id=project_id,
+                scope=scope,
+            ).single()
+            return int(result["updated"]) if result else 0
+    except Exception as e:
+        logger.warning(f"Neo4j metadata backfill error for '{filepath}': {e}")
+        return 0
 
 
 def is_duplicate(content_hash: str, project_id: str, scope: str) -> bool:

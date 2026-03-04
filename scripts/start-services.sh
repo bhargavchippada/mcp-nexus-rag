@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v1.2
+# Version: v1.3
 # Antigravity AI Services Startup Script
 # Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG
 
@@ -65,6 +65,20 @@ wait_for_port() {
         fi
     done
     log_success "$service is ready on port $port"
+}
+
+confirm_process_stable() {
+    local pid=$1
+    local stable_seconds=${2:-5}
+    local waited=0
+    while [ $waited -lt $stable_seconds ]; do
+        if ! kill -0 "$pid" 2>/dev/null; then
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    return 0
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -183,14 +197,14 @@ start_watcher() {
     sleep 1
 
     cd "$CODE_GRAPH_RAG_DIR"
-    nohup .venv/bin/python realtime_updater.py "$ANTIGRAVITY_DIR" \
+    nohup setsid .venv/bin/python realtime_updater.py "$ANTIGRAVITY_DIR" \
         --host localhost --port $MEMGRAPH_PORT \
-        > /tmp/cgr-watcher.log 2>&1 &
+        < /dev/null > /tmp/cgr-watcher.log 2>&1 &
 
     local watcher_pid=$!
     sleep 2
 
-    if kill -0 "$watcher_pid" 2>/dev/null; then
+    if confirm_process_stable "$watcher_pid" 5; then
         log_success "Watcher started (PID: $watcher_pid). Log: /tmp/cgr-watcher.log"
     else
         log_error "Watcher failed to start. Check /tmp/cgr-watcher.log"
@@ -206,14 +220,14 @@ start_rag_sync_watcher() {
     sleep 1
 
     cd "$NEXUS_RAG_DIR"
-    nohup .venv/bin/python -m nexus.watcher \
+    nohup setsid .venv/bin/python -m nexus.watcher \
         --workspace "$ANTIGRAVITY_DIR" \
-        > /tmp/rag-sync-watcher.log 2>&1 &
+        < /dev/null > /tmp/rag-sync-watcher.log 2>&1 &
 
     local pid=$!
     sleep 2
 
-    if kill -0 "$pid" 2>/dev/null; then
+    if confirm_process_stable "$pid" 5; then
         log_success "RAG sync watcher started (PID: $pid). Log: /tmp/rag-sync-watcher.log"
     else
         log_error "RAG sync watcher failed to start. Check /tmp/rag-sync-watcher.log"

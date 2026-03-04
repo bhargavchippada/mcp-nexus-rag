@@ -1,4 +1,4 @@
-# Version: v1.3
+# Version: v1.4
 """
 nexus.sync — File synchronization for core documentation.
 
@@ -114,6 +114,19 @@ def _project_id_from_path(filepath: Path, workspace_root: Path) -> str:
     except ValueError:
         pass
     return "AGENT"  # Default for workspace-level files
+
+
+def canonical_file_path(filepath: Path, workspace_root: Path) -> str:
+    """Return a canonical workspace-relative file path when possible.
+
+    Storing relative paths avoids absolute/relative drift between sync paths
+    (manual sync vs watcher), which can otherwise break delete-by-filepath
+    cleanup and lead to duplicate chunks.
+    """
+    try:
+        return str(filepath.resolve().relative_to(workspace_root.resolve()))
+    except ValueError:
+        return str(filepath)
 
 
 def get_core_doc_files(workspace_root: str | Path) -> list[dict]:

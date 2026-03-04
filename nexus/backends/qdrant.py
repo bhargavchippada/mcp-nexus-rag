@@ -1,4 +1,4 @@
-# Version: v2.4
+# Version: v2.5
 """
 nexus.backends.qdrant — All Qdrant client, query, and mutation helpers.
 
@@ -161,32 +161,55 @@ def delete_data(project_id: str, scope: str = "") -> None:
 
 
 def delete_by_filepath(project_id: str, filepath: str, scope: str = "") -> None:
-    """Delete Qdrant points matching project_id, scope, and file_path."""
+    """Delete Qdrant points matching project_id, scope, and file_path.
+
+    Also deletes chunked variants with ``:chunk_`` suffix so pre-delete works
+    for auto-chunked ingest paths.
+    """
     try:
         client = get_client()
-        must_conditions: list = [
+        base_must: list = [
             qdrant_models.FieldCondition(
                 key="project_id",
                 match=qdrant_models.MatchValue(value=project_id),
             ),
-            qdrant_models.FieldCondition(
-                key="file_path",
-                match=qdrant_models.MatchValue(value=filepath),
-            ),
         ]
         if scope:
-            must_conditions.append(
+            base_must.append(
                 qdrant_models.FieldCondition(
                     key="tenant_scope",
                     match=qdrant_models.MatchValue(value=scope),
                 )
             )
-        client.delete(
-            collection_name=COLLECTION_NAME,
-            points_selector=qdrant_models.FilterSelector(
-                filter=qdrant_models.Filter(must=must_conditions)
-            ),
-        )
+
+        chunk_prefix = f"{filepath}:chunk_"
+        offset = None
+        to_delete: list = []
+        while True:
+            records, offset = client.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=qdrant_models.Filter(must=base_must),
+                limit=1000,
+                with_payload=["file_path"],
+                with_vectors=False,
+                offset=offset,
+            )
+            if not records:
+                break
+
+            for record in records:
+                payload = record.payload or {}
+                file_path = payload.get("file_path")
+                if isinstance(file_path, str) and (
+                    file_path == filepath or file_path.startswith(chunk_prefix)
+                ):
+                    to_delete.append(record.id)
+
+            if offset is None:
+                break
+
+        if to_delete:
+            client.delete(collection_name=COLLECTION_NAME, points_selector=to_delete)
     except Exception as e:
         logger.error(f"Qdrant delete_by_filepath error: {e}")
         raise

@@ -1,4 +1,4 @@
-# Version: v3.6
+# Version: v3.7
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -241,6 +241,65 @@ class TestDeleteQdrant:
         ):
             with pytest.raises(Exception, match="timeout"):
                 qdrant_backend.delete_data("PROJ")
+
+
+class TestDeleteByFilepath:
+    def test_neo4j_delete_by_filepath_matches_chunk_variants(self):
+        mock_driver, mock_session = _make_neo4j_driver()
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
+            neo4j_backend.delete_by_filepath("MY_PROJECT", "docs/README.md", "CORE_DOCS")
+
+        cypher, kwargs = mock_session.run.call_args
+        assert "STARTS WITH $chunk_prefix" in cypher[0]
+        assert kwargs["filepath"] == "docs/README.md"
+        assert kwargs["chunk_prefix"] == "docs/README.md:chunk_"
+        assert kwargs["scope"] == "CORE_DOCS"
+
+    def test_qdrant_delete_by_filepath_deletes_exact_and_chunk_ids(self):
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = [
+            (
+                [
+                    MagicMock(id="a", payload={"file_path": "docs/README.md"}),
+                    MagicMock(
+                        id="b", payload={"file_path": "docs/README.md:chunk_1_of_2"}
+                    ),
+                    MagicMock(id="c", payload={"file_path": "docs/OTHER.md"}),
+                ],
+                None,
+            )
+        ]
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            qdrant_backend.delete_by_filepath("MY_PROJECT", "docs/README.md", "CORE_DOCS")
+
+        mock_client.delete.assert_called_once_with(
+            collection_name=nexus_config.COLLECTION_NAME, points_selector=["a", "b"]
+        )
+
+    def test_qdrant_delete_by_filepath_no_matches_skips_delete(self):
+        mock_client = MagicMock()
+        mock_client.scroll.side_effect = [
+            ([MagicMock(id="x", payload={"file_path": "docs/OTHER.md"})], None)
+        ]
+        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
+            qdrant_backend.delete_by_filepath("MY_PROJECT", "docs/README.md")
+
+        mock_client.delete.assert_not_called()
+
+    def test_neo4j_backfill_file_metadata_sets_missing_scope(self):
+        mock_driver, mock_session = _make_neo4j_driver()
+        mock_result = MagicMock()
+        mock_result.single.return_value = {"updated": 4}
+        mock_session.run.return_value = mock_result
+        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
+            updated = neo4j_backend.backfill_file_metadata(
+                "MY_PROJECT", "CORE_DOCS", "docs/README.md"
+            )
+
+        assert updated == 4
+        cypher, kwargs = mock_session.run.call_args
+        assert "SET n.project_id = $project_id, n.tenant_scope = $scope" in cypher[0]
+        assert kwargs["chunk_prefix"] == "docs/README.md:chunk_"
 
 
 # ---------------------------------------------------------------------------

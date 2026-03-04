@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.6
+**Version:** v1.7
 
 ## Services — Full Startup
 
@@ -184,6 +184,11 @@ poetry run python -c "from nexus.reranker import get_reranker; r = get_reranker(
 
 # Full service health check (uses start-services.sh)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --health
+
+# Integrity audit / cleanup (Neo4j + Qdrant; dry-run by default)
+cd ~/antigravity/projects/mcp-nexus-rag
+PYTHONPATH=. poetry run python scripts/safe_cleanup.py
+PYTHONPATH=. poetry run python scripts/safe_cleanup.py --apply
 ```
 
 ## Watcher (Code-Graph-RAG)

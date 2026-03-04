@@ -389,10 +389,10 @@ class TestSyncDeleted:
         ):
             await _sync_deleted([str(f)], workspace)
             mock_neo4j.delete_by_filepath.assert_called_once_with(
-                "AGENT", str(f), "PERSONA"
+                "AGENT", "CLAUDE.md", "PERSONA"
             )
             mock_qdrant.delete_by_filepath.assert_called_once_with(
-                "AGENT", str(f), "PERSONA"
+                "AGENT", "CLAUDE.md", "PERSONA"
             )
 
     async def test_skips_unclassified_path(self, tmp_path):
@@ -417,7 +417,7 @@ class TestSyncDeleted:
         ):
             await _sync_deleted([str(f)], workspace)
             mock_neo4j.delete_by_filepath.assert_called_once_with(
-                "MISSION_CONTROL", str(f), "CORE_DOCS"
+                "MISSION_CONTROL", "projects/mission-control/MEMORY.md", "CORE_DOCS"
             )
 
     async def test_cache_invalidated_after_delete(self, tmp_path):
