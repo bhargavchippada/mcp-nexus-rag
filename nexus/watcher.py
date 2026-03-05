@@ -48,6 +48,7 @@ from nexus import cache as cache_module
 WORKSPACE_ROOT = Path(os.environ.get("WORKSPACE_ROOT", "/home/turiya/antigravity"))
 DEBOUNCE_SECONDS = float(os.environ.get("RAG_SYNC_DEBOUNCE", "3.0"))
 LOCKFILE_PATH = Path(os.environ.get("RAG_SYNC_LOCKFILE", "/tmp/rag-sync-watcher.lock"))
+HEARTBEAT_SECONDS = float(os.environ.get("RAG_SYNC_HEARTBEAT_SECONDS", "60"))
 
 
 def _acquire_single_instance_lock(lock_path: Path = LOCKFILE_PATH) -> TextIO:
@@ -285,10 +286,15 @@ async def run_watcher(
         f"Tracking: {len(PERSONA_FILES)} persona files + "
         f"{len(CORE_DOC_PATTERNS)} core-doc patterns × {len(PROJECT_MAPPINGS)} projects"
     )
+    last_heartbeat = 0.0
 
     try:
         while True:
             await asyncio.sleep(1.0)
+            now = time.monotonic()
+            if now - last_heartbeat >= HEARTBEAT_SECONDS:
+                logger.info("Watcher: idle heartbeat")
+                last_heartbeat = now
             changed, deleted = handler.pop_ready(debounce)
             if changed:
                 logger.info(f"Watcher: {len(changed)} file(s) changed")
