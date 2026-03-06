@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v1.3
+# Version: v1.4
 # Antigravity AI Services Startup Script
 # Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG
 
@@ -379,6 +379,10 @@ main() {
             echo ""
             start_nexus_rag
             start_code_graph_rag
+            echo ""
+            log_info "Starting file watchers..."
+            start_watcher || log_warn "Code-Graph-RAG watcher failed to start (non-fatal)"
+            start_rag_sync_watcher || log_warn "Nexus RAG sync watcher failed to start (non-fatal)"
             echo ""
             show_status
             ;;
