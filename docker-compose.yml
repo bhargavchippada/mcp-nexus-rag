@@ -67,7 +67,7 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -80,11 +80,11 @@ services:
     environment:
       - OLLAMA_ORIGINS=*
       - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_CONTEXT_LENGTH=32768
-      - OLLAMA_NUM_PARALLEL=4
-      - OLLAMA_MAX_LOADED_MODELS=3
+      - OLLAMA_CONTEXT_LENGTH=8192
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
       - OLLAMA_FLASH_ATTENTION=1
-      - OLLAMA_KEEP_ALIVE=24h
+      - OLLAMA_KEEP_ALIVE=10m
     ports:
       - "11434:11434"
     volumes:

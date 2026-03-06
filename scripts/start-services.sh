@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Version: v1.4
+# Version: v1.6
 # Antigravity AI Services Startup Script
-# Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG
+# Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG + MCP SSE
 
 set -euo pipefail
 
@@ -20,6 +20,7 @@ QDRANT_PORT=6333
 OLLAMA_PORT=11434
 REDIS_PORT=6379
 MEMGRAPH_PORT=7688
+MCP_SSE_PORT="${MCP_SSE_PORT:-8765}"
 
 # Colors
 RED='\033[0;31m'
@@ -103,6 +104,10 @@ show_status() {
     check_port $MEMGRAPH_PORT "  Memgraph (Code Graph)" || true
 
     echo ""
+    echo "MCP SSE Server:"
+    check_port $MCP_SSE_PORT "  Nexus SSE (for Docker consumers)" || true
+
+    echo ""
     echo "Docker Containers:"
     docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(turiya|memgraph|cgr)" || echo "  No matching containers found"
     echo ""
@@ -157,6 +162,41 @@ start_code_graph_rag() {
     log_success "Code-Graph-RAG services started"
 }
 
+start_mcp_sse() {
+    log_info "Starting MCP Nexus RAG SSE server on port $MCP_SSE_PORT..."
+
+    # Check if already running
+    if nc -z localhost "$MCP_SSE_PORT" 2>/dev/null; then
+        log_success "MCP SSE server already running on port $MCP_SSE_PORT"
+        return 0
+    fi
+
+    local VENV="$NEXUS_RAG_DIR/.venv/bin/python"
+    local LOG="/tmp/mcp-nexus-rag-sse.log"
+
+    if [ ! -f "$VENV" ]; then
+        log_error "venv not found at $VENV"
+        return 1
+    fi
+
+    cd "$NEXUS_RAG_DIR"
+    nohup "$VENV" -c "
+from mcp.server.transport_security import TransportSecuritySettings
+from server import mcp, validate_config, logger
+for w in validate_config():
+    logger.warning(f'[CONFIG] {w}')
+mcp.settings.host = '0.0.0.0'
+mcp.settings.port = $MCP_SSE_PORT
+mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+mcp.run(transport='sse', mount_path='/')
+" > "$LOG" 2>&1 &
+
+    local pid=$!
+    log_info "MCP SSE PID: $pid (log: $LOG)"
+
+    wait_for_port "$MCP_SSE_PORT" "MCP SSE" 15
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Reindex Antigravity
 # ─────────────────────────────────────────────────────────────────────────────
@@ -197,7 +237,9 @@ start_watcher() {
     sleep 1
 
     cd "$CODE_GRAPH_RAG_DIR"
-    nohup setsid .venv/bin/python realtime_updater.py "$ANTIGRAVITY_DIR" \
+    # nohup & already detaches; setsid can fail if venv python symlinks to
+    # a root-owned binary (e.g., uv-managed python under /root/).
+    nohup .venv/bin/python realtime_updater.py "$ANTIGRAVITY_DIR" \
         --host localhost --port $MEMGRAPH_PORT \
         < /dev/null > /tmp/cgr-watcher.log 2>&1 &
 
@@ -220,7 +262,7 @@ start_rag_sync_watcher() {
     sleep 1
 
     cd "$NEXUS_RAG_DIR"
-    nohup setsid .venv/bin/python -m nexus.watcher \
+    nohup .venv/bin/python -m nexus.watcher \
         --workspace "$ANTIGRAVITY_DIR" \
         < /dev/null > /tmp/rag-sync-watcher.log 2>&1 &
 
@@ -249,6 +291,16 @@ stop_services() {
 
     # Stop RAG sync watcher
     pkill -f "nexus.watcher" 2>/dev/null || true
+
+    # Stop MCP SSE server
+    if ss -tlnp 2>/dev/null | grep -q ":${MCP_SSE_PORT} "; then
+        local sse_pid
+        sse_pid=$(ss -tlnp 2>/dev/null | grep ":${MCP_SSE_PORT} " | grep -oP 'pid=\K[0-9]+' | head -1)
+        if [ -n "$sse_pid" ]; then
+            kill "$sse_pid" 2>/dev/null || true
+            log_info "Stopped MCP SSE server (PID: $sse_pid)"
+        fi
+    fi
 
     log_success "All services stopped"
 }
@@ -304,6 +356,13 @@ health_check() {
         all_healthy=false
     fi
 
+    # MCP SSE
+    if curl -sf http://localhost:$MCP_SSE_PORT/sse > /dev/null 2>&1 || nc -z localhost $MCP_SSE_PORT 2>/dev/null; then
+        log_success "MCP SSE: healthy (port $MCP_SSE_PORT)"
+    else
+        log_warn "MCP SSE: not running (optional — needed for Docker consumers)"
+    fi
+
     echo ""
     if $all_healthy; then
         log_success "All services are healthy"
@@ -332,6 +391,7 @@ usage() {
     echo "  --reindex     Re-index antigravity codebase"
     echo "  --watcher     Start/restart Code-Graph-RAG realtime watcher"
     echo "  --rag-sync    Start/restart Nexus RAG sync watcher (auto-ingests core docs)"
+    echo "  --mcp-sse     Start MCP SSE server on port $MCP_SSE_PORT (for Docker consumers)"
     echo "  --help        Show this help"
     echo ""
     echo "Examples:"
@@ -357,6 +417,7 @@ main() {
             sleep 3
             start_nexus_rag
             start_code_graph_rag
+            start_mcp_sse || log_warn "MCP SSE server failed to start (non-fatal)"
             show_status
             ;;
         --reindex)
@@ -367,6 +428,9 @@ main() {
             ;;
         --rag-sync)
             start_rag_sync_watcher
+            ;;
+        --mcp-sse)
+            start_mcp_sse
             ;;
         --help|-h)
             usage
@@ -383,6 +447,9 @@ main() {
             log_info "Starting file watchers..."
             start_watcher || log_warn "Code-Graph-RAG watcher failed to start (non-fatal)"
             start_rag_sync_watcher || log_warn "Nexus RAG sync watcher failed to start (non-fatal)"
+            echo ""
+            log_info "Starting MCP SSE server..."
+            start_mcp_sse || log_warn "MCP SSE server failed to start (non-fatal — needed for Docker consumers)"
             echo ""
             show_status
             ;;

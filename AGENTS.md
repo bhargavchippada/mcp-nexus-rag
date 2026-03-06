@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.8
+**Version:** v1.9
 
 ## Services — Full Startup
 
@@ -17,6 +17,9 @@ Use the automation script after a reboot or service restart.
 
 # Start the Code-Graph-RAG realtime watcher (keep Memgraph in sync with code changes)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --watcher
+
+# Start MCP SSE server on port 8765 (for Docker consumers like gravity-claw)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --mcp-sse
 
 # Start the Nexus RAG sync watcher (auto-ingests core docs into Neo4j+Qdrant on change)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --rag-sync
@@ -41,6 +44,7 @@ tail -f /tmp/rag-sync-watcher.log
 | **Memgraph** | `start-services.sh` or `docker start memgraph-cgr` | 7688 | Code AST graph |
 | **CGR Watcher** | `start-services.sh --watcher` | — | Syncs code changes → Memgraph |
 | **RAG Sync Watcher** | `start-services.sh --rag-sync` | — | Auto-ingests core docs → Neo4j+Qdrant |
+| **MCP SSE** | `start-services.sh --mcp-sse` | 8765 | Nexus RAG over SSE (for Docker consumers) |
 | **Nexus MCP** | Auto — Claude Code via `.mcp.json` | stdio | RAG tools for agents |
 | **Code-Graph-RAG MCP** | Auto — Claude Code via `.mcp.json` | stdio | Code analysis tools |
 

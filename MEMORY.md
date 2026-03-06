@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v5.9
+**Version:** v6.0
 
 ## Known Issues
 
@@ -17,6 +17,24 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-06] Watcher Processes Offline — Root-Owned venv + Stale Logs (FIXED)
+
+**Root Cause 1: Code-Graph Watcher failed to start — root-owned uv venv**
+- `~/code-graph-rag/.venv` was created by `root` using `uv`, which symlinked python to `/root/.local/share/uv/python/cpython-3.12.12-linux-x86_64-gnu/bin/python3.12`.
+- `setsid .venv/bin/python` in `start-services.sh` failed with "Permission denied" because turiya cannot access root-owned paths.
+- **Fix:** Recreated venv as turiya using `uv venv --python python3.12 .venv && uv pip install -e ".[treesitter-full]"`.
+- **Fix:** Removed `setsid` from watcher startup in `start-services.sh` v1.5→v1.6 — `nohup &` already handles detachment.
+
+**Root Cause 2: Nexus RAG Watcher died silently**
+- Process was running (idle heartbeats in log) but died at ~05:31 with no error message in the log.
+- The `nexus.watcher` daemon has no auto-restart or supervisor mechanism.
+- **Fix:** Manually restarted. Auto-restart guard is an existing TODO item.
+
+**Prevention Guidelines:**
+- Never create venvs as root in user-owned directories — always use turiya's `uv` (at `~/.local/bin/uv`)
+- After any service restart (`start-services.sh`), verify watcher log freshness: `stat /tmp/cgr-watcher.log /tmp/rag-sync-watcher.log`
+- Consider adding systemd user services or a process supervisor for long-running watchers
 
 ### [2026-03-04] Follow-up Verification Round: E2E + Manual Watcher Validation (FIXED)
 

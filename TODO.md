@@ -2,7 +2,17 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v3.8
+**Version:** v3.9
+
+## Watcher Offline Fix (2026-03-06) (Completed)
+
+- [x] Root cause: Code-Graph Watcher venv at `~/code-graph-rag/.venv` was root-owned (uv installed as root)
+- [x] Root cause: Nexus RAG Watcher died silently (no auto-restart mechanism)
+- [x] Fix: Recreated `~/code-graph-rag/.venv` as turiya with user-owned uv
+- [x] Fix: Removed `setsid` from watcher startup in `start-services.sh` v1.5→v1.6
+- [x] Both watchers restarted: Code-Graph Watcher "Log fresh (45s)", Nexus RAG Watcher "Log fresh (22s)"
+- [x] Heartbeat pulse: 8/8 services up, healthy=true
+- [x] All 439 tests pass
 
 ## Pending
 
