@@ -1,4 +1,4 @@
-# Version: v1.3
+# Version: v1.4
 """
 Tests for nexus.watcher — RAG sync daemon.
 """
@@ -18,6 +18,7 @@ from nexus.watcher import (
     _release_single_instance_lock,
     _sync_changed,
     _sync_deleted,
+    run_watcher,
 )
 
 WORKSPACE = Path("/home/turiya/antigravity")
@@ -722,3 +723,42 @@ class TestSyncChangedCacheInvalidation:
             await _sync_changed([str(f)], workspace)
 
         mock_cache.invalidate_cache.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat flush (prevents stale log mtime under nohup)
+# ---------------------------------------------------------------------------
+
+
+class TestHeartbeatFlush:
+    """The heartbeat must flush stderr so log file mtime updates under nohup."""
+
+    async def test_heartbeat_flushes_stderr(self, tmp_path):
+        """After heartbeat fires, sys.stderr.flush() must be called."""
+        import asyncio
+
+        with (
+            patch("nexus.watcher._acquire_single_instance_lock") as mock_lock,
+            patch("nexus.watcher._release_single_instance_lock"),
+            patch("nexus.watcher.Observer") as mock_observer_cls,
+            patch("nexus.watcher.HEARTBEAT_SECONDS", 0),  # fire immediately
+            patch("nexus.watcher.sys") as mock_sys,
+        ):
+            mock_lock.return_value = MagicMock()
+            mock_observer_cls.return_value = MagicMock()
+
+            # Cancel after first loop iteration
+            call_count = 0
+            original_sleep = asyncio.sleep
+
+            async def counting_sleep(secs):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    raise asyncio.CancelledError
+                await original_sleep(0)
+
+            with patch("nexus.watcher.asyncio.sleep", side_effect=counting_sleep):
+                await run_watcher(workspace_root=tmp_path, debounce=1.0)
+
+            mock_sys.stderr.flush.assert_called()

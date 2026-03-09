@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v2.4
+**Version:** v2.5
 
 ## Services — Full Startup
 
@@ -37,6 +37,9 @@ tail -f /tmp/rag-sync-watcher.log
 
 # Verify everything is healthy
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --health
+
+# Re-index codebase (after major code changes)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --reindex
 ```
 
 ### Service Map

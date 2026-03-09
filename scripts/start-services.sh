@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v2.0
+# Version: v2.2
 # Antigravity AI Services Startup Script
 # Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG + MCP SSE
 
@@ -15,6 +15,7 @@ CODE_GRAPH_RAG_DIR="${HOME}/code-graph-rag"
 ANTIGRAVITY_DIR="${HOME}/antigravity"
 
 # Service ports
+POSTGRES_PORT=5432
 NEO4J_PORT=7687
 QDRANT_PORT=6333
 OLLAMA_PORT=11434
@@ -97,6 +98,7 @@ show_status() {
     echo ""
 
     echo "MCP Nexus RAG Services:"
+    check_port $POSTGRES_PORT "  Postgres (pgvector)" || true
     check_port $NEO4J_PORT "  Neo4j (GraphRAG)" || true
     check_port $QDRANT_PORT "  Qdrant (VectorRAG)" || true
     check_port $OLLAMA_PORT "  Ollama (LLM)" || true
@@ -423,7 +425,7 @@ start_rag_sync_watcher() {
     sleep 1
 
     cd "$NEXUS_RAG_DIR"
-    nohup .venv/bin/python -m nexus.watcher \
+    PYTHONUNBUFFERED=1 nohup .venv/bin/python -m nexus.watcher \
         --workspace "$ANTIGRAVITY_DIR" \
         < /dev/null > /tmp/rag-sync-watcher.log 2>&1 &
 
@@ -549,6 +551,14 @@ except: print('?/?')
         all_healthy=false
     fi
 
+    # Postgres (check via port)
+    if nc -z localhost $POSTGRES_PORT 2>/dev/null; then
+        log_success "Postgres: healthy (port $POSTGRES_PORT)"
+    else
+        log_error "Postgres: unhealthy"
+        all_healthy=false
+    fi
+
     # Memgraph (check via port)
     if nc -z localhost $MEMGRAPH_PORT 2>/dev/null; then
         log_success "Memgraph: healthy"
@@ -565,21 +575,21 @@ except: print('?/?')
     fi
 
     # MCP SSE
-    if curl -sf http://localhost:$MCP_SSE_PORT/sse > /dev/null 2>&1 || nc -z localhost $MCP_SSE_PORT 2>/dev/null; then
+    if (curl -sf --max-time 3 http://localhost:$MCP_SSE_PORT/sse > /dev/null 2>&1) || nc -z localhost $MCP_SSE_PORT 2>/dev/null; then
         log_success "MCP SSE: healthy (port $MCP_SSE_PORT)"
     else
         log_warn "MCP SSE: not running (optional — needed for Docker consumers)"
     fi
 
     # HTTP API (for mission-control)
-    if curl -sf http://localhost:$HTTP_API_PORT/health > /dev/null 2>&1; then
+    if (curl -sf --max-time 3 http://localhost:$HTTP_API_PORT/health > /dev/null 2>&1) || nc -z localhost $HTTP_API_PORT 2>/dev/null; then
         log_success "HTTP API: healthy (port $HTTP_API_PORT)"
     else
         log_warn "HTTP API: not running (optional — needed for mission-control Nexus query)"
     fi
 
     # Reranker Service
-    if curl -sf http://localhost:$RERANKER_PORT/health > /dev/null 2>&1; then
+    if (curl -sf --max-time 3 http://localhost:$RERANKER_PORT/health > /dev/null 2>&1) || nc -z localhost $RERANKER_PORT 2>/dev/null; then
         log_success "Reranker: healthy (port $RERANKER_PORT)"
     else
         log_warn "Reranker: not running (optional — shared cross-encoder for VRAM savings)"

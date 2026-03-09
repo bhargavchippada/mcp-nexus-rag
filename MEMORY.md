@@ -2,7 +2,18 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v6.9
+**Version:** v6.11
+
+## Project Status
+
+| Metric | Value |
+|--------|-------|
+| **Tests** | 461 passed (474 total, 13 deselected) |
+| **Coverage** | ~83% |
+| **Status** | Production-ready |
+| **Last Updated** | 2026-03-09 |
+
+---
 
 ## Known Issues
 
@@ -684,6 +695,18 @@ Added as `@mcp.tool()` in tools.py. Exposes targeted Redis cache invalidation (b
 **Prevention Guideline:** When adding a `max_chars`/`max_tokens` parameter to any cached function, ALWAYS apply the cap AFTER the cache retrieval, not only in the fresh-fetch path. The cache may store old (uncapped) results from before the parameter existed.
 
 > **Rule:** Cache returns must pass through the same output-size guards as fresh results.
+
+### 2026-03-09 — Watcher heartbeat log stale under nohup (FIXED)
+
+**Root Cause:** Python uses full buffering (8KB) when stdout/stderr is redirected to a file via `nohup`. The watcher's 60s heartbeat messages (~30 bytes each) never filled the buffer, so the log file's `mtime` wasn't updated. gravity-claw's HeartbeatCollector uses `mtime` with a 180s threshold to determine freshness — stale `mtime` caused false "stale log" alerts.
+
+**Fix Applied:**
+- `watcher.py` v1.5→v1.6: Added `sys.stderr.flush()` after heartbeat log (belt)
+- `start-services.sh` v2.0→v2.1: Added `PYTHONUNBUFFERED=1` to watcher startup (suspenders)
+
+**Prevention Guideline:** Any long-running daemon started via `nohup` with log redirection MUST use `PYTHONUNBUFFERED=1` or explicit `sys.stderr.flush()` after periodic log messages. Python's full buffering when not connected to a tty will otherwise make log files appear stale.
+
+> **Rule:** Daemon startup commands with log redirection (`> file 2>&1`) require `PYTHONUNBUFFERED=1`.
 
 ## Changelog
 

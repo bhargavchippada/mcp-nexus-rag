@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v4.5
+**Version:** v4.7
 
 ## Watcher Offline Fix (2026-03-06) (Completed)
 
@@ -28,6 +28,7 @@
 - [x] Context window reduction — DONE: `DEFAULT_CONTEXT_WINDOW` 32768→8192 in config.py v3.1 (reduces VRAM, faster inference)
 - [x] Fix orphan entity nodes — DONE: `backfill_all_unscoped()` in neo4j.py v2.4 tags unscoped nodes after every graph insert
 - [x] Fix duplicate content_hash entries — DONE: `check_file_sync_status()` in sync.py v1.5, selective ingest in watcher.py v1.5
+- [x] Fix watcher heartbeat log stale under nohup — DONE: `PYTHONUNBUFFERED=1` in start-services.sh v2.1 + `sys.stderr.flush()` in watcher.py v1.6
 
 ### Performance
 

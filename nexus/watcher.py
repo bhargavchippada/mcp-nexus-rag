@@ -1,4 +1,4 @@
-# Version: v1.5
+# Version: v1.6
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -20,6 +20,7 @@ import argparse
 import asyncio
 import fcntl
 import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -319,6 +320,7 @@ async def run_watcher(
             now = time.monotonic()
             if now - last_heartbeat >= HEARTBEAT_SECONDS:
                 logger.info("Watcher: idle heartbeat")
+                sys.stderr.flush()
                 last_heartbeat = now
             changed, deleted = handler.pop_ready(debounce)
             if changed:
