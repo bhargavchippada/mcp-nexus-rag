@@ -28,6 +28,9 @@ from typing import TextIO
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from nexus import cache as cache_module
+from nexus.backends import neo4j as neo4j_backend
+from nexus.backends import qdrant as qdrant_backend
 from nexus.config import logger
 from nexus.sync import (
     CORE_DOC_PATTERNS,
@@ -37,9 +40,6 @@ from nexus.sync import (
     canonical_file_path,
     check_file_changed,
 )
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
-from nexus import cache as cache_module
 
 # ---------------------------------------------------------------------------
 # Configuration

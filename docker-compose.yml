@@ -120,7 +120,7 @@ services:
         done
 
         # Array of models to pull
-        MODELS="nomic-embed-text qllama/bge-reranker-v2-m3 llama3.1:8b"
+        MODELS="nomic-embed-text qllama/bge-reranker-v2-m3 qwen2.5:3b"
 
         for MODEL in $$MODELS; do
           echo "Processing model: $$MODEL"

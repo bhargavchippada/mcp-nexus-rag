@@ -17,9 +17,9 @@ from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qdrant_models
 
 from nexus.config import (
-    DEFAULT_QDRANT_URL,
-    COLLECTION_NAME,
     ALLOWED_META_KEYS,
+    COLLECTION_NAME,
+    DEFAULT_QDRANT_URL,
 )
 
 logger = logging.getLogger("mcp-nexus-rag")

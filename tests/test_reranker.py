@@ -1,4 +1,4 @@
-# Version: v1.2
+# Version: v1.3
 """
 tests/test_reranker.py — Unit tests for nexus.reranker and reranker integration
 in get_vector_context / get_graph_context.
@@ -6,12 +6,13 @@ in get_vector_context / get_graph_context.
 All tests are fully mocked — no real model is loaded, no backends are hit.
 """
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
 import pytest
-from unittest.mock import MagicMock, AsyncMock, patch
 
 import nexus.reranker as reranker_module
-from nexus.reranker import get_reranker, reset_reranker
-
+from nexus.reranker import RemoteReranker, get_reranker, reset_reranker
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -156,6 +157,178 @@ class TestGetRerankerSingleton:
         reranker_module._reranker = MagicMock()
         reset_reranker()
         assert reranker_module._reranker is None
+
+
+# ---------------------------------------------------------------------------
+# RemoteReranker — HTTP call mapping
+# ---------------------------------------------------------------------------
+
+
+class TestRemoteReranker:
+    def test_postprocess_nodes_maps_scores_by_index(self):
+        """Remote reranker should POST to /rerank and map scores back."""
+        from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+
+        nodes = [
+            NodeWithScore(node=TextNode(text="doc A"), score=0.0),
+            NodeWithScore(node=TextNode(text="doc B"), score=0.0),
+        ]
+        query = QueryBundle(query_str="test query")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "results": [
+                {"index": 1, "score": 0.95, "text": "doc B"},
+                {"index": 0, "score": 0.42, "text": "doc A"},
+            ]
+        }
+
+        reranker = RemoteReranker("http://localhost:8767")
+        reranker._client = MagicMock()
+        reranker._client.post.return_value = mock_response
+
+        result = reranker.postprocess_nodes(nodes, query)
+
+        assert len(result) == 2
+        assert result[0].score == 0.95
+        assert result[0].node.get_content() == "doc B"
+        assert result[1].score == 0.42
+        assert result[1].node.get_content() == "doc A"
+
+        # Verify the POST payload
+        call_kwargs = reranker._client.post.call_args
+        payload = call_kwargs.kwargs["json"]
+        assert payload["query"] == "test query"
+        assert payload["documents"] == ["doc A", "doc B"]
+
+    def test_empty_input_returns_empty(self):
+        """Empty node list should return empty without HTTP call."""
+        reranker = RemoteReranker("http://localhost:8767")
+        reranker._client = MagicMock()
+        result = reranker.postprocess_nodes([], None)
+        assert result == []
+        reranker._client.post.assert_not_called()
+
+    def test_no_query_bundle_sends_empty_string(self):
+        """None query_bundle should send empty query string."""
+        from llama_index.core.schema import NodeWithScore, TextNode
+
+        nodes = [NodeWithScore(node=TextNode(text="doc"), score=0.0)]
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {
+            "results": [{"index": 0, "score": 0.5, "text": "doc"}]
+        }
+
+        reranker = RemoteReranker("http://localhost:8767")
+        reranker._client = MagicMock()
+        reranker._client.post.return_value = mock_response
+
+        reranker.postprocess_nodes(nodes, query_bundle=None)
+
+        payload = reranker._client.post.call_args.kwargs["json"]
+        assert payload["query"] == ""
+
+    def test_http_error_raises(self):
+        """HTTP errors should propagate (caller's try/except handles them)."""
+        from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+
+        nodes = [NodeWithScore(node=TextNode(text="doc"), score=0.0)]
+        query = QueryBundle(query_str="test")
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "503", request=MagicMock(), response=MagicMock()
+        )
+
+        reranker = RemoteReranker("http://localhost:8767")
+        reranker._client = MagicMock()
+        reranker._client.post.return_value = mock_response
+
+        with pytest.raises(httpx.HTTPStatusError):
+            reranker.postprocess_nodes(nodes, query)
+
+    def test_connection_error_raises(self):
+        """Connection errors should propagate (caller's try/except handles them)."""
+        from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+
+        nodes = [NodeWithScore(node=TextNode(text="doc"), score=0.0)]
+        query = QueryBundle(query_str="test")
+
+        reranker = RemoteReranker("http://localhost:8767")
+        reranker._client = MagicMock()
+        reranker._client.post.side_effect = httpx.ConnectError("Connection refused")
+
+        with pytest.raises(httpx.ConnectError):
+            reranker.postprocess_nodes(nodes, query)
+
+
+# ---------------------------------------------------------------------------
+# Reranker mode switch
+# ---------------------------------------------------------------------------
+
+
+class TestRerankerModeSwitch:
+    def setup_method(self):
+        reset_reranker()
+
+    def teardown_method(self):
+        reset_reranker()
+
+    def test_local_mode_returns_flag_embedding(self, monkeypatch):
+        """RERANKER_MODE=local should return FlagEmbeddingReranker."""
+        monkeypatch.setattr("nexus.reranker.RERANKER_MODE", "local")
+        mock_cls = MagicMock(return_value=MagicMock())
+        with patch.dict(
+            "sys.modules",
+            {
+                "llama_index.postprocessor.flag_embedding_reranker": MagicMock(
+                    FlagEmbeddingReranker=mock_cls
+                )
+            },
+        ):
+            result = get_reranker()
+        assert not isinstance(result, RemoteReranker)
+        mock_cls.assert_called_once()
+
+    def test_remote_mode_returns_remote_reranker(self, monkeypatch):
+        """RERANKER_MODE=remote should return RemoteReranker."""
+        monkeypatch.setattr("nexus.reranker.RERANKER_MODE", "remote")
+        monkeypatch.setattr(
+            "nexus.reranker.RERANKER_SERVICE_URL", "http://localhost:8767"
+        )
+        result = get_reranker()
+        assert isinstance(result, RemoteReranker)
+
+    def test_remote_singleton_behavior(self, monkeypatch):
+        """Remote mode should also be a singleton."""
+        monkeypatch.setattr("nexus.reranker.RERANKER_MODE", "remote")
+        monkeypatch.setattr(
+            "nexus.reranker.RERANKER_SERVICE_URL", "http://localhost:8767"
+        )
+        first = get_reranker()
+        second = get_reranker()
+        assert first is second
+
+
+# ---------------------------------------------------------------------------
+# Reranker mode config
+# ---------------------------------------------------------------------------
+
+
+class TestRerankerModeConfig:
+    def test_default_mode_is_local(self):
+        from nexus.config import RERANKER_MODE
+
+        assert RERANKER_MODE == "local"
+
+    def test_service_url_contains_8767(self):
+        from nexus.config import RERANKER_SERVICE_URL
+
+        assert "8767" in RERANKER_SERVICE_URL
 
 
 # ---------------------------------------------------------------------------
@@ -492,13 +665,14 @@ class TestRerankerConfig:
         assert DEFAULT_RERANKER_TOP_N > 0
 
     def test_default_candidate_k_greater_than_top_n(self):
-        from nexus.config import DEFAULT_RERANKER_TOP_N, DEFAULT_RERANKER_CANDIDATE_K
+        from nexus.config import DEFAULT_RERANKER_CANDIDATE_K, DEFAULT_RERANKER_TOP_N
 
         assert DEFAULT_RERANKER_CANDIDATE_K >= DEFAULT_RERANKER_TOP_N
 
     def test_reranker_enabled_env_false(self, monkeypatch):
         monkeypatch.setenv("RERANKER_ENABLED", "false")
         import importlib
+
         import nexus.config as cfg
 
         importlib.reload(cfg)
@@ -508,6 +682,7 @@ class TestRerankerConfig:
     def test_reranker_enabled_env_true(self, monkeypatch):
         monkeypatch.setenv("RERANKER_ENABLED", "true")
         import importlib
+
         import nexus.config as cfg
 
         importlib.reload(cfg)

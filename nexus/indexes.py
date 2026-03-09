@@ -5,7 +5,8 @@ nexus.indexes — LlamaIndex settings bootstrap and index factories.
 
 import threading
 
-from llama_index.core import PropertyGraphIndex, VectorStoreIndex, Settings
+import nest_asyncio
+from llama_index.core import PropertyGraphIndex, Settings, VectorStoreIndex
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
@@ -13,27 +14,26 @@ from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 from nexus.backends.qdrant import (
-    get_client as get_qdrant_client,
     get_async_client as get_async_qdrant_client,
 )
-
+from nexus.backends.qdrant import (
+    get_client as get_qdrant_client,
+)
 from nexus.config import (
-    DEFAULT_OLLAMA_URL,
-    DEFAULT_NEO4J_URL,
-    DEFAULT_NEO4J_USER,
-    DEFAULT_NEO4J_PASSWORD,
-    DEFAULT_QDRANT_URL,
+    COLLECTION_NAME,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CONTEXT_WINDOW,
     DEFAULT_EMBED_MODEL,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TIMEOUT,
-    DEFAULT_CONTEXT_WINDOW,
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_CHUNK_OVERLAP,
-    COLLECTION_NAME,
+    DEFAULT_NEO4J_PASSWORD,
+    DEFAULT_NEO4J_URL,
+    DEFAULT_NEO4J_USER,
+    DEFAULT_OLLAMA_URL,
+    DEFAULT_QDRANT_URL,
     logger,
 )
-
-import nest_asyncio
 
 nest_asyncio.apply()
 

@@ -4,12 +4,11 @@ Unit tests for new v1.9 features: batch ingestion and tenant statistics.
 All database calls are mocked — no live Qdrant or Neo4j required.
 """
 
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from nexus import tools as nexus_tools
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
-
 
 # ---------------------------------------------------------------------------
 # Tenant Statistics Tests

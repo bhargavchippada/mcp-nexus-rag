@@ -15,42 +15,39 @@ nest_asyncio.apply()
 
 # Register all MCP tools (side-effect of import)
 import nexus.tools  # noqa: F401
+from nexus.backends.neo4j import (  # noqa: F401
+    neo4j_driver as _neo4j_driver,
+)
+from nexus.backends.qdrant import (  # noqa: F401
+    scroll_field as _scroll_qdrant_field,
+)
 
 # Shared FastMCP application
-from nexus.config import mcp, logger, validate_config
+from nexus.config import COLLECTION_NAME, logger, mcp, validate_config  # noqa: F401
+from nexus.dedup import content_hash as _content_hash  # noqa: F401
+from nexus.indexes import (  # noqa: F401
+    get_graph_index,
+    get_vector_index,
+    setup_settings,
+)
 
 # ---------------------------------------------------------------------------
 # Backward-compatible re-exports (test_rag.py / test_isolation.py)
 # ---------------------------------------------------------------------------
 from nexus.tools import (  # noqa: F401
-    ingest_graph_document,
-    ingest_graph_documents_batch,
-    get_graph_context,
-    ingest_vector_document,
-    ingest_vector_documents_batch,
-    get_vector_context,
-    ingest_document,
-    ingest_document_batches,
-    health_check,
+    delete_tenant_data,
     get_all_project_ids,
     get_all_tenant_scopes,
-    delete_tenant_data,
+    get_graph_context,
+    get_vector_context,
+    health_check,
+    ingest_document,
+    ingest_document_batches,
+    ingest_graph_document,
+    ingest_graph_documents_batch,
+    ingest_vector_document,
+    ingest_vector_documents_batch,
 )
-from nexus.backends.neo4j import (  # noqa: F401
-    neo4j_driver as _neo4j_driver,
-    get_distinct_metadata as get_distinct_metadata_neo4j,
-    delete_data as delete_data_neo4j,
-    is_duplicate as _is_duplicate_neo4j,
-)
-from nexus.backends.qdrant import (  # noqa: F401
-    scroll_field as _scroll_qdrant_field,
-    get_distinct_metadata as get_distinct_metadata_qdrant,
-    delete_data as delete_data_qdrant,
-    is_duplicate as _is_duplicate_qdrant,
-)
-from nexus.dedup import content_hash as _content_hash  # noqa: F401
-from nexus.indexes import setup_settings, get_graph_index, get_vector_index  # noqa: F401
-from nexus.config import COLLECTION_NAME, ALLOWED_META_KEYS as _ALLOWED_META_KEYS  # noqa: F401
 
 
 def main() -> None:

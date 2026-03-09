@@ -2,21 +2,22 @@
 """
 Integration tests — mix of mocked near-integration and live Docker tests.
 Requires: Neo4j on bolt://localhost:7687, Qdrant on http://localhost:6333,
-          Ollama on http://localhost:11434 with llama3.1:8b + nomic-embed-text.
+          Ollama on http://localhost:11434 with qwen2.5:3b + nomic-embed-text.
 
 Run with:
   PYTHONPATH=. pytest tests/test_integration.py -v -m integration
 """
 
 import threading
-import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
+
+from nexus import config as nexus_config
 from nexus import indexes as nexus_indexes
+from nexus import tools as nexus_tools
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
-from nexus import tools as nexus_tools
-from nexus import config as nexus_config
 
 pytestmark = pytest.mark.integration
 

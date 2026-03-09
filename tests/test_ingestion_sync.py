@@ -1,15 +1,17 @@
-import shutil
 import asyncio
+import shutil
 from pathlib import Path
+
 import pytest
-from nexus.tools import (
-    ingest_project_directory,
-    sync_deleted_files,
-    ingest_graph_document,
-)
+
+from nexus import indexes as nexus_indexes
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
-from nexus import indexes as nexus_indexes
+from nexus.tools import (
+    ingest_graph_document,
+    ingest_project_directory,
+    sync_deleted_files,
+)
 
 
 @pytest.fixture(autouse=True)

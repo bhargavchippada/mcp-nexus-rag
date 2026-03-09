@@ -7,23 +7,23 @@ asyncio_mode=auto (set in pyproject.toml) removes the need for @pytest.mark.asyn
 
 import threading
 from pathlib import Path
-import pytest
-import redis
-import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nexus import config as nexus_config
-from nexus import dedup as nexus_dedup
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
-from nexus import indexes as nexus_indexes
-from nexus import sync as nexus_sync
-from nexus import tools as nexus_tools
+import httpx
+import pytest
+import redis
 
 # Save original cache functions at module-import time, before any fixtures run.
 # conftest.autouse disable_cache replaces nexus.cache.set_cached with a no-op lambda;
 # these module-level references still point to the real implementations.
 import nexus.cache as _nexus_cache
+from nexus import config as nexus_config
+from nexus import dedup as nexus_dedup
+from nexus import indexes as nexus_indexes
+from nexus import sync as nexus_sync
+from nexus import tools as nexus_tools
+from nexus.backends import neo4j as neo4j_backend
+from nexus.backends import qdrant as qdrant_backend
 
 _orig_set_cached = _nexus_cache.set_cached
 _orig_get_cached = _nexus_cache.get_cached
@@ -1193,7 +1193,7 @@ class TestCacheSecondaryIndex:
 
     def test_set_cached_adds_key_to_secondary_index(self):
         """set_cached should SADD the cache key to the project/scope index set."""
-        from nexus.cache import cache_key, _idx_key
+        from nexus.cache import _idx_key, cache_key
 
         mock_redis = MagicMock()
         # Use _orig_set_cached (module-import-time reference) to bypass conftest patching
@@ -1481,8 +1481,8 @@ class TestValidateConfig:
     """validate_config returns warning messages for unsafe defaults."""
 
     def test_default_password_triggers_warning(self):
-        from nexus.config import validate_config
         import nexus.config as nc
+        from nexus.config import validate_config
 
         original = nc.DEFAULT_NEO4J_PASSWORD
         try:
@@ -1495,8 +1495,8 @@ class TestValidateConfig:
         assert any("password" in w.lower() or "NEO4J_PASSWORD" in w for w in warnings)
 
     def test_strong_password_no_warning(self):
-        from nexus.config import validate_config
         import nexus.config as nc
+        from nexus.config import validate_config
 
         original = nc.DEFAULT_NEO4J_PASSWORD
         try:
@@ -1512,9 +1512,10 @@ class TestValidateConfig:
         assert len(password_warns) == 0
 
     def test_localhost_urls_warn_in_production_mode(self):
-        from nexus.config import validate_config
-        import nexus.config as nc
         import os
+
+        import nexus.config as nc
+        from nexus.config import validate_config
 
         original_pw = nc.DEFAULT_NEO4J_PASSWORD
         try:
@@ -1529,9 +1530,10 @@ class TestValidateConfig:
         assert len(localhost_warns) >= 1
 
     def test_no_warnings_in_non_production_mode_with_good_config(self):
-        from nexus.config import validate_config
-        import nexus.config as nc
         import os
+
+        import nexus.config as nc
+        from nexus.config import validate_config
 
         original_pw = nc.DEFAULT_NEO4J_PASSWORD
         try:
@@ -1601,8 +1603,9 @@ class TestAnswerQueryHelpers:
 
     def test_dedup_cross_source_warns_all_empty_graph(self, caplog):
         """Warn when ALL graph passages are empty — may indicate backend issue."""
-        from nexus.tools import _dedup_cross_source
         import logging
+
+        from nexus.tools import _dedup_cross_source
 
         with caplog.at_level(logging.WARNING):
             result = _dedup_cross_source(["", "  ", "\n"], ["valid vector"])
@@ -1611,8 +1614,9 @@ class TestAnswerQueryHelpers:
 
     def test_dedup_cross_source_warns_all_empty_vector(self, caplog):
         """Warn when ALL vector passages are empty — may indicate backend issue."""
-        from nexus.tools import _dedup_cross_source
         import logging
+
+        from nexus.tools import _dedup_cross_source
 
         with caplog.at_level(logging.WARNING):
             result = _dedup_cross_source(["valid graph"], ["", "  "])
@@ -2010,6 +2014,7 @@ class TestRerankerThreadSafety:
         """Two sequential calls must each receive the same singleton (constructed once)."""
         import sys
         import types
+
         from nexus import reranker as nexus_reranker
 
         nexus_reranker.reset_reranker()
@@ -3540,6 +3545,53 @@ class TestParseContextResultsNoContextGuard:
         results = _parse_context_results(ctx, "PROJ", "")
         assert len(results) == 1
         assert results[0]["text"] == "some content here"
+
+
+class TestParseContextResultsGraphScores:
+    """Regression: graph results with negative scores must be parsed correctly.
+
+    Bug: HTTP /query returned graph_results=[] when graph context had valid
+    scored entries. Root cause was transient Neo4j warmup after docker-compose
+    restart + 24h cache TTL caching empty results.
+    """
+
+    def test_graph_context_with_negative_scores_parsed(self):
+        from http_server import _parse_context_results
+
+        ctx = (
+            "Graph Context retrieved for MCP_NEXUS_RAG in scope CORE_DOCS:\n"
+            "- [score: -1.5615] Mcp -> Has -> Python package installed\n"
+            "- [score: -3.6523] Tests/test_reranker.py -> Has -> Sys.modules patches\n"
+        )
+        results = _parse_context_results(ctx, "MCP_NEXUS_RAG", "CORE_DOCS")
+        assert len(results) == 2
+        assert results[0]["score"] == -1.5615
+        assert results[1]["score"] == -3.6523
+        assert "Python package" in results[0]["text"]
+        assert results[0]["project_id"] == "MCP_NEXUS_RAG"
+        assert results[0]["scope"] == "CORE_DOCS"
+
+    def test_multiline_graph_content_appended_to_previous_result(self):
+        from http_server import _parse_context_results
+
+        ctx = (
+            "Graph Context retrieved for PROJ in scope CORE_DOCS:\n"
+            "- [score: -2.0000] First line of content\n"
+            "Second line continues here\n"
+            "Third line too\n"
+            "- [score: -4.0000] Another result\n"
+        )
+        results = _parse_context_results(ctx, "PROJ", "CORE_DOCS")
+        assert len(results) == 2
+        assert "Second line" in results[0]["text"]
+        assert "Third line" in results[0]["text"]
+
+    def test_no_graph_context_returns_empty(self):
+        from http_server import _parse_context_results
+
+        ctx = "No Graph context found for PROJ in scope CORE_DOCS for query: 'test'"
+        results = _parse_context_results(ctx, "PROJ", "CORE_DOCS")
+        assert results == []
 
 
 # ---------------------------------------------------------------------------

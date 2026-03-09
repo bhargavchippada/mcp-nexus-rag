@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v1.9
+**Version:** v2.4
 
 ## Services — Full Startup
 
@@ -12,7 +12,7 @@ Use the automation script after a reboot or service restart.
 ### Quick Start (Recommended)
 
 ```bash
-# Start all services in one command: Neo4j, Qdrant, Redis, Ollama, Postgres, Memgraph
+# Start all services: Neo4j, Qdrant, Redis, Ollama, Postgres, Memgraph (all Docker)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh
 
 # Start the Code-Graph-RAG realtime watcher (keep Memgraph in sync with code changes)
@@ -20,6 +20,13 @@ Use the automation script after a reboot or service restart.
 
 # Start MCP SSE server on port 8765 (for Docker consumers like gravity-claw)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --mcp-sse
+
+# Start HTTP API server on port 8766 (for mission-control Nexus Query page)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --http-api
+
+# Start shared reranker service on port 8767 (saves ~2GB VRAM when both server.py and http_server.py use it)
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --reranker
+# Then set RERANKER_MODE=remote for server.py and http_server.py consumers
 
 # Start the Nexus RAG sync watcher (auto-ingests core docs into Neo4j+Qdrant on change)
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --rag-sync
@@ -45,6 +52,8 @@ tail -f /tmp/rag-sync-watcher.log
 | **CGR Watcher** | `start-services.sh --watcher` | — | Syncs code changes → Memgraph |
 | **RAG Sync Watcher** | `start-services.sh --rag-sync` | — | Auto-ingests core docs → Neo4j+Qdrant |
 | **MCP SSE** | `start-services.sh --mcp-sse` | 8765 | Nexus RAG over SSE (for Docker consumers) |
+| **HTTP API** | `start-services.sh --http-api` | 8766 | REST API for mission-control Nexus Query |
+| **Reranker** | `start-services.sh --reranker` | 8767 | Shared cross-encoder (saves ~2GB VRAM) |
 | **Nexus MCP** | Auto — Claude Code via `.mcp.json` | stdio | RAG tools for agents |
 | **Code-Graph-RAG MCP** | Auto — Claude Code via `.mcp.json` | stdio | Code analysis tools |
 
@@ -63,32 +72,54 @@ No manual start is needed — they run as stdio processes spawned on demand.
 **Code-Graph-RAG MCP** — launched as:
 ```bash
 uv run --directory /home/turiya/code-graph-rag code-graph-rag mcp-server
-# Env: TARGET_REPO_PATH=~/antigravity, MEMGRAPH_PORT=7688, CYPHER_MODEL=llama3.1:8b
+# Env: TARGET_REPO_PATH=~/antigravity, MEMGRAPH_PORT=7688, CYPHER_MODEL=qwen2.5:3b
 ```
 
-**All 15 MCP servers** are defined in `~/antigravity/.mcp.json`:
-`nexus`, `code-graph-rag`, `github-mcp-server`, `puppeteer`, `playwright`, `chrome-devtools`,
-`sequential-thinking`, `notion`, `fetch`, `filesystem`, `postgres`, `redis`, `git`, `time`, `docker`
+**All 18 MCP servers** are defined in `~/antigravity/.mcp.json`:
+`nexus`, `code-graph-rag`, `github-mcp-server`, `playwright`, `chrome-devtools`,
+`sequential-thinking`, `notion`, `fetch`, `filesystem`, `postgres`, `redis`, `git`, `time`, `docker`,
+`searxng`, `tavily`, `brave-search`
 
 To reload MCP servers after editing `.mcp.json`, restart the Claude Code session.
 
 ### After-Reboot Checklist
 
 ```bash
-# 1. Start Docker services (Neo4j, Qdrant, Redis, Ollama, Postgres)
-cd ~/antigravity/projects/mcp-nexus-rag && docker-compose up -d
+# 1. Start all services (Neo4j, Qdrant, Redis, Ollama, Postgres — all Docker)
+#    This also pulls missing Ollama models and starts watchers + SSE + HTTP API servers
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh
 
-# 2. Start Memgraph (Code-Graph-RAG backend)
-docker start memgraph-cgr || docker run -d --name memgraph-cgr \
-  -p 7688:7687 -p 7445:7444 --restart unless-stopped memgraph/memgraph-mage
+# 2. Verify Ollama models are present (auto-pulled by step 1, but verify)
+ollama list  # Should show: nomic-embed-text, qllama/bge-reranker-v2-m3, qwen2.5:3b
 
-# 3. Start realtime watcher (Memgraph ← code changes)
-~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --watcher
+# 3. Start Mission Control + Gravity Claw
+~/antigravity/projects/mission-control/scripts/start-services.sh
+cd ~/antigravity/projects/gravity-claw && docker compose up -d --build
 
 # 4. Verify all services
 ~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh --health
 
 # 5. MCP servers — no action needed; Claude Code starts them on next session
+```
+
+### Fresh Volume Bootstrap (First-Time or After `docker-compose down -v`)
+
+After a volume wipe, Qdrant/Neo4j are empty. The RAG sync watcher auto-ingests core docs
+(README, MEMORY, TODO, AGENTS) on startup, but this takes a few minutes.
+
+```bash
+# 1. Start services normally
+~/antigravity/projects/mcp-nexus-rag/scripts/start-services.sh
+
+# 2. Wait for RAG sync watcher to ingest (check log)
+tail -f /tmp/rag-sync-watcher.log  # Wait until "sync complete" or initial batch finishes
+
+# 3. Verify data populated
+curl -s http://localhost:6333/collections/nexus_rag | python3 -c "import sys,json; print(f'Points: {json.load(sys.stdin)[\"result\"][\"points_count\"]}')"
+# Expected: > 100 points after initial sync
+
+# 4. GraphRAG requires qwen2.5:3b — ensure model is pulled before GraphRAG sync runs
+ollama list | grep qwen2.5  # Must exist before GraphRAG entity extraction works
 ```
 
 ### Code-Graph-RAG Index Management
@@ -174,7 +205,7 @@ curl http://localhost:6333/collections || echo "Qdrant not responding"
 
 # Test Ollama
 curl -X POST http://localhost:11434/api/generate \
-  -d '{"model":"llama3.1:8b","prompt":"ping","stream":false}'
+  -d '{"model":"qwen2.5:3b","prompt":"ping","stream":false}'
 
 # Test Redis cache
 redis-cli ping                        # Expected: PONG

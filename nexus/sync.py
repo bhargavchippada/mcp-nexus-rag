@@ -10,10 +10,10 @@ the RAG focused on high-signal content.
 from pathlib import Path
 from typing import Optional
 
-from nexus.config import logger
-from nexus.dedup import content_hash
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
+from nexus.config import logger
+from nexus.dedup import content_hash
 
 # ---------------------------------------------------------------------------
 # Core documentation patterns

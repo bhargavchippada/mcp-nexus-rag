@@ -7,41 +7,40 @@ that imports this module to register the tools on the shared mcp instance.
 """
 
 import asyncio
-from typing import Optional
-from datetime import datetime, timezone
 import os
+from datetime import datetime, timezone
 from pathlib import Path
-import pathspec
-import httpx
+from typing import Optional
 
+import httpx
+import pathspec
 from llama_index.core import Document
 from llama_index.core.schema import QueryBundle
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
 from qdrant_client.http import models as qdrant_models
 
-from nexus.config import (
-    logger,
-    mcp,
-    DEFAULT_QDRANT_URL,
-    DEFAULT_OLLAMA_URL,
-    DEFAULT_LLM_MODEL,
-    DEFAULT_LLM_TIMEOUT,
-    DEFAULT_RERANKER_CANDIDATE_K,
-    MAX_CONTEXT_CHARS,
-    MAX_ANSWER_CONTEXT_LIMIT,
-    RERANKER_ENABLED,
-    OLLAMA_RETRY_COUNT,
-    OLLAMA_RETRY_BASE_DELAY,
-)
-from nexus.dedup import content_hash
+from nexus import cache as cache_module
+from nexus import sync as sync_module
 from nexus.backends import neo4j as neo4j_backend
 from nexus.backends import qdrant as qdrant_backend
+from nexus.chunking import chunk_document, needs_chunking
+from nexus.config import (
+    DEFAULT_LLM_MODEL,
+    DEFAULT_LLM_TIMEOUT,
+    DEFAULT_OLLAMA_URL,
+    DEFAULT_QDRANT_URL,
+    DEFAULT_RERANKER_CANDIDATE_K,
+    MAX_ANSWER_CONTEXT_LIMIT,
+    MAX_CONTEXT_CHARS,
+    OLLAMA_RETRY_BASE_DELAY,
+    OLLAMA_RETRY_COUNT,
+    RERANKER_ENABLED,
+    logger,
+    mcp,
+)
+from nexus.dedup import content_hash
 from nexus.indexes import get_graph_index, get_vector_index
 from nexus.reranker import get_reranker
-from nexus.chunking import needs_chunking, chunk_document
-from nexus import sync as sync_module
-from nexus import cache as cache_module
-
 
 # ---------------------------------------------------------------------------
 # Metadata helpers
@@ -1198,7 +1197,7 @@ async def answer_query(
     Retrieves context from both backends **concurrently**, deduplicates passages
     across sources, builds a structured prompt that attributes each passage to its
     origin (vector / graph), and generates a grounded answer with the local Ollama
-    LLM (default: ``llama3.1:8b``).
+    LLM (default: ``qwen2.5:3b``).
 
     Falls back gracefully if either backend returns no hits — the answer is still
     generated using whichever context is available.
@@ -1210,7 +1209,7 @@ async def answer_query(
             answers across all project scopes.
         rerank: Apply bge-reranker cross-encoder before combining (default True).
         model: Ollama model name override. Defaults to ``DEFAULT_LLM_MODEL``
-            (``llama3.1:8b`` unless ``LLM_MODEL`` env var is set).
+            (``qwen2.5:3b`` unless ``LLM_MODEL`` env var is set).
         max_context_chars: Truncate combined context to this many chars to avoid
             exceeding the model context window (default 6000).
 

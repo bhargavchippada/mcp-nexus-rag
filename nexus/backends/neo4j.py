@@ -15,10 +15,10 @@ import threading
 from neo4j import GraphDatabase
 
 from nexus.config import (
+    ALLOWED_META_KEYS,
+    DEFAULT_NEO4J_PASSWORD,
     DEFAULT_NEO4J_URL,
     DEFAULT_NEO4J_USER,
-    DEFAULT_NEO4J_PASSWORD,
-    ALLOWED_META_KEYS,
 )
 
 logger = logging.getLogger("mcp-nexus-rag")
@@ -355,7 +355,7 @@ def get_entity_node_count(project_id: str, scope: str = "") -> int:
     """Count LLM-extracted entity nodes connected to chunk nodes for a project/scope.
 
     Entity nodes are created by the LlamaIndex graph extraction pipeline (via
-    ``llama3.1:8b``).  Unlike chunk nodes, they don't carry ``content_hash``.
+    ``qwen2.5:3b``).  Unlike chunk nodes, they don't carry ``content_hash``.
     This query traverses one hop from chunk nodes to find connected entities.
 
     Args:

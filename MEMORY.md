@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v6.0
+**Version:** v6.5
 
 ## Known Issues
 
@@ -17,6 +17,47 @@
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
 ## Lessons Learned
+
+### [2026-03-08] Shared Reranker HTTP Microservice (v3.0)
+
+**What:** Extracted the FlagEmbeddingReranker (~2 GB FP16) into a shared HTTP microservice (`reranker_service.py` on port 8767). Both `server.py` (MCP stdio) and `http_server.py` (:8766) can use it via `RERANKER_MODE=remote`, saving ~2 GB VRAM.
+**Files changed:** `nexus/config.py` (v3.0), `nexus/reranker.py` (v1.3), `reranker_service.py` (new), `scripts/start-services.sh` (v2.0), `tests/test_reranker.py` (v1.3)
+**Key decisions:**
+- Sync `httpx.Client` (not async) — `postprocess_nodes` is called synchronously; HTTP latency (~50-200ms) negligible vs inference time
+- Score mapping by `_original_index` in metadata avoids fragile text matching
+- `RERANKER_MODE=local` (default) = zero behavior change, all 452 tests pass unchanged
+- No new dependencies — httpx, FastAPI, uvicorn already in poetry deps
+**Test count:** 452 (37 in test_reranker.py, up from 18 — added 10 RemoteReranker + mode switch tests)
+
+### [2026-03-08] LLM Model Switch: llama3.1:8b-instruct-q4_0 → qwen2.5:3b
+
+**What:** Replaced LLM model for triplet extraction and answer synthesis.
+**Changes:** `docker-compose.yml` ollama-init model list, `config.py` DEFAULT_LLM_MODEL. Redis cache invalidated.
+**VRAM:** ~1.9 GB (qwen2.5:3b) vs ~4.7 GB (llama3.1:8b-q4_0). Auto-unloads after 10m idle.
+
+### [2026-03-08] Full Docker Compose Migration — Ollama + Redis (COMPLETED)
+
+**What:** Migrated Ollama and Redis from systemd services to Docker Compose. Switched LLM model from `llama3.1:8b` to quantized `llama3.1:8b-instruct-q4_0` for VRAM savings.
+**Changes:**
+- `docker-compose.yml`: Added Ollama (GPU passthrough, `OLLAMA_MAX_LOADED_MODELS=1`, `OLLAMA_KEEP_ALIVE=10m`) and Redis services; ollama-init pulls 3 models
+- `config.py`: `DEFAULT_LLM_MODEL` → `llama3.1:8b-instruct-q4_0`
+- Disabled systemd `ollama.service` and `redis-server.service` (replaced by Docker)
+- NVIDIA Container Toolkit installed for Docker GPU access
+- Full RAG reindex: 22/23 tracked files synced (touch-triggered), all 5 projects + AGENT in both Neo4j (2432 nodes) and Qdrant (248 points)
+
+**VRAM impact:** ~4.7 GB for LLM (q4_0) vs ~8 GB (default Q8); models auto-unload after 10m idle.
+**Prevention Guidelines:**
+- Docker GPU requires `nvidia-container-toolkit` + `nvidia-ctk runtime configure --runtime=docker` + Docker restart
+- Ollama in Docker must have `OLLAMA_HOST=0.0.0.0` for inter-container access
+- Watcher has no initial scan — must `touch` tracked files to trigger ingestion after data wipe/reindex
+- After any Ollama restart, verify watcher connectivity (in-flight ingestion will fail)
+
+### [2026-03-08] fetch_server.py Cleanup + MCP Consolidation (COMPLETED)
+
+**What:** Removed redundant `fetch_server.py` (custom MCP fetch server) and `mcp-nexus-fetch-url` config from `.mcp.json`. Also removed `puppeteer` MCP (superseded by `playwright`).
+**Why:** `fetch_server.py` duplicated functionality provided by `fetch` (npm), `searxng` (`web_url_read`), and `tavily` (`tavily-extract`). The file was already deleted on `main` branch.
+**Changes:** Removed from `.mcp.json`, cleaned AGENTS.md references, added 3 new web search MCP servers (`searxng`, `tavily`, `brave-search`), updated `start-services.sh` v1.9 with SearXNG container management.
+**Prevention Guideline:** Before adding custom MCP servers, check if an existing npm/pip package already provides the same functionality.
 
 ### [2026-03-06] Watcher Processes Offline — Root-Owned venv + Stale Logs (FIXED)
 

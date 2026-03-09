@@ -3,11 +3,12 @@
 Tests for nexus.chunking — Document chunking utilities.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from nexus import chunking
-from nexus.chunking import needs_chunking, chunk_document
+from nexus.chunking import chunk_document, needs_chunking
 from nexus.config import MAX_DOCUMENT_SIZE
 
 

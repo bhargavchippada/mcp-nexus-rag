@@ -10,9 +10,9 @@ Run with: uvicorn http_server:app --host 0.0.0.0 --port 8765
 
 import asyncio
 import re
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,14 +21,13 @@ from pydantic import BaseModel, Field
 # Import the actual tool implementations
 # Note: nest_asyncio removed - conflicts with uvloop used by uvicorn
 from nexus.tools import (
-    get_vector_context,
-    get_graph_context,
     answer_query,
-    health_check,
     get_all_project_ids,
     get_all_tenant_scopes,
+    get_graph_context,
+    get_vector_context,
+    health_check,
 )
-
 
 # ---------------------------------------------------------------------------
 # Request/Response models

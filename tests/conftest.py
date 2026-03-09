@@ -6,9 +6,9 @@ Centralises the mock-builder functions previously duplicated between
 test_unit.py and test_integration.py so each test module stays lean.
 """
 
-import pytest
 from unittest.mock import MagicMock
 
+import pytest
 
 # ---------------------------------------------------------------------------
 # Neo4j mock builders — re-usable across all test modules

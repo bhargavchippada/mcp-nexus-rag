@@ -10,10 +10,10 @@ intelligent sentence-boundary-aware splitting.
 from llama_index.core.node_parser import SentenceSplitter
 
 from nexus.config import (
-    logger,
-    MAX_DOCUMENT_SIZE,
-    INGEST_CHUNK_SIZE,
     INGEST_CHUNK_OVERLAP,
+    INGEST_CHUNK_SIZE,
+    MAX_DOCUMENT_SIZE,
+    logger,
 )
 
 

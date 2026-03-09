@@ -12,10 +12,10 @@ from nexus.sync import (
     _classify_file,
 )
 from nexus.watcher import (
-    _acquire_single_instance_lock,
-    _release_single_instance_lock,
     CoreDocEventHandler,
+    _acquire_single_instance_lock,
     _delete_from_rag,
+    _release_single_instance_lock,
     _sync_changed,
     _sync_deleted,
 )

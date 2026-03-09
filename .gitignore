@@ -19,3 +19,4 @@ htmlcov/
 .ruff_cache/
 .cgr-hash-cache.json
 artifacts/
+.venv/

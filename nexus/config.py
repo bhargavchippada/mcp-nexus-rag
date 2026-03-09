@@ -1,4 +1,4 @@
-# Version: v2.9
+# Version: v3.0
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -19,7 +19,7 @@ DEFAULT_NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password123")
 DEFAULT_QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
-DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "llama3.1:8b")
+DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
 
 # ---------------------------------------------------------------------------
 # LLM & Text processing defaults
@@ -57,6 +57,8 @@ DEFAULT_RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-
 DEFAULT_RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "5"))
 DEFAULT_RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", "20"))
 RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
+RERANKER_MODE = os.environ.get("RERANKER_MODE", "local")  # "local" or "remote"
+RERANKER_SERVICE_URL = os.environ.get("RERANKER_SERVICE_URL", "http://localhost:8767")
 
 # ---------------------------------------------------------------------------
 # Context retrieval output size limit

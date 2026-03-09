@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v3.9
+**Version:** v4.1
 
 ## Watcher Offline Fix (2026-03-06) (Completed)
 
@@ -21,6 +21,8 @@
 - [ ] Per-tenant rate limiting (optional) — in-memory limiter keyed by `project_id`
 - [x] Add integrity-check command to detect duplicate `content_hash` groups in Neo4j/Qdrant and unscoped Neo4j nodes (`project_id`/`tenant_scope` missing) — DONE: `scripts/safe_cleanup.py` (dry-run + apply)
 - [ ] Add watcher auto-restart guard for `nexus.watcher` daemon mode (liveness startup guard is done in `start-services.sh` v1.3)
+- [ ] [LOW] Add initial-scan mode to watcher (currently file-change-only via inotify — no ingestion on startup for existing files)
+- [ ] [LOW] Clean up old host Ollama models at `/usr/share/ollama/.ollama/models` (systemd Ollama replaced by Docker)
 
 ### Performance
 

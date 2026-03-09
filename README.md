@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v4.0
+**Version:** v4.2
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Neo4j) and **Vector RAG** (Qdrant) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama — zero data leakage.
 
-**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 437 tests passing · ⚡ Redis semantic cache integrated
+**Status**: ✅ Production-ready · 🔒 Security-first · ⚡ High-performance · 📊 452 tests passing · ⚡ Redis semantic cache integrated
 
 ---
 
@@ -21,7 +21,7 @@ Agent (MCP Client)
        │
        ▼
  server.py (FastMCP)
-  ├── GraphRAG  → Neo4j (llama3.1:8b builds property graph)
+  ├── GraphRAG  → Neo4j (qwen2.5:3b builds property graph)
   │                └── bge-reranker-v2-m3 (cross-encoder reranker)
   └── Vector RAG → Qdrant (nomic-embed-text, collection: nexus_rag)
                    └── bge-reranker-v2-m3 (cross-encoder reranker)
@@ -43,6 +43,14 @@ Both retrieval tools use a two-stage pipeline:
 3. **Top-N selection** — return the `RERANKER_TOP_N` (default 5) highest-scoring nodes
 
 The reranker is a lazy-loaded singleton (FP16, loaded once per process). Pass `rerank=False` to either tool to skip reranking and return raw retrieval results.
+
+**Shared Reranker Mode (v3.0):** Set `RERANKER_MODE=remote` to offload reranking to a shared HTTP microservice (`reranker_service.py` on port 8767), saving ~2 GB VRAM when both `server.py` and `http_server.py` are running. Default: `local` (in-process model loading, no behavior change).
+
+```text
+RERANKER_MODE=remote:
+  server.py ──> RemoteReranker ──HTTP──> reranker_service.py :8767 ──> FlagEmbeddingReranker [~2GB]
+  http_server.py ──> RemoteReranker ──HTTP──┘
+```
 
 ### Multi-Tenant Isolation
 
@@ -138,7 +146,8 @@ Services are defined in `docker-compose.yml`:
 Models auto-pulled by `ollama-init` on first start:
 
 - `nomic-embed-text` — embeddings
-- `llama3.1:8b` — graph extraction
+- `qwen2.5:3b` — graph extraction + answer synthesis
+- `qllama/bge-reranker-v2-m3` — Ollama-served reranker (optional)
 
 > **Note**: `BAAI/bge-reranker-v2-m3` is loaded directly from HuggingFace Hub by `llama-index-postprocessor-flag-embedding-reranker` — it does **not** require an Ollama pull. Requires `FlagEmbedding>=1.3.5,<2.0.0` and `transformers>=4.40.0,<5.0.0`.
 
@@ -187,6 +196,8 @@ PYTHONPATH=. poetry run pytest tests/ --cov=nexus --cov=server --cov-report=term
 | `RERANKER_TOP_N`       | `5`                        | Number of results returned after reranking                          |
 | `RERANKER_CANDIDATE_K` | `20`                       | Candidate pool size fetched before reranking                        |
 | `RERANKER_ENABLED`     | `true`                     | Set to `false` to disable reranking globally                        |
+| `RERANKER_MODE`        | `local`                    | `local` = in-process model, `remote` = shared HTTP service          |
+| `RERANKER_SERVICE_URL` | `http://localhost:8767`    | URL of the shared reranker service (only used when mode=remote)     |
 | `MAX_DOCUMENT_SIZE`    | `4096` (4KB)               | Documents larger than this are auto-chunked on ingest               |
 | `MAX_CONTEXT_CHARS`    | `1500`                     | Hard cap on chars returned by retrieval tools (0 = disabled)        |
 | `INGEST_CHUNK_SIZE`    | `1024`                     | Chunk size for large document splitting                             |
@@ -371,7 +382,7 @@ Both `nexus` and `code-graph-rag` are auto-started by Claude Code on session ini
       "env": {
         "TARGET_REPO_PATH": "/home/turiya/antigravity",
         "CYPHER_PROVIDER": "ollama",
-        "CYPHER_MODEL": "llama3.1:8b",
+        "CYPHER_MODEL": "qwen2.5:3b",
         "OLLAMA_BASE_URL": "http://localhost:11434",
         "MEMGRAPH_PORT": "7688"
       }
@@ -524,9 +535,9 @@ Add to Claude Code (`~/.claude.json`) or Gemini (`~/.gemini/antigravity/mcp_conf
       "env": {
         "TARGET_REPO_PATH": "/home/turiya/antigravity",
         "CYPHER_PROVIDER": "ollama",
-        "CYPHER_MODEL": "llama3.1:8b",
+        "CYPHER_MODEL": "qwen2.5:3b",
         "ORCHESTRATOR_PROVIDER": "ollama",
-        "ORCHESTRATOR_MODEL": "llama3.1:8b",
+        "ORCHESTRATOR_MODEL": "qwen2.5:3b",
         "OLLAMA_BASE_URL": "http://localhost:11434",
         "MEMGRAPH_PORT": "7688"
       }
@@ -702,7 +713,7 @@ Use the automation script to start all services after a reboot:
 - 🔬 **NEW**: `get_tenant_stats` returns a detailed graph breakdown:
   - `graph_nodes_total` — all Neo4j nodes for the project/scope
   - `graph_chunk_nodes` — source doc nodes (content we explicitly ingested)
-  - `graph_entity_nodes` — LLM-extracted concept/entity nodes (produced by `llama3.1:8b`)
+  - `graph_entity_nodes` — LLM-extracted concept/entity nodes (produced by local Ollama LLM)
 - 📊 **NEW**: `print_all_stats` table now includes **CHUNKS** and **ENTITIES** columns
 - 🔧 Two new `nexus/backends/neo4j.py` helpers: `get_chunk_node_count`, `get_entity_node_count`
 - ✅ **Tests**: 194 tests passing (6 new), 100% coverage maintained, mypy clean

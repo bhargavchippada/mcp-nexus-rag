@@ -17,12 +17,11 @@ asyncio_mode=auto (pyproject.toml) — no @pytest.mark.asyncio needed.
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
 from nexus import indexes as nexus_indexes
 from nexus import tools as nexus_tools
+from nexus.backends import neo4j as neo4j_backend
+from nexus.backends import qdrant as qdrant_backend
 from tests.conftest import make_neo4j_driver
-
 
 # ---------------------------------------------------------------------------
 # nexus.backends.neo4j — get_scopes_for_project
@@ -355,6 +354,7 @@ class TestServerMainGuard:
     def test_main_guard_calls_main(self):
         """Exercises the ``if __name__ == '__main__': main()`` branch via runpy."""
         import runpy
+
         import nexus.config as nexus_config
 
         with patch.object(nexus_config.mcp, "run"):
