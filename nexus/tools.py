@@ -1,4 +1,4 @@
-# Version: v4.9
+# Version: v5.0
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -287,6 +287,15 @@ async def ingest_graph_document(
                         updated,
                         file_path,
                     )
+            # Catch-all: tag any orphan entity nodes created by PropertyGraphIndex
+            orphans = neo4j_backend.backfill_all_unscoped(project_id, scope)
+            if orphans:
+                logger.warning(
+                    "Graph backfill_all_unscoped tagged %d orphan node(s) for %s/%s",
+                    orphans,
+                    project_id,
+                    scope,
+                )
             cache_module.invalidate_cache(project_id, scope)
         # Bug fix: when ALL chunks fail, return an error string so callers
         # (watcher, sync) correctly detect failure via "Error" in result.
@@ -321,6 +330,7 @@ async def ingest_graph_document(
             ),
         )
         index.insert(doc)
+        # Backfill entity nodes: file_path-based first, then catch-all for orphans
         if file_path:
             updated = neo4j_backend.backfill_file_metadata(project_id, scope, file_path)
             if updated:
@@ -329,6 +339,14 @@ async def ingest_graph_document(
                     updated,
                     file_path,
                 )
+        orphans = neo4j_backend.backfill_all_unscoped(project_id, scope)
+        if orphans:
+            logger.warning(
+                "Graph backfill_all_unscoped tagged %d orphan node(s) for %s/%s",
+                orphans,
+                project_id,
+                scope,
+            )
         cache_module.invalidate_cache(project_id, scope)
         return f"Successfully ingested Graph document for '{project_id}' in scope '{scope}'."
     except Exception as e:
@@ -566,7 +584,7 @@ async def get_graph_context(
         cache_module.set_cached(query, project_id, scope, result, tool_type="graph")
         return _apply_cap(result, max_chars)
     except Exception as e:
-        logger.error(f"Error retrieving Graph context: {e}")
+        logger.error(f"Error retrieving Graph context ({type(e).__name__}): {e}")
         return "Error: Graph context retrieval failed. Check server logs for details."
 
 

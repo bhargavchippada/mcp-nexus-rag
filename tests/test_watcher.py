@@ -287,20 +287,33 @@ class TestSyncChanged:
             ),
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
         ):
             yield
 
     async def test_skips_nonexistent_file(self, tmp_path):
         ghost = str(tmp_path / "CLAUDE.md")
-        with patch("nexus.watcher.check_file_changed", return_value=True):
+        with patch(
+            "nexus.watcher.check_file_sync_status",
+            return_value={"changed": True, "needs_graph": True, "needs_vector": True},
+        ):
             # No exception — just logs warning
             await _sync_changed([ghost], WORKSPACE)
 
     async def test_skips_unclassified_file(self, tmp_path):
         f = tmp_path / "random.txt"
         f.write_text("hello")
-        with patch("nexus.watcher.check_file_changed", return_value=True):
+        with patch(
+            "nexus.watcher.check_file_sync_status",
+            return_value={"changed": True, "needs_graph": True, "needs_vector": True},
+        ):
             await _sync_changed([str(f)], WORKSPACE)
 
     async def test_skips_unchanged_file(self, tmp_path):
@@ -309,7 +322,14 @@ class TestSyncChanged:
         f = workspace / "CLAUDE.md"
         f.write_text("no change")
         with (
-            patch("nexus.watcher.check_file_changed", return_value=False),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": False,
+                    "needs_graph": False,
+                    "needs_vector": False,
+                },
+            ),
             patch(
                 "nexus.tools.ingest_graph_document", new_callable=AsyncMock
             ) as mock_g,
@@ -323,7 +343,14 @@ class TestSyncChanged:
         f = workspace / "CLAUDE.md"
         f.write_text("updated content")
         with (
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch(
@@ -352,7 +379,14 @@ class TestSyncChanged:
         f = proj / "README.md"
         f.write_text("project docs")
         with (
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch(
@@ -377,7 +411,14 @@ class TestSyncChanged:
         f = workspace / "CLAUDE.md"
         f.write_text("updated")
         with (
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch("nexus.watcher.neo4j_backend") as mock_neo4j,
             patch("nexus.watcher.qdrant_backend") as mock_qdrant,
             patch(
@@ -494,7 +535,14 @@ class TestSyncChangedSuccessCheck:
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch("nexus.watcher.cache_module"),
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch("nexus.tools.ingest_graph_document", AsyncMock(return_value=skipped)),
             patch(
                 "nexus.tools.ingest_vector_document", AsyncMock(return_value=skipped)
@@ -518,7 +566,14 @@ class TestSyncChangedSuccessCheck:
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch("nexus.watcher.cache_module"),
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch(
                 "nexus.tools.ingest_graph_document",
                 AsyncMock(return_value="Error: neo4j unavailable"),
@@ -545,7 +600,14 @@ class TestSyncChangedSuccessCheck:
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch("nexus.watcher.cache_module"),
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch(
                 "nexus.tools.ingest_graph_document",
                 AsyncMock(return_value="Successfully ingested graph document"),
@@ -582,7 +644,14 @@ class TestSyncChangedCacheInvalidation:
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch(
                 "nexus.tools.ingest_graph_document",
                 AsyncMock(side_effect=RuntimeError("neo4j down")),
@@ -608,7 +677,14 @@ class TestSyncChangedCacheInvalidation:
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
-            patch("nexus.watcher.check_file_changed", return_value=True),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": True,
+                    "needs_graph": True,
+                    "needs_vector": True,
+                },
+            ),
             patch(
                 "nexus.tools.ingest_graph_document",
                 AsyncMock(return_value="Successfully ingested"),
@@ -624,7 +700,7 @@ class TestSyncChangedCacheInvalidation:
         assert mock_cache.invalidate_cache.call_count >= 1
 
     async def test_unchanged_file_does_not_invalidate_cache(self, tmp_path):
-        """If check_file_changed returns False, cache must not be invalidated."""
+        """If check_file_sync_status returns unchanged, cache must not be invalidated."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "CLAUDE.md"
@@ -634,7 +710,14 @@ class TestSyncChangedCacheInvalidation:
             patch("nexus.watcher.neo4j_backend"),
             patch("nexus.watcher.qdrant_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
-            patch("nexus.watcher.check_file_changed", return_value=False),
+            patch(
+                "nexus.watcher.check_file_sync_status",
+                return_value={
+                    "changed": False,
+                    "needs_graph": False,
+                    "needs_vector": False,
+                },
+            ),
         ):
             await _sync_changed([str(f)], workspace)
 

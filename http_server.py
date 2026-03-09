@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.1
 """
 HTTP API server for Nexus RAG.
 
@@ -28,6 +28,13 @@ from nexus.tools import (
     get_vector_context,
     health_check,
 )
+
+# Per-task timeout (seconds) for individual retrieval calls.
+# Graph context is the bottleneck: PropertyGraphIndex → Ollama LLM (Cypher gen)
+# → Neo4j → Ollama LLM (synthesis).  Two sequential LLM calls can take 30-60s
+# on cold model.  Synthesis (answer_query) adds another LLM call on top.
+_RETRIEVAL_TIMEOUT = 60  # seconds per vector/graph scope query
+_SYNTHESIS_TIMEOUT = 90  # seconds for answer_query (includes its own retrieval)
 
 # ---------------------------------------------------------------------------
 # Request/Response models
@@ -176,6 +183,8 @@ def _parse_context_results(context_str: str, default_project: str, default_scope
     Content without score prefix is appended to the previous result.
     """
     results = []
+    if not context_str or not context_str.strip():
+        return results
     # Guard against "No Vector/Graph context found for ..." response strings.
     # Use startswith to avoid false-positive matches when retrieved document
     # content itself contains the phrase "No ... context found".
@@ -198,7 +207,6 @@ def _parse_context_results(context_str: str, default_project: str, default_scope
         if match:
             # Save previous result if exists
             if current_result:
-                current_result["text"] = current_result["text"][:500]
                 results.append(current_result)
 
             # Start new result
@@ -207,22 +215,82 @@ def _parse_context_results(context_str: str, default_project: str, default_scope
             except ValueError:
                 score = 0.0
             current_result = {
-                "text": match.group(2),
+                "text": match.group(2)[:500],
                 "score": score,
                 "project_id": default_project,
                 "scope": default_scope,
                 "source": "nexus-rag",
             }
         elif current_result:
-            # Append to current result's text (multiline content)
-            current_result["text"] += " " + line
+            # Append to current result's text (multiline content, cap total)
+            remaining = 500 - len(current_result["text"])
+            if remaining > 0:
+                current_result["text"] += " " + line[:remaining]
 
     # Don't forget the last result
     if current_result:
-        current_result["text"] = current_result["text"][:500]
         results.append(current_result)
 
     return results
+
+
+async def _resolve_scopes(project_id: str, scope: str) -> list[str]:
+    """Resolve which scopes to query.
+
+    If a specific scope is provided, return it as a single-element list.
+    Otherwise, discover all scopes for the project, filtering out empty strings.
+    """
+    if scope:
+        return [scope]
+    all_scopes = await get_all_tenant_scopes(project_id=project_id)
+    # Filter out empty strings from scope list
+    return [s for s in all_scopes if s] or [""]
+
+
+def _collect_results(scopes, raw_results, model_cls, project_id, logger):
+    """Parse raw context strings into typed result models."""
+    results = []
+    label = model_cls.__name__
+    for s, result in zip(scopes, raw_results):
+        if isinstance(result, Exception):
+            if isinstance(result, asyncio.TimeoutError):
+                logger.warning(
+                    f"{label} timed out after {_RETRIEVAL_TIMEOUT}s for scope {s!r}"
+                )
+            else:
+                logger.warning(f"{label} task failed for scope {s!r}: {result}")
+            continue
+        if isinstance(result, str) and not result.startswith("Error"):
+            parsed = _parse_context_results(result, project_id, s)
+            results.extend([model_cls(**r) for r in parsed])
+    results.sort(key=lambda x: x.score, reverse=True)
+    return results
+
+
+async def _synthesize(query: str, project_id: str, scope: str, rerank: bool):
+    """Run answer_query synthesis, returning None on any error or timeout."""
+    try:
+        result = await asyncio.wait_for(
+            answer_query(
+                query=query,
+                project_id=project_id,
+                scope=scope,
+                rerank=rerank,
+            ),
+            timeout=_SYNTHESIS_TIMEOUT,
+        )
+        if result and result.startswith("Error"):
+            return None
+        return result
+    except asyncio.TimeoutError:
+        from nexus.config import logger
+
+        logger.warning(
+            f"Synthesis timed out after {_SYNTHESIS_TIMEOUT}s for query={query!r}"
+        )
+        return None
+    except Exception:
+        return None
 
 
 @app.post("/query", response_model=QueryResponse)
@@ -233,31 +301,33 @@ async def http_query(request: QueryRequest):
     project_id = request.project_id or "AGENT"
     scope = request.scope or ""
 
-    # Get available scopes if none specified
-    scopes_to_query = [scope] if scope else []
-    if not scopes_to_query:
-        all_scopes = await get_all_tenant_scopes(project_id=project_id)
-        scopes_to_query = list(all_scopes) if all_scopes else [""]
+    scopes_to_query = await _resolve_scopes(project_id, scope)
 
-    # Query all scopes concurrently
-    # max_chars=0 disables truncation since we parse into structured results
+    # Query all scopes concurrently with per-task timeout.
+    # max_chars=0 disables truncation since we parse into structured results.
     vector_tasks = [
-        get_vector_context(
-            query=request.query,
-            project_id=project_id,
-            scope=s,
-            rerank=request.rerank,
-            max_chars=0,
+        asyncio.wait_for(
+            get_vector_context(
+                query=request.query,
+                project_id=project_id,
+                scope=s,
+                rerank=request.rerank,
+                max_chars=0,
+            ),
+            timeout=_RETRIEVAL_TIMEOUT,
         )
         for s in scopes_to_query
     ]
     graph_tasks = [
-        get_graph_context(
-            query=request.query,
-            project_id=project_id,
-            scope=s,
-            rerank=request.rerank,
-            max_chars=0,
+        asyncio.wait_for(
+            get_graph_context(
+                query=request.query,
+                project_id=project_id,
+                scope=s,
+                rerank=request.rerank,
+                max_chars=0,
+            ),
+            timeout=_RETRIEVAL_TIMEOUT,
         )
         for s in scopes_to_query
     ]
@@ -266,55 +336,22 @@ async def http_query(request: QueryRequest):
         *vector_tasks, *graph_tasks, return_exceptions=True
     )
 
-    # Split results
     num_scopes = len(scopes_to_query)
-    vector_results_raw = all_results[:num_scopes]
-    graph_results_raw = all_results[num_scopes:]
+    vector_results = _collect_results(
+        scopes_to_query, all_results[:num_scopes], VectorResult, project_id, logger
+    )
+    graph_results = _collect_results(
+        scopes_to_query, all_results[num_scopes:], GraphResult, project_id, logger
+    )
 
-    # Parse vector results from all scopes
-    vector_results = []
-    for s, result in zip(scopes_to_query, vector_results_raw):
-        if isinstance(result, Exception):
-            logger.warning(f"Vector context task failed for scope {s!r}: {result}")
-            continue
-        # Skip tool-level error strings (start with "Error"), pass all other content
-        if isinstance(result, str) and not result.startswith("Error"):
-            parsed = _parse_context_results(result, project_id, s)
-            vector_results.extend([VectorResult(**r) for r in parsed])
-
-    # Parse graph results from all scopes
-    graph_results = []
-    for s, result in zip(scopes_to_query, graph_results_raw):
-        if isinstance(result, Exception):
-            logger.warning(f"Graph context task failed for scope {s!r}: {result}")
-            continue
-        if isinstance(result, str) and not result.startswith("Error"):
-            parsed = _parse_context_results(result, project_id, s)
-            graph_results.extend([GraphResult(**r) for r in parsed])
-
-    # Sort by score descending (highest relevance first)
-    vector_results.sort(key=lambda x: x.score, reverse=True)
-    graph_results.sort(key=lambda x: x.score, reverse=True)
-
-    # Optional synthesis (answer_query handles empty scope by searching all)
+    # Optional synthesis
     synthesis = None
     if request.synthesize:
-        try:
-            synthesis = await answer_query(
-                query=request.query,
-                project_id=project_id,
-                scope=request.scope or "",  # Empty = search all scopes
-                rerank=request.rerank,
-            )
-            # Clean up error messages
-            if synthesis and synthesis.startswith("Error"):
-                synthesis = None
-        except Exception:
-            synthesis = None
+        synthesis = await _synthesize(request.query, project_id, scope, request.rerank)
 
     return QueryResponse(
         query=request.query,
-        project_id=request.project_id,
+        project_id=project_id,
         vector_results=vector_results,
         graph_results=graph_results,
         synthesis=synthesis,

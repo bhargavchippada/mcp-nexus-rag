@@ -1,4 +1,4 @@
-# Version: v1.4
+# Version: v1.5
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -38,7 +38,7 @@ from nexus.sync import (
     PROJECT_MAPPINGS,
     _classify_file,
     canonical_file_path,
-    check_file_changed,
+    check_file_sync_status,
 )
 
 # ---------------------------------------------------------------------------
@@ -195,8 +195,9 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
             continue
         project_id, scope = classification
 
-        # Skip if content identical to what's already in RAG
-        if not check_file_changed(filepath, project_id, scope):
+        # Check which stores need updating (selective ingest prevents duplicates)
+        sync_status = check_file_sync_status(filepath, project_id, scope)
+        if not sync_status["changed"]:
             logger.debug(f"Watcher: unchanged, skipping {abs_path_str}")
             continue
 
@@ -208,27 +209,51 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
                 source_id = abs_path_str
 
             canonical_path = canonical_file_path(filepath, workspace_root)
+            needs_graph = sync_status["needs_graph"]
+            needs_vector = sync_status["needs_vector"]
 
-            # Delete old chunks (by canonical file_path metadata) before re-ingesting.
-            # Invalidate cache immediately so stale results aren't served if
-            # either ingest call below fails (fail-open: empty > stale).
-            _delete_from_rag(project_id, canonical_path, scope)
+            # Only delete + re-ingest into stores that need updating.
+            # This prevents duplicates from partial-failure recovery where
+            # one store already has the content.
+            if needs_graph and needs_vector:
+                # Both stores need updating — full delete + re-ingest
+                _delete_from_rag(project_id, canonical_path, scope)
+            elif needs_graph:
+                neo4j_backend.delete_by_filepath(project_id, canonical_path, scope)
+            elif needs_vector:
+                qdrant_backend.delete_by_filepath(project_id, canonical_path, scope)
+
             cache_module.invalidate_cache(project_id, scope)
 
-            graph_result = await ingest_graph_document(
-                text=content,
-                project_id=project_id,
-                scope=scope,
-                source_identifier=source_id,
-                file_path=canonical_path,
-            )
-            vector_result = await ingest_vector_document(
-                text=content,
-                project_id=project_id,
-                scope=scope,
-                source_identifier=source_id,
-                file_path=canonical_path,
-            )
+            graph_result = "Skipped: already in graph"
+            vector_result = "Skipped: already in vector"
+
+            if needs_graph:
+                graph_result = await ingest_graph_document(
+                    text=content,
+                    project_id=project_id,
+                    scope=scope,
+                    source_identifier=source_id,
+                    file_path=canonical_path,
+                )
+                # Backfill any orphan entity nodes created by PropertyGraphIndex
+                backfilled = neo4j_backend.backfill_all_unscoped(project_id, scope)
+                if backfilled:
+                    logger.info(
+                        "Watcher: backfilled %d unscoped nodes for %s/%s",
+                        backfilled,
+                        project_id,
+                        scope,
+                    )
+
+            if needs_vector:
+                vector_result = await ingest_vector_document(
+                    text=content,
+                    project_id=project_id,
+                    scope=scope,
+                    source_identifier=source_id,
+                    file_path=canonical_path,
+                )
 
             # Bug L12-4 fix: use "Error" not in instead of "Successfully" in.
             # "Skipped: duplicate" is a valid non-error result (content already ingested

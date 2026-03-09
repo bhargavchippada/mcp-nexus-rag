@@ -1,4 +1,4 @@
-# Version: v1.4
+# Version: v1.5
 """
 nexus.sync — File synchronization for core documentation.
 
@@ -198,19 +198,37 @@ def check_file_changed(filepath: Path, project_id: str, scope: str) -> bool:
     Returns:
         True if file should be re-ingested.
     """
+    result = check_file_sync_status(filepath, project_id, scope)
+    return result["changed"]
+
+
+def check_file_sync_status(
+    filepath: Path, project_id: str, scope: str
+) -> dict[str, bool]:
+    """Check file sync status across both stores.
+
+    Returns a dict with:
+        changed: True if any store needs updating
+        needs_graph: True if Neo4j is missing this content
+        needs_vector: True if Qdrant is missing this content
+
+    This allows callers to selectively ingest only into the store that
+    needs it, preventing duplicates from partial-failure recovery.
+    """
     content = _read_file_content(filepath)
     if content is None:
-        return False
+        return {"changed": False, "needs_graph": False, "needs_vector": False}
 
     chash = content_hash(content, project_id, scope)
 
-    # Check both stores
     neo4j_dup = neo4j_backend.is_duplicate(chash, project_id, scope)
     qdrant_dup = qdrant_backend.is_duplicate(chash, project_id, scope)
 
-    # Re-ingest if content is absent from EITHER store — ensures both backends stay
-    # in sync (recovers from partial-failure ingests where only one store was written).
-    return not (neo4j_dup and qdrant_dup)
+    return {
+        "changed": not (neo4j_dup and qdrant_dup),
+        "needs_graph": not neo4j_dup,
+        "needs_vector": not qdrant_dup,
+    }
 
 
 def get_files_needing_sync(workspace_root: str | Path) -> list[dict]:

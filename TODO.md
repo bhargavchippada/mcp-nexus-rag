@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete, [x] completed -->
 
-**Version:** v4.1
+**Version:** v4.5
 
 ## Watcher Offline Fix (2026-03-06) (Completed)
 
@@ -12,7 +12,7 @@
 - [x] Fix: Removed `setsid` from watcher startup in `start-services.sh` v1.5→v1.6
 - [x] Both watchers restarted: Code-Graph Watcher "Log fresh (45s)", Nexus RAG Watcher "Log fresh (22s)"
 - [x] Heartbeat pulse: 8/8 services up, healthy=true
-- [x] All 439 tests pass
+- [x] All 461 tests pass (474 total, 13 deselected)
 
 ## Pending
 
@@ -22,7 +22,12 @@
 - [x] Add integrity-check command to detect duplicate `content_hash` groups in Neo4j/Qdrant and unscoped Neo4j nodes (`project_id`/`tenant_scope` missing) — DONE: `scripts/safe_cleanup.py` (dry-run + apply)
 - [ ] Add watcher auto-restart guard for `nexus.watcher` daemon mode (liveness startup guard is done in `start-services.sh` v1.3)
 - [ ] [LOW] Add initial-scan mode to watcher (currently file-change-only via inotify — no ingestion on startup for existing files)
-- [ ] [LOW] Clean up old host Ollama models at `/usr/share/ollama/.ollama/models` (systemd Ollama replaced by Docker)
+- [ ] [LOW] Clean up old host Ollama models at `/usr/share/ollama/.ollama/models` (systemd Ollama replaced by host `ollama serve`)
+- [x] [HIGH] Add retrieval timeouts to http_server.py — DONE: `asyncio.wait_for()` with 60s retrieval, 90s synthesis (http_server.py v2.1)
+- [x] Docker compose cleanup — DONE: removed stale Ollama/ollama-init services, fixed OLLAMA_MAX_LOADED_MODELS, removed unused reranker model pull
+- [x] Context window reduction — DONE: `DEFAULT_CONTEXT_WINDOW` 32768→8192 in config.py v3.1 (reduces VRAM, faster inference)
+- [x] Fix orphan entity nodes — DONE: `backfill_all_unscoped()` in neo4j.py v2.4 tags unscoped nodes after every graph insert
+- [x] Fix duplicate content_hash entries — DONE: `check_file_sync_status()` in sync.py v1.5, selective ingest in watcher.py v1.5
 
 ### Performance
 
@@ -31,7 +36,7 @@
 ### Refactoring
 
 - [ ] [LOW] Consider splitting tools.py (1700+ lines) into tools/ingest.py, tools/query.py, tools/admin.py
-- [ ] [LOW] `http_query` in http_server.py has cyclomatic complexity 11 (threshold 10) — extract scope-result-parsing into helper functions
+- [x] [LOW] `http_query` in http_server.py had cyclomatic complexity 11 — FIXED: extracted `_resolve_scopes()`, `_collect_results()`, `_synthesize()` helpers + fixed response project_id mismatch + empty scope filtering (http_server.py v2.0)
 - [x] [LOW] Chunked ingest returns "Successfully ingested 0 chunks (errors=N)" when all chunks fail — FIXED: now returns "Error: All N chunks failed..." (tools.py v4.1)
 
 ### Dependencies (major — manual review required)

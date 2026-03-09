@@ -1,4 +1,4 @@
-# Version: v3.8
+# Version: v3.9
 """
 Unit tests for the nexus/ package.
 All database calls are mocked — no live Qdrant or Neo4j required.
@@ -4292,3 +4292,155 @@ class TestOllamaRetry:
                     "http://test/api/chat", {"model": "test"}
                 )
             assert mock_client.post.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# check_file_sync_status — selective store detection
+# ---------------------------------------------------------------------------
+
+
+class TestCheckFileSyncStatus:
+    """Tests for sync.check_file_sync_status — returns per-store status."""
+
+    def test_unchanged_in_both_stores(self, tmp_path):
+        f = tmp_path / "test.md"
+        f.write_text("content")
+        with (
+            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=True),
+            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=True),
+        ):
+            from nexus.sync import check_file_sync_status
+
+            result = check_file_sync_status(f, "PROJ", "SCOPE")
+            assert result == {
+                "changed": False,
+                "needs_graph": False,
+                "needs_vector": False,
+            }
+
+    def test_missing_from_both_stores(self, tmp_path):
+        f = tmp_path / "test.md"
+        f.write_text("content")
+        with (
+            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=False),
+            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=False),
+        ):
+            from nexus.sync import check_file_sync_status
+
+            result = check_file_sync_status(f, "PROJ", "SCOPE")
+            assert result == {
+                "changed": True,
+                "needs_graph": True,
+                "needs_vector": True,
+            }
+
+    def test_missing_from_vector_only(self, tmp_path):
+        """Partial failure recovery: graph has it, vector doesn't."""
+        f = tmp_path / "test.md"
+        f.write_text("content")
+        with (
+            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=True),
+            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=False),
+        ):
+            from nexus.sync import check_file_sync_status
+
+            result = check_file_sync_status(f, "PROJ", "SCOPE")
+            assert result["changed"] is True
+            assert result["needs_graph"] is False
+            assert result["needs_vector"] is True
+
+    def test_missing_from_graph_only(self, tmp_path):
+        """Partial failure recovery: vector has it, graph doesn't."""
+        f = tmp_path / "test.md"
+        f.write_text("content")
+        with (
+            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=False),
+            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=True),
+        ):
+            from nexus.sync import check_file_sync_status
+
+            result = check_file_sync_status(f, "PROJ", "SCOPE")
+            assert result["changed"] is True
+            assert result["needs_graph"] is True
+            assert result["needs_vector"] is False
+
+    def test_nonexistent_file(self, tmp_path):
+        f = tmp_path / "ghost.md"
+        from nexus.sync import check_file_sync_status
+
+        result = check_file_sync_status(f, "PROJ", "SCOPE")
+        assert result == {
+            "changed": False,
+            "needs_graph": False,
+            "needs_vector": False,
+        }
+
+    def test_check_file_changed_wraps_sync_status(self, tmp_path):
+        """check_file_changed is a backward-compat wrapper."""
+        f = tmp_path / "test.md"
+        f.write_text("content")
+        with (
+            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=True),
+            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=False),
+        ):
+            from nexus.sync import check_file_changed
+
+            assert check_file_changed(f, "PROJ", "SCOPE") is True
+
+
+# ---------------------------------------------------------------------------
+# backfill_all_unscoped — orphan entity node cleanup
+# ---------------------------------------------------------------------------
+
+
+class TestBackfillAllUnscoped:
+    """Tests for neo4j.backfill_all_unscoped."""
+
+    def test_tags_unscoped_nodes(self):
+        mock_record = MagicMock()
+        mock_record.__getitem__ = lambda self, k: 5  # 5 nodes updated
+        mock_session = MagicMock()
+        mock_session.run.return_value.single.return_value = mock_record
+
+        with patch("nexus.backends.neo4j.get_driver") as mock_driver:
+            mock_driver.return_value.session.return_value.__enter__ = lambda s: (
+                mock_session
+            )
+            mock_driver.return_value.session.return_value.__exit__ = lambda s, *a: None
+
+            from nexus.backends.neo4j import backfill_all_unscoped
+
+            result = backfill_all_unscoped("PROJ", "SCOPE")
+            assert result == 5
+
+            # Verify Cypher sets project_id and tenant_scope
+            call_args = mock_session.run.call_args
+            cypher = call_args[0][0]
+            assert "project_id IS NULL" in cypher
+            assert "SET n.project_id" in cypher
+
+    def test_returns_zero_on_no_orphans(self):
+        mock_record = MagicMock()
+        mock_record.__getitem__ = lambda self, k: 0
+        mock_session = MagicMock()
+        mock_session.run.return_value.single.return_value = mock_record
+
+        with patch("nexus.backends.neo4j.get_driver") as mock_driver:
+            mock_driver.return_value.session.return_value.__enter__ = lambda s: (
+                mock_session
+            )
+            mock_driver.return_value.session.return_value.__exit__ = lambda s, *a: None
+
+            from nexus.backends.neo4j import backfill_all_unscoped
+
+            assert backfill_all_unscoped("PROJ", "SCOPE") == 0
+
+    def test_handles_neo4j_error_gracefully(self):
+        with patch(
+            "nexus.backends.neo4j.get_driver",
+            side_effect=Exception("connection refused"),
+        ):
+            from nexus.backends.neo4j import backfill_all_unscoped
+
+            result = backfill_all_unscoped("PROJ", "SCOPE")
+            assert result == 0

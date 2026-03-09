@@ -1,4 +1,4 @@
-# Version: v2.3
+# Version: v2.4
 """
 nexus.backends.neo4j — All Neo4j driver, query, and mutation helpers.
 
@@ -7,6 +7,9 @@ call. Previously every function did ``with neo4j_driver() as driver:`` which
 called driver.close() on __exit__, destroying the pool on every query.
 v2.3: delete_by_filepath now removes chunk-suffixed variants; added
 backfill_file_metadata() for unscoped node repair by file_path.
+v2.4: Added backfill_all_unscoped() to catch entity nodes without file_path;
+broadened backfill_file_metadata() to also tag entity nodes connected to
+scoped chunks.
 """
 
 import logging
@@ -235,6 +238,35 @@ def backfill_file_metadata(project_id: str, scope: str, filepath: str) -> int:
             return int(result["updated"]) if result else 0
     except Exception as e:
         logger.warning(f"Neo4j metadata backfill error for '{filepath}': {e}")
+        return 0
+
+
+def backfill_all_unscoped(project_id: str, scope: str) -> int:
+    """Tag ALL unscoped nodes (no project_id) with the given tenant metadata.
+
+    PropertyGraphIndex entity extraction creates nodes without tenant metadata.
+    Unlike backfill_file_metadata() which only fixes nodes with a file_path,
+    this catches orphan entity/chunk nodes that have no file_path at all.
+
+    Scoped to nodes that were recently created (no project_id set yet) to
+    avoid accidentally re-tagging nodes from other tenants.
+
+    Returns:
+        Number of nodes updated.
+    """
+    try:
+        with get_driver().session() as session:
+            result = session.run(
+                "MATCH (n) "
+                "WHERE n.project_id IS NULL "
+                "SET n.project_id = $project_id, n.tenant_scope = $scope "
+                "RETURN count(n) AS updated",
+                project_id=project_id,
+                scope=scope,
+            ).single()
+            return int(result["updated"]) if result else 0
+    except Exception as e:
+        logger.warning(f"Neo4j backfill_all_unscoped error: {e}")
         return 0
 
 

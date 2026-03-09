@@ -20,7 +20,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Graph Database for Microsoft GraphRAG
+  # Graph Database for LlamaIndex PropertyGraphIndex
   neo4j:
     image: neo4j:2025-community
     container_name: turiya-neo4j
@@ -80,9 +80,8 @@ services:
     environment:
       - OLLAMA_ORIGINS=*
       - OLLAMA_HOST=0.0.0.0
-      - OLLAMA_CONTEXT_LENGTH=8192
       - OLLAMA_NUM_PARALLEL=1
-      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_MAX_LOADED_MODELS=2
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_KEEP_ALIVE=10m
     ports:
@@ -103,7 +102,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # Improved Init Service: Pulls models reliably
+  # Init Service: Pulls required models after Ollama is healthy
   ollama-init:
     image: curlimages/curl:latest
     container_name: turiya-ollama-init
@@ -115,12 +114,12 @@ services:
     command:
       - |
         echo 'Waiting for Ollama API to be fully responsive...'
-        until curl -s http://ollama:11434/api/tags > /dev/null; do 
+        until curl -s http://ollama:11434/api/tags > /dev/null; do
           sleep 2
         done
 
-        # Array of models to pull
-        MODELS="nomic-embed-text qllama/bge-reranker-v2-m3 qwen2.5:3b"
+        # Models required by Nexus RAG (reranker runs as separate service, not via Ollama)
+        MODELS="nomic-embed-text qwen2.5:3b"
 
         for MODEL in $$MODELS; do
           echo "Processing model: $$MODEL"

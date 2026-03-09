@@ -2,7 +2,7 @@
 
 <!-- Logical state: known bugs, key findings, changelog -->
 
-**Version:** v6.5
+**Version:** v6.9
 
 ## Known Issues
 
@@ -16,7 +16,45 @@
   - Issue: Single file contains all MCP tools
   - Recommendation: Consider splitting into tools/ingest.py, tools/query.py, tools/admin.py
 
+## Key Facts
+
+### Multiple server.py Instances Are Normal
+Each MCP client (Claude Code session, Gemini CLI, desktop app) spawns its own `server.py` via stdio. 3-4 concurrent instances is expected when multiple Claude Code sessions are open. These are NOT duplicates — each serves a different client. Do NOT kill them.
+
+### Docker Ollama Is the Intended Runtime
+Ollama runs via Docker (`docker-compose.yml` service `turiya-ollama`). Key docker-compose settings: `OLLAMA_MAX_LOADED_MODELS=2` (embed + LLM both loaded). Context window is controlled by `DEFAULT_CONTEXT_WINDOW` in `nexus/config.py` (8192 tokens) — this is what LlamaIndex sends as `num_ctx` to Ollama. The env var on Ollama container has no effect; the client controls context size.
+
+### MCP SSE Server (port 8765) — For Docker Consumers
+Gravity-claw (Docker container) connects to Nexus RAG via MCP SSE transport on port 8765. Started via `start-services.sh --mcp-sse`. Uses `mcp.settings.host/port` + `mcp.run(transport='sse', mount_path='/')`. This is separate from the HTTP REST API (port 8766, for mission-control) and the stdio MCP server (for Claude Code/Gemini CLI). If gravity-claw shows "SSE error: Non-200 status code (404)", the MCP SSE server isn't running.
+
+### Graph Context Retrieval Can Hang
+`PropertyGraphIndex.aretrieve()` makes multiple sequential Ollama LLM calls (NL→Cypher, then Neo4j, then synthesis). If the GPU is saturated (e.g., other LLM servers running), these calls hang indefinitely. The HTTP API (`http_server.py` v2.1) wraps all retrieval in `asyncio.wait_for()` — 60s per retrieval, 90s for synthesis. If graph times out, vector results still return.
+
+### Orphan Nodes and Duplicates — Root Causes and Fixes
+- **Unscoped entity nodes:** LlamaIndex's `PropertyGraphIndex.insert()` creates entity nodes during LLM extraction without propagating tenant metadata (project_id, tenant_scope). Fix: `backfill_all_unscoped()` in `neo4j.py` v2.4 runs after every graph insert — tags ALL nodes with `project_id IS NULL`.
+- **Duplicate content_hash entries:** When one store (Neo4j/Qdrant) has a doc but the other doesn't (partial failure), `check_file_changed()` triggered re-ingest into BOTH stores. Fix: `check_file_sync_status()` in `sync.py` v1.5 returns per-store needs, watcher v1.5 only ingests into the store that's missing the doc.
+
+> **Guideline:** After any `PropertyGraphIndex.insert()`, always call `backfill_all_unscoped()`. Never re-ingest into a store that already has the content — use `check_file_sync_status()` for selective ingest.
+
 ## Lessons Learned
+
+### [2026-03-09] http_server.py v2.1 — Retrieval Timeouts (FIXED)
+
+**Root Cause:** `/query` endpoint hung indefinitely when GPU was saturated by other LLM servers (e.g., Qwen3.5-35B llama-server consuming ~24GB VRAM). `PropertyGraphIndex.aretrieve()` makes multiple sequential Ollama LLM calls with no timeout. Even after graph timeout, `answer_query` synthesis also hung on its own LLM calls.
+**Fix Applied:** Wrapped all retrieval tasks with `asyncio.wait_for()` — 60s per vector/graph scope query (`_RETRIEVAL_TIMEOUT`), 90s for synthesis (`_SYNTHESIS_TIMEOUT`). Timed-out tasks logged with specific warning messages. Vector results still return even when graph times out.
+**Prevention Guideline:** Any call to an external service (Ollama, Neo4j, Qdrant) from an HTTP endpoint MUST have an explicit timeout. Never rely on the client's timeout — the server should timeout first to release resources.
+
+### [2026-03-09] Docker Compose Cleanup (v2.1)
+
+**Root Cause:** Docker Ollama had stale config: `OLLAMA_MAX_LOADED_MODELS=1` (causes model swapping timeouts), `OLLAMA_CONTEXT_LENGTH=8192` (unnecessary — models use their own defaults), and `qllama/bge-reranker-v2-m3` model pull (reranker runs as separate service, not via Ollama).
+**Fix Applied:** Set `OLLAMA_MAX_LOADED_MODELS=2`, removed `OLLAMA_CONTEXT_LENGTH`, removed reranker model from init, fixed Neo4j comment.
+**Prevention Guideline:** Ollama MUST run via Docker (not host). If host Ollama is found running, stop it and start Docker container. Always set `OLLAMA_MAX_LOADED_MODELS=2` for embed + LLM coexistence.
+
+### [2026-03-08] http_server.py v2.0 Refactor
+
+**Root Cause:** `http_query` had cyclomatic complexity 11 with multiple inline concerns: scope resolution, result parsing, synthesis, and a response `project_id` mismatch (returned `request.project_id` which could be `None` instead of the resolved `project_id`).
+**Fix Applied:** Extracted `_resolve_scopes()`, `_collect_results()`, `_synthesize()` helpers. Fixed `project_id` in response to use resolved value. Fixed `_parse_context_results` to handle empty strings, cap text during append (not just at end), and filter empty scope strings from `get_all_tenant_scopes()`. Fixed graph error logging to include `type(e).__name__` (tools.py:569).
+**Prevention Guideline:** Keep endpoint handlers thin — extract any logic block that has its own error handling or data transformation into a named helper. Always return resolved values in responses, not raw request values.
 
 ### [2026-03-08] Shared Reranker HTTP Microservice (v3.0)
 
@@ -28,6 +66,12 @@
 - `RERANKER_MODE=local` (default) = zero behavior change, all 452 tests pass unchanged
 - No new dependencies — httpx, FastAPI, uvicorn already in poetry deps
 **Test count:** 452 (37 in test_reranker.py, up from 18 — added 10 RemoteReranker + mode switch tests)
+
+### [2026-03-09] Ollama MAX_LOADED_MODELS Must Be ≥ 2 (CRITICAL)
+
+**Root Cause:** With `OLLAMA_MAX_LOADED_MODELS=1`, embedding calls (`nomic-embed-text`) evict the LLM (`qwen2.5:3b`) from VRAM. Graph retrieval then waits for LLM reload (30-60s per swap), causing 200+s query times.
+**Fix:** `OLLAMA_MAX_LOADED_MODELS=2` keeps both models loaded. Total VRAM: ~4.9 GB (595 MB + 4.3 GB).
+**Prevention:** Never set `MAX_LOADED_MODELS=1` when both embed and LLM models are needed concurrently.
 
 ### [2026-03-08] LLM Model Switch: llama3.1:8b-instruct-q4_0 → qwen2.5:3b
 

@@ -12,10 +12,10 @@ Use reset_reranker() in tests to clear the singleton between test cases.
 from __future__ import annotations
 
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import httpx
-from llama_index.core.schema import NodeWithScore, QueryBundle, TextNode
+from llama_index.core.schema import NodeWithScore, QueryBundle
 
 from nexus.config import (
     DEFAULT_RERANKER_MODEL,
@@ -108,9 +108,7 @@ def get_reranker() -> "FlagEmbeddingReranker | RemoteReranker":
         with _reranker_lock:
             if _reranker is None:
                 if RERANKER_MODE == "remote":
-                    logger.info(
-                        f"Using remote reranker at {RERANKER_SERVICE_URL}"
-                    )
+                    logger.info(f"Using remote reranker at {RERANKER_SERVICE_URL}")
                     _reranker = RemoteReranker(
                         service_url=RERANKER_SERVICE_URL,
                         top_n=DEFAULT_RERANKER_TOP_N,

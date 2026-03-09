@@ -1,4 +1,4 @@
-# Version: v3.0
+# Version: v3.1
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -25,7 +25,7 @@ DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
 # LLM & Text processing defaults
 # ---------------------------------------------------------------------------
 DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
-DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "32768"))
+DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
 
