@@ -1537,18 +1537,18 @@ class TestValidateConfig:
 class TestAnswerQueryHelpers:
     """Unit tests for the module-level helpers extracted from answer_query."""
 
-    def test_dedup_cross_source_attributes_graph_first(self):
+    def test_dedup_cross_source_attributes_vector_first(self):
         from nexus.tools import _dedup_cross_source
 
         result = _dedup_cross_source(["passage A"], ["passage B"])
-        assert result == ["[graph] passage A", "[vector] passage B"]
+        assert result == ["[vector] passage B", "[graph] passage A"]
 
-    def test_dedup_cross_source_graph_wins_on_collision(self):
-        """Same content in both sources → attributed to graph, not repeated."""
+    def test_dedup_cross_source_vector_wins_on_collision(self):
+        """Same content in both sources → attributed to vector (listed first), not repeated."""
         from nexus.tools import _dedup_cross_source
 
         result = _dedup_cross_source(["shared"], ["shared"])
-        assert result == ["[graph] shared"]
+        assert result == ["[vector] shared"]
 
     def test_dedup_cross_source_empty_inputs(self):
         from nexus.tools import _dedup_cross_source
@@ -1588,6 +1588,35 @@ class TestAnswerQueryHelpers:
             result = _dedup_cross_source(["", "  ", "\n"], ["valid vector"])
         assert result == ["[vector] valid vector"]
         assert "ALL graph passages were empty" in caplog.text
+
+    def test_clean_graph_passage_strips_triples(self):
+        """Knowledge triples (X -> Y -> Z) should be removed from graph passages."""
+        from nexus.tools import _clean_graph_passage
+
+        passage = (
+            "Here are some facts extracted from the text:\n"
+            "Poetry -> Is -> Python_package_manager\n"
+            "VRAM -> Threshold -> 8GB\n"
+            "The workspace uses poetry for package management."
+        )
+        result = _clean_graph_passage(passage)
+        assert "Poetry -> Is -> Python_package_manager" not in result
+        assert "Here are some facts" not in result
+        assert "The workspace uses poetry" in result
+
+    def test_clean_graph_passage_preserves_clean_text(self):
+        """Non-triple text should pass through unchanged."""
+        from nexus.tools import _clean_graph_passage
+
+        passage = "This is a regular text passage with useful information."
+        assert _clean_graph_passage(passage) == passage
+
+    def test_clean_graph_passage_returns_empty_for_all_triples(self):
+        """A passage with only triples should return empty string."""
+        from nexus.tools import _clean_graph_passage
+
+        passage = "Subject1 -> Predicate -> Object1\nSubject2 -> Rel -> Object2"
+        assert _clean_graph_passage(passage) == ""
 
     def test_dedup_cross_source_warns_all_empty_vector(self, caplog):
         """Warn when ALL vector passages are empty — may indicate backend issue."""

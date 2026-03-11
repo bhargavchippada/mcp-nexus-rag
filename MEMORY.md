@@ -2,13 +2,13 @@
 
 <!-- Logical state: known bugs, key findings, lessons learned -->
 
-**Version:** v6.20
+**Version:** v6.21
 
 ## Project Status
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 433 passed (445 total, 12 deselected) |
+| **Tests** | 436 passed (448 total, 12 deselected) |
 | **Coverage** | ~83% |
 | **Status** | Production-ready |
 | **Last Updated** | 2026-03-10 |
@@ -80,7 +80,24 @@ Ollama runs via Docker (`docker-compose.yml` service `turiya-ollama`). Key docke
 Gravity-claw (Docker container) connects to Nexus RAG via MCP SSE transport on port 8765. Started via `start-services.sh --mcp-sse`. Uses `mcp.settings.host/port` + `mcp.run(transport='sse', mount_path='/')`. This is separate from the HTTP REST API (port 8766, for mission-control) and the stdio MCP server (for Claude Code/Gemini CLI). If gravity-claw shows "SSE error: Non-200 status code (404)", the MCP SSE server isn't running.
 
 ### Graph Context Retrieval Can Hang
-`PropertyGraphIndex.aretrieve()` makes multiple sequential Ollama LLM calls (NL->Cypher, then Neo4j, then synthesis). If the GPU is saturated (e.g., other LLM servers running), these calls hang indefinitely. The HTTP API (`http_server.py` v2.1) wraps all retrieval in `asyncio.wait_for()` -- 60s per retrieval, 90s for synthesis. If graph times out, vector results still return.
+`PropertyGraphIndex.aretrieve()` makes multiple sequential Ollama LLM calls (NL->Cypher, then Neo4j, then synthesis). If the GPU is saturated (e.g., other LLM servers running), these calls hang indefinitely. The HTTP API (`http_server.py` v2.2) wraps all retrieval in `asyncio.wait_for()` -- 60s per retrieval, 120s for synthesis. Additionally, `answer_query` in `tools.py` v6.1 has its own 30s timeout on graph retrieval — if graph hangs, it falls back to vector-only context. If graph times out, vector results still return.
+
+### RAG Answer Quality Optimization (2026-03-10)
+**Problem:** `answer_query` returned false negatives — e.g., "no explicit mention of python package management" when CLAUDE.md clearly states "poetry for Python packages".
+
+**Root Causes (5 identified and fixed):**
+1. **Noisy graph passages:** LlamaIndex PropertyGraphIndex extracts knowledge triples (`X -> Y -> Z`) that overwhelm the 3B model. Fix: `_clean_graph_passage()` strips triple-format lines and preamble.
+2. **Graph-first context ordering:** Graph triples were listed before cleaner vector text, pushing useful content down. Fix: Vector-first dedup in `_dedup_cross_source()`.
+3. **Overly complex prompt:** Extract-then-generate two-step prompt confused qwen2.5:3b. Fix: Simplified to direct Q&A prompt.
+4. **Short answer rejection:** `len(answer) < 10` check rejected valid short answers like "poetry" (6 chars). Fix: Only reject truly empty responses.
+5. **Graph retrieval timeouts cascading:** Graph retrieval hanging 60+s consumed the 90s synthesis timeout budget. Fix: 30s graph timeout in answer_query, increased HTTP synthesis timeout to 120s.
+
+**Tuning changes (config.py v4.2):**
+- `DEFAULT_CHUNK_SIZE`: 512 → 384 tokens (finer granularity)
+- `DEFAULT_CHUNK_OVERLAP`: 64 → 192 tokens (50% overlap, research-backed for nomic-embed-text)
+- `DEFAULT_RERANKER_TOP_N`: 8 → 5 (fewer focused passages for 3B model)
+
+**Benchmark results:** 5/6 queries pass (83%), avg 32s response time. One remaining failure ("what is the tech stack") is a qwen2.5:3b limitation — it has the answer in context but can't synthesize from dense markdown tables.
 
 ### Orphan Nodes and Duplicates -- Root Causes and Fixes
 - **Unscoped entity nodes:** LlamaIndex's `PropertyGraphIndex.insert()` creates entity nodes during LLM extraction without propagating tenant metadata (project_id, tenant_scope). Fix: `backfill_all_unscoped()` in `neo4j.py` v2.4 runs after every graph insert -- tags ALL nodes with `project_id IS NULL`.

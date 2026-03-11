@@ -1,4 +1,4 @@
-# Version: v2.1
+# Version: v2.2
 """
 HTTP API server for Nexus RAG.
 
@@ -34,7 +34,7 @@ from nexus.tools import (
 # → Memgraph → Ollama LLM (synthesis).  Two sequential LLM calls can take 30-60s
 # on cold model.  Synthesis (answer_query) adds another LLM call on top.
 _RETRIEVAL_TIMEOUT = 60  # seconds per vector/graph scope query
-_SYNTHESIS_TIMEOUT = 90  # seconds for answer_query (includes its own retrieval)
+_SYNTHESIS_TIMEOUT = 120  # seconds for answer_query (graph capped at 30s internally)
 
 # ---------------------------------------------------------------------------
 # Request/Response models

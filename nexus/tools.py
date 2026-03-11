@@ -1,4 +1,4 @@
-# Version: v6.0
+# Version: v6.1
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -1174,13 +1174,41 @@ async def _fetch_vector_passages(
         return []
 
 
+def _clean_graph_passage(passage: str) -> str:
+    """Strip knowledge-triple noise from graph passages.
+
+    Graph passages from LlamaIndex PropertyGraphIndex contain verbose
+    ``X -> Y -> Z`` triple dumps that overwhelm small LLMs.  This function
+    removes those lines and the common ``Here are some facts extracted``
+    preamble, keeping only the readable text portions.
+    """
+    import re
+
+    lines = passage.split("\n")
+    cleaned: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        # Skip triple-format lines: "Subject -> Predicate -> Object"
+        if re.match(r"^[\w\s_.-]+ -> .+ -> .+$", stripped):
+            continue
+        # Skip preamble lines
+        if stripped.lower().startswith("here are some facts extracted"):
+            continue
+        if stripped:
+            cleaned.append(stripped)
+    return "\n".join(cleaned)
+
+
 def _dedup_cross_source(
     graph_passages: list[str], vector_passages: list[str]
 ) -> list[str]:
     """Deduplicate passages across graph and vector sources, preserving attribution.
 
     Each unique passage is prefixed with its origin: ``[graph]`` or ``[vector]``.
-    Passages that appear in both sources are attributed to graph (first seen).
+    **Vector passages are listed first** because they contain cleaner raw text
+    that is more directly useful for LLM synthesis.  Graph passages (knowledge-
+    triple extractions) follow.  Passages that appear in both sources are
+    attributed to whichever source is encountered first.
     Empty passages are dropped with debug logging; warns if ALL passages from a
     source are empty (may indicate a backend issue).
     """
@@ -1189,15 +1217,7 @@ def _dedup_cross_source(
     dropped_graph = 0
     dropped_vector = 0
 
-    for passage in graph_passages:
-        key = passage.strip()
-        if not key:
-            dropped_graph += 1
-            continue
-        if key not in seen:
-            seen.add(key)
-            parts.append(f"[graph] {passage.strip()}")
-
+    # Vector first — cleaner text, higher signal for LLM synthesis
     for passage in vector_passages:
         key = passage.strip()
         if not key:
@@ -1206,6 +1226,20 @@ def _dedup_cross_source(
         if key not in seen:
             seen.add(key)
             parts.append(f"[vector] {passage.strip()}")
+
+    for passage in graph_passages:
+        key = passage.strip()
+        if not key:
+            dropped_graph += 1
+            continue
+        # Strip knowledge-triple noise lines (X -> Y -> Z) that overwhelm small LLMs
+        cleaned = _clean_graph_passage(key)
+        if not cleaned:
+            dropped_graph += 1
+            continue
+        if cleaned not in seen:
+            seen.add(cleaned)
+            parts.append(f"[graph] {cleaned}")
 
     # Log dropped passages (debug) and warn if ALL from a source are empty
     if dropped_graph > 0:
@@ -1298,8 +1332,22 @@ async def answer_query(
     import time as _time
 
     _t_retrieve_start = _time.monotonic()
+
+    # Graph retrieval can hang (Ollama Cypher gen) — cap at 30s, graceful fallback
+    async def _graph_with_timeout() -> list[str]:
+        try:
+            return await asyncio.wait_for(
+                _fetch_graph_passages(query, project_id, scope, rerank),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "answer_query: graph retrieval timed out after 30s, using vector-only"
+            )
+            return []
+
     graph_passages, vector_passages = await asyncio.gather(
-        _fetch_graph_passages(query, project_id, scope, rerank),
+        _graph_with_timeout(),
         _fetch_vector_passages(query, project_id, scope, rerank),
     )
     _t_retrieve_ms = (_time.monotonic() - _t_retrieve_start) * 1000
@@ -1328,20 +1376,14 @@ async def answer_query(
         )
 
     system_prompt = (
-        "You are a helpful knowledge assistant. Answer the user's question using "
-        "the provided context passages. Look carefully through ALL passages for "
-        "any relevant information, even partial mentions or indirect references. "
-        "Provide a concise, direct answer. Each passage is prefixed with [graph] "
-        "or [vector] — ignore these labels in your answer. Do not reproduce "
-        "raw data formats like arrows or code blocks unless specifically asked. "
-        "If truly no relevant information exists in any passage, say so briefly."
+        "Answer the question using ONLY the provided context. "
+        "Be concise and specific. Include exact names, values, and details from the context. "
+        "Ignore labels like [vector] or [graph] at the start of passages. "
+        "If the context contains ANY relevant information, use it — even a single mention counts. "
+        "Only say 'no relevant information found' if absolutely nothing in the context relates "
+        "to the question."
     )
-    user_prompt = (
-        f"Context passages for project '{project_id}' / scope '{scope_msg}':\n\n"
-        f"{combined_context}\n\n"
-        f"Question: {query}\n\n"
-        "Answer based solely on the context above:"
-    )
+    user_prompt = f"Context:\n{combined_context}\n\nQuestion: {query}\n\nAnswer:"
 
     # ── 4. Call Ollama /api/chat (non-streaming) ──────────────────────────────
     payload = {
@@ -1360,12 +1402,9 @@ async def answer_query(
         _t_llm_ms = (_time.monotonic() - _t_llm_start) * 1000
         answer: str = data["message"]["content"].strip()
 
-        # Validate answer before caching - prevent caching empty/malformed responses
-        if not answer or len(answer) < 10:
-            logger.warning(
-                f"answer_query: LLM returned empty/short response ({len(answer)} chars), "
-                "skipping cache"
-            )
+        # Validate answer before caching - prevent caching truly empty responses
+        if not answer:
+            logger.warning("answer_query: LLM returned empty response, skipping cache")
             return "Error: LLM returned empty response. Please retry."
 
         logger.info(

@@ -1,4 +1,4 @@
-# Version: v4.1
+# Version: v4.2
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -30,8 +30,8 @@ DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
 # ---------------------------------------------------------------------------
 DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
 DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
-DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "512"))
-DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "64"))
+DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "384"))
+DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "192"))
 
 # Ollama retry settings for transient network failures
 # Clamp to safe minimums to avoid invalid runtime behavior from env config.
@@ -58,7 +58,7 @@ INGEST_CHUNK_OVERLAP = int(
 # Reranker defaults
 # ---------------------------------------------------------------------------
 DEFAULT_RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
-DEFAULT_RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "8"))
+DEFAULT_RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "5"))
 DEFAULT_RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", "20"))
 RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 RERANKER_MODE = os.environ.get("RERANKER_MODE", "local")  # "local" or "remote"
