@@ -421,14 +421,25 @@ class TestContextRetrieval:
             result = await nexus_tools.get_vector_context("query", "PROJ", "SCOPE")
         assert "Error" in result
 
+    def _mock_graph_retriever(self, nodes=None):
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(
+            return_value=nodes if nodes is not None else []
+        )
+        return mock_retriever
+
     async def test_get_graph_context_no_results(self):
-        with patch("nexus.tools.get_graph_index", return_value=self._mock_index([])):
+        with patch(
+            "nexus.tools.get_graph_retriever",
+            return_value=self._mock_graph_retriever([]),
+        ):
             result = await nexus_tools.get_graph_context("query", "PROJ", "SCOPE")
         assert "No Graph context found" in result
 
     async def test_get_graph_context_error_returns_string(self):
         with patch(
-            "nexus.tools.get_graph_index", side_effect=Exception("Memgraph exploded")
+            "nexus.tools.get_graph_retriever",
+            side_effect=Exception("Memgraph exploded"),
         ):
             result = await nexus_tools.get_graph_context("query", "PROJ", "SCOPE")
         assert "Error" in result
@@ -438,7 +449,8 @@ class TestContextRetrieval:
         node.node.get_content.return_value = "x" * 5000
         node.score = 0.95  # Score is required for formatting
         with patch(
-            "nexus.tools.get_graph_index", return_value=self._mock_index([node])
+            "nexus.tools.get_graph_retriever",
+            return_value=self._mock_graph_retriever([node]),
         ):
             result = await nexus_tools.get_graph_context(
                 "query", "PROJ", "SCOPE", max_chars=100
@@ -451,7 +463,8 @@ class TestContextRetrieval:
         node.node.get_content.return_value = "x" * 5000
         node.score = 0.95  # Score is required for formatting
         with patch(
-            "nexus.tools.get_graph_index", return_value=self._mock_index([node])
+            "nexus.tools.get_graph_retriever",
+            return_value=self._mock_graph_retriever([node]),
         ):
             result = await nexus_tools.get_graph_context(
                 "query", "PROJ", "SCOPE", max_chars=0
@@ -552,30 +565,23 @@ class TestContextRetrieval:
 
     async def test_get_graph_context_empty_scope_omits_scope_filter(self):
         """When scope is empty, only the project_id filter is applied."""
-        from llama_index.core.vector_stores.types import MetadataFilters
-
-        captured_filters: list[MetadataFilters] = []
-
-        async def fake_retrieve(query):
-            return []
+        captured_kwargs: list[dict] = []
 
         mock_retriever = MagicMock()
-        mock_retriever.aretrieve = fake_retrieve
-        mock_index = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[])
 
         def capture_retriever(**kwargs):
-            captured_filters.append(kwargs.get("filters"))
+            captured_kwargs.append(kwargs)
             return mock_retriever
 
-        mock_index.as_retriever = capture_retriever
-
-        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+        with patch("nexus.tools.get_graph_retriever", side_effect=capture_retriever):
             result = await nexus_tools.get_graph_context("query", "PROJ", scope="")
 
         assert "No Graph context found" in result
         assert "all scopes" in result
-        assert len(captured_filters[0].filters) == 1
-        assert captured_filters[0].filters[0].key == "project_id"
+        filters = captured_kwargs[0]["filters"]
+        assert len(filters.filters) == 1
+        assert filters.filters[0].key == "project_id"
 
     async def test_get_vector_context_with_scope_includes_scope_filter(self):
         """When scope is provided, the tenant_scope filter IS applied."""
@@ -1079,6 +1085,11 @@ class TestPostRetrievalDedup:
         mock_index.as_retriever.return_value = mock_retriever
         return mock_index
 
+    def _mock_graph_retriever(self, nodes):
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=nodes)
+        return mock_retriever
+
     async def test_vector_dedup_removes_duplicate_content(self):
         """Three nodes with same content → only one bullet in output."""
         dup_node = self._make_node("same content")
@@ -1118,7 +1129,10 @@ class TestPostRetrievalDedup:
         """Three identical graph nodes → only one bullet in output."""
         dup_node = self._make_node("graph content")
         nodes = [dup_node, dup_node, dup_node]
-        with patch("nexus.tools.get_graph_index", return_value=self._mock_index(nodes)):
+        with patch(
+            "nexus.tools.get_graph_retriever",
+            return_value=self._mock_graph_retriever(nodes),
+        ):
             result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
         assert result.count("graph content") == 1
 
@@ -1127,8 +1141,8 @@ class TestPostRetrievalDedup:
         node_a = self._make_node("node alpha")
         node_b = self._make_node("node beta")
         with patch(
-            "nexus.tools.get_graph_index",
-            return_value=self._mock_index([node_a, node_b]),
+            "nexus.tools.get_graph_retriever",
+            return_value=self._mock_graph_retriever([node_a, node_b]),
         ):
             result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
         assert "node alpha" in result
@@ -1341,7 +1355,7 @@ class TestExceptionSanitization:
     async def test_get_graph_context_error_is_generic(self):
         """Exception in graph retriever must not return raw exc details to client."""
         with patch(
-            "nexus.tools.get_graph_index",
+            "nexus.tools.get_graph_retriever",
             side_effect=RuntimeError("auth failure: user=neo4j pass=password123"),
         ):
             result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
@@ -1634,7 +1648,7 @@ class TestAnswerQueryHelpers:
         from nexus.tools import _fetch_graph_passages
 
         with patch(
-            "nexus.tools.get_graph_index", side_effect=RuntimeError("memgraph down")
+            "nexus.tools.get_graph_retriever", side_effect=RuntimeError("memgraph down")
         ):
             result = await _fetch_graph_passages("q", "P", "S", rerank=False)
         assert result == []
@@ -1665,6 +1679,11 @@ class TestScoreNoneHandling:
         mock_index.as_retriever.return_value = mock_retriever
         return mock_index
 
+    def _mock_graph_retriever(self, nodes):
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=nodes)
+        return mock_retriever
+
     def _make_node(self, content: str, score=None):
         node = MagicMock()
         node.node.get_content.return_value = content
@@ -1675,8 +1694,8 @@ class TestScoreNoneHandling:
         """Node with score=None should produce '0.0000' in output, not TypeError."""
         node = self._make_node("graph content", score=None)
         with patch(
-            "nexus.tools.get_graph_index",
-            return_value=self._mock_index([node]),
+            "nexus.tools.get_graph_retriever",
+            return_value=self._mock_graph_retriever([node]),
         ):
             result = await nexus_tools.get_graph_context("q", "P", "S", rerank=False)
         assert "graph content" in result
@@ -1863,6 +1882,14 @@ class TestFreshResultCaching:
         mock_index.as_retriever.return_value = mock_retriever
         return mock_index
 
+    def _mock_graph_retriever(self, content: str, score: float = 0.9):
+        node = MagicMock()
+        node.node.get_content.return_value = content
+        node.score = score
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[node])
+        return mock_retriever
+
     async def test_vector_context_caches_full_result_not_truncated(self):
         """Cache must store the full result; _apply_cap is applied at return time."""
         long_content = "word " * 600  # ~3000 chars, exceeds max_chars=1500
@@ -1891,14 +1918,14 @@ class TestFreshResultCaching:
     async def test_graph_context_caches_full_result_not_truncated(self):
         """Same as vector: graph context caches full, returns capped."""
         long_content = "data " * 600  # ~3000 chars
-        mock_index = self._mock_index(long_content)
+        mock_retriever = self._mock_graph_retriever(long_content)
         cached_values = []
 
         def capture_set(query, pid, scope, value, **kwargs):
             cached_values.append(value)
 
         with (
-            patch("nexus.tools.get_graph_index", return_value=mock_index),
+            patch("nexus.tools.get_graph_retriever", return_value=mock_retriever),
             patch("nexus.tools.cache_module.set_cached", side_effect=capture_set),
         ):
             result = await nexus_tools.get_graph_context(
@@ -1982,11 +2009,9 @@ class TestEmptyQueryValidation:
 
     async def test_get_graph_context_valid_query_passes_validation(self):
         """A non-empty query must NOT return the empty-query error."""
-        mock_index = MagicMock()
-        mock_retriever = AsyncMock()
+        mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=[])
-        mock_index.as_retriever.return_value = mock_retriever
-        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+        with patch("nexus.tools.get_graph_retriever", return_value=mock_retriever):
             result = await nexus_tools.get_graph_context(
                 "real query", "PROJ", "SCOPE", rerank=False
             )
@@ -2437,10 +2462,9 @@ class TestProjectIdValidation:
 
     async def test_graph_context_accepts_valid_project_id(self):
         """Valid project_id does NOT trigger the project_id error."""
-        with patch("nexus.tools.get_graph_index") as mock_idx:
-            mock_retriever = AsyncMock()
-            mock_retriever.aretrieve = AsyncMock(return_value=[])
-            mock_idx.return_value.as_retriever.return_value = mock_retriever
+        mock_retriever = MagicMock()
+        mock_retriever.aretrieve = AsyncMock(return_value=[])
+        with patch("nexus.tools.get_graph_retriever", return_value=mock_retriever):
             result = await nexus_tools.get_graph_context(
                 query="test", project_id="MY_PROJECT"
             )
@@ -3080,7 +3104,8 @@ class TestAnswerQueryBothBackendsFail:
         """When graph and vector both fail, returns 'No context found' (not an exception)."""
         with (
             patch(
-                "nexus.tools.get_graph_index", side_effect=RuntimeError("memgraph down")
+                "nexus.tools.get_graph_retriever",
+                side_effect=RuntimeError("memgraph down"),
             ),
             patch(
                 "nexus.tools.get_vector_index",
@@ -3105,29 +3130,26 @@ class TestAnswerQueryBothBackendsFail:
         mock_vector_retriever.aretrieve = AsyncMock(return_value=[mock_vector_node])
         mock_vector_index.as_retriever.return_value = mock_vector_retriever
 
+        mock_ollama = AsyncMock(
+            return_value={"message": {"content": "answer from vector"}}
+        )
+
         with (
             patch(
-                "nexus.tools.get_graph_index", side_effect=RuntimeError("memgraph down")
+                "nexus.tools.get_graph_retriever",
+                side_effect=RuntimeError("memgraph down"),
             ),
             patch("nexus.tools.get_vector_index", return_value=mock_vector_index),
             patch("nexus.tools.cache_module") as mock_cache,
             patch("nexus.tools.RERANKER_ENABLED", False),
-            patch("nexus.tools.httpx.AsyncClient") as mock_http,
+            patch("nexus.tools._call_ollama_with_retry", mock_ollama),
         ):
             mock_cache.get_cached.return_value = None
-            mock_http_instance = AsyncMock()
-            mock_http.return_value.__aenter__.return_value = mock_http_instance
-            mock_response = MagicMock()
-            mock_response.raise_for_status = MagicMock()
-            mock_response.json.return_value = {
-                "message": {"content": "answer from vector"}
-            }
-            mock_http_instance.post = AsyncMock(return_value=mock_response)
+            result = await nexus_tools.answer_query("query", "PROJ")
 
-            await nexus_tools.answer_query("query", "PROJ")
-
-        # Should have tried the LLM with the vector context
-        assert mock_http_instance.post.called
+        # Should have called the LLM with the vector context
+        assert mock_ollama.called
+        assert result == "answer from vector"
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete -->
 
-**Version:** v5.4
+**Version:** v5.5
 
 ## Pending
 
@@ -92,8 +92,19 @@
   - `check_file_sync_status()` now uses whole-file hash dedup (sync.py v2.1)
   - Per-file asyncio locks prevent watcher/sync race conditions
   - Verified: second sync correctly returns "nothing to sync"
+- [x] **Query latency optimization: 50% faster queries, 85% faster retrieval** (2026-03-10)
+  - Bypassed LLMSynonymRetriever in graph retrieval (1137ms → ~180ms)
+  - Added `num_ctx: 4096` to Ollama API payload (was defaulting to 32768)
+  - Persistent httpx client for Ollama calls (eliminates per-call TCP overhead)
+  - Graph ingestion: `SimpleLLMPathExtractor(max_paths=5, num_workers=1)` — 27% faster
+  - Context window 8192 → 4096 (reduces KV cache VRAM)
+  - Query avg: ~1100ms → ~553ms, retrieval: ~1200ms → 183ms, cached: 3ms
+- [x] **RAG answer quality optimization: 83% pass rate** (2026-03-10)
+  - `_clean_graph_passage()` strips noisy knowledge triples
+  - Vector-first dedup ordering, simplified prompt, removed short answer rejection
+  - 30s graph timeout in answer_query prevents cascade
 - [x] **Performance optimization: chunk size, reranker, system prompt** (2026-03-10)
-  - CHUNK_SIZE 1024→512, CHUNK_OVERLAP 128→64, RERANKER_TOP_N 5→8
+  - CHUNK_SIZE 512→384, CHUNK_OVERLAP 64→192 (50% overlap), RERANKER_TOP_N 8→5
   - Improved answer_query system prompt for qwen2.5:3b
   - Added timing instrumentation to answer_query
   - Verified: "python package management" query now returns correct answer

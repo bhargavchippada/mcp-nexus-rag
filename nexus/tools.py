@@ -1,4 +1,4 @@
-# Version: v6.1
+# Version: v6.3
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -24,6 +24,7 @@ from nexus.backends import memgraph as graph_backend
 from nexus.backends import pgvector as vector_backend
 from nexus.chunking import chunk_document, needs_chunking
 from nexus.config import (
+    DEFAULT_CONTEXT_WINDOW,
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_OLLAMA_URL,
@@ -37,7 +38,7 @@ from nexus.config import (
     mcp,
 )
 from nexus.dedup import content_hash
-from nexus.indexes import get_graph_index, get_vector_index
+from nexus.indexes import get_graph_index, get_graph_retriever, get_vector_index
 from nexus.reranker import get_reranker
 
 # ---------------------------------------------------------------------------
@@ -60,6 +61,18 @@ def _apply_cap(text: str, max_chars: int) -> str:
     if max_chars > 0 and len(text) > max_chars:
         return text[:max_chars] + "… [truncated]"
     return text
+
+
+# Module-level persistent HTTP client for Ollama calls (avoids per-call overhead)
+_ollama_client: httpx.AsyncClient | None = None
+
+
+def _get_ollama_client(timeout: float = DEFAULT_LLM_TIMEOUT) -> httpx.AsyncClient:
+    """Return a persistent httpx.AsyncClient for Ollama API calls."""
+    global _ollama_client
+    if _ollama_client is None or _ollama_client.is_closed:
+        _ollama_client = httpx.AsyncClient(timeout=timeout)
+    return _ollama_client
 
 
 async def _call_ollama_with_retry(
@@ -86,12 +99,12 @@ async def _call_ollama_with_retry(
     """
     retry_count = max(1, OLLAMA_RETRY_COUNT)
     last_exception: Exception | None = None
+    client = _get_ollama_client(timeout)
     for attempt in range(retry_count):
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-                return response.json()
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            return response.json()
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             last_exception = e
             if attempt < retry_count - 1:
@@ -562,15 +575,15 @@ async def get_graph_context(
         logger.info(f"Graph cache hit: project={project_id} scope={scope_label}")
         return _apply_cap(cached, max_chars)
     try:
-        index = get_graph_index()
         filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
         if scope:
             filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
         filters = MetadataFilters(filters=filters_list)
-        nodes = await index.as_retriever(
+        retriever = get_graph_retriever(
             filters=filters,
             similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
-        ).aretrieve(query)
+        )
+        nodes = await retriever.aretrieve(query)
         if not nodes:
             return f"No Graph context found for {project_id} in scope {scope_label} for query: '{query}'"
         # Post-retrieval dedup: remove nodes with identical content text
@@ -1120,15 +1133,15 @@ async def _fetch_graph_passages(
     Returns a list of content strings, or an empty list on any error.
     """
     try:
-        index = get_graph_index()
         filters_list = [ExactMatchFilter(key="project_id", value=project_id)]
         if scope and scope.strip():
             filters_list.append(ExactMatchFilter(key="tenant_scope", value=scope))
         filters = MetadataFilters(filters=filters_list)
-        nodes = await index.as_retriever(
+        retriever = get_graph_retriever(
             filters=filters,
             similarity_top_k=DEFAULT_RERANKER_CANDIDATE_K,
-        ).aretrieve(query)
+        )
+        nodes = await retriever.aretrieve(query)
         if rerank and RERANKER_ENABLED and nodes:
             try:
                 reranker = get_reranker()
@@ -1393,7 +1406,10 @@ async def answer_query(
             {"role": "user", "content": user_prompt},
         ],
         "stream": False,
-        "options": {"temperature": 0.1},
+        "options": {
+            "temperature": 0.1,
+            "num_ctx": DEFAULT_CONTEXT_WINDOW,
+        },
     }
 
     try:

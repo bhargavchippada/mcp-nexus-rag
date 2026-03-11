@@ -1,4 +1,4 @@
-# Version: v3.0
+# Version: v3.2
 """
 nexus.indexes — LlamaIndex settings bootstrap and index factories.
 
@@ -9,6 +9,13 @@ import threading
 
 import nest_asyncio
 from llama_index.core import PropertyGraphIndex, Settings, VectorStoreIndex
+from llama_index.core.indices.property_graph import (
+    ImplicitPathExtractor,
+    SimpleLLMPathExtractor,
+)
+from llama_index.core.indices.property_graph.sub_retrievers.vector import (
+    VectorContextRetriever,
+)
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.graph_stores.memgraph import MemgraphPropertyGraphStore
@@ -105,11 +112,22 @@ def get_graph_index() -> PropertyGraphIndex:
             password=DEFAULT_MEMGRAPH_PASSWORD,
             url=DEFAULT_MEMGRAPH_URL,
         )
+        # Reduce LLM extraction work: 5 triples max (default 10), single
+        # worker (Ollama can only serve one LLM request at a time).
+        kg_extractors = [
+            SimpleLLMPathExtractor(
+                llm=Settings.llm,
+                max_paths_per_chunk=5,
+                num_workers=1,
+            ),
+            ImplicitPathExtractor(),
+        ]
         try:
             _graph_index_cache = PropertyGraphIndex.from_existing(
                 property_graph_store=graph_store,
                 embed_model=Settings.embed_model,
                 llm=Settings.llm,
+                kg_extractors=kg_extractors,
             )
         except Exception as e:
             logger.warning(
@@ -120,6 +138,7 @@ def get_graph_index() -> PropertyGraphIndex:
                 property_graph_store=graph_store,
                 embed_model=Settings.embed_model,
                 llm=Settings.llm,
+                kg_extractors=kg_extractors,
             )
         return _graph_index_cache
 
@@ -161,6 +180,25 @@ def get_vector_index() -> VectorStoreIndex:
             vector_store=vector_store
         )
         return _vector_index_cache
+
+
+def get_graph_retriever(**kwargs):
+    """Return a vector-only graph retriever (skips LLMSynonymRetriever).
+
+    PropertyGraphIndex defaults to [LLMSynonymRetriever, VectorContextRetriever].
+    LLMSynonymRetriever makes a redundant LLM call (~100-1000ms) to generate
+    synonym keywords.  This function bypasses it by using only the vector
+    sub-retriever, cutting graph retrieval latency by 50-80%.
+    """
+    index = get_graph_index()
+    vector_retriever = VectorContextRetriever(
+        graph_store=index.property_graph_store,
+        vector_store=index.vector_store,
+        include_text=True,
+        embed_model=Settings.embed_model,
+        **kwargs,
+    )
+    return index.as_retriever(sub_retrievers=[vector_retriever], **kwargs)
 
 
 def reset_graph_index() -> None:

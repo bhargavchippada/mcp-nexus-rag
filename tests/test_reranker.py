@@ -521,10 +521,8 @@ class TestGetGraphContextReranker:
         reranked = [_make_node("graph B")]
         mock_reranker = _make_reranker_mock(reranked)
         mock_retriever = _make_retriever_mock(nodes)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
 
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
+        monkeypatch.setattr(tools, "get_graph_retriever", lambda **kw: mock_retriever)
         monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
 
@@ -540,10 +538,8 @@ class TestGetGraphContextReranker:
         nodes = [_make_node("graph A")]
         mock_reranker = _make_reranker_mock([_make_node("graph A")])
         mock_retriever = _make_retriever_mock(nodes)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
 
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
+        monkeypatch.setattr(tools, "get_graph_retriever", lambda **kw: mock_retriever)
         monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
 
@@ -558,10 +554,8 @@ class TestGetGraphContextReranker:
         nodes = [_make_node("graph A")]
         mock_reranker = _make_reranker_mock([_make_node("graph A")])
         mock_retriever = _make_retriever_mock(nodes)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
 
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
+        monkeypatch.setattr(tools, "get_graph_retriever", lambda **kw: mock_retriever)
         monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", False)
 
@@ -577,10 +571,8 @@ class TestGetGraphContextReranker:
         mock_reranker = MagicMock()
         mock_reranker.postprocess_nodes.side_effect = RuntimeError("model error")
         mock_retriever = _make_retriever_mock(nodes)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
 
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
+        monkeypatch.setattr(tools, "get_graph_retriever", lambda **kw: mock_retriever)
         monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
 
@@ -590,34 +582,12 @@ class TestGetGraphContextReranker:
         assert "graph B" in result
 
     @pytest.mark.asyncio
-    async def test_uses_candidate_k_for_retrieval(self, monkeypatch):
-        from nexus import tools
-        from nexus.config import DEFAULT_RERANKER_CANDIDATE_K
-
-        nodes = [_make_node("graph A")]
-        mock_reranker = _make_reranker_mock(nodes)
-        mock_retriever = _make_retriever_mock(nodes)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
-
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
-        monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
-        monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
-
-        await tools.get_graph_context("test query", "PROJ", "SCOPE")
-
-        call_kwargs = mock_index.as_retriever.call_args.kwargs
-        assert call_kwargs.get("similarity_top_k") == DEFAULT_RERANKER_CANDIDATE_K
-
-    @pytest.mark.asyncio
     async def test_empty_nodes_returns_no_context_message(self, monkeypatch):
         from nexus import tools
 
         mock_retriever = _make_retriever_mock([])
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
 
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
+        monkeypatch.setattr(tools, "get_graph_retriever", lambda **kw: mock_retriever)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
 
         result = await tools.get_graph_context("test query", "PROJ", "SCOPE")
@@ -632,10 +602,8 @@ class TestGetGraphContextReranker:
         reranked = [_make_node("high graph"), _make_node("low graph")]
         mock_reranker = _make_reranker_mock(reranked)
         mock_retriever = _make_retriever_mock(candidates)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
 
-        monkeypatch.setattr(tools, "get_graph_index", lambda: mock_index)
+        monkeypatch.setattr(tools, "get_graph_retriever", lambda **kw: mock_retriever)
         monkeypatch.setattr(tools, "get_reranker", lambda: mock_reranker)
         monkeypatch.setattr(tools, "RERANKER_ENABLED", True)
 

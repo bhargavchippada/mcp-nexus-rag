@@ -88,26 +88,24 @@ class TestGetVectorIndex:
 
 
 class TestGetGraphContextWithResults:
-    def _mock_index_with_content(self, content: str):
+    def _mock_retriever_with_content(self, content: str):
         node = MagicMock()
         node.node.get_content.return_value = content
         node.score = 0.95
         mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=[node])
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
-        return mock_index
+        return mock_retriever
 
     async def test_get_graph_context_with_results_contains_content(self):
-        index = self._mock_index_with_content("entity relationship data")
-        with patch("nexus.tools.get_graph_index", return_value=index):
+        retriever = self._mock_retriever_with_content("entity relationship data")
+        with patch("nexus.tools.get_graph_retriever", return_value=retriever):
             result = await nexus_tools.get_graph_context("query", "PROJ", "SCOPE")
         assert "entity relationship data" in result
         assert "Graph Context retrieved" in result
 
     async def test_get_graph_context_includes_project_and_scope(self):
-        index = self._mock_index_with_content("data")
-        with patch("nexus.tools.get_graph_index", return_value=index):
+        retriever = self._mock_retriever_with_content("data")
+        with patch("nexus.tools.get_graph_retriever", return_value=retriever):
             result = await nexus_tools.get_graph_context(
                 "query", "MY_PROJECT", "MY_SCOPE"
             )
@@ -125,9 +123,7 @@ class TestGetGraphContextWithResults:
             nodes.append(n)
         mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=nodes)
-        mock_index = MagicMock()
-        mock_index.as_retriever.return_value = mock_retriever
-        with patch("nexus.tools.get_graph_index", return_value=mock_index):
+        with patch("nexus.tools.get_graph_retriever", return_value=mock_retriever):
             result = await nexus_tools.get_graph_context("query", "PROJ", "SCOPE")
         for c in contents:
             assert c in result

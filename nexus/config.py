@@ -1,4 +1,4 @@
-# Version: v4.2
+# Version: v4.3
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -29,7 +29,9 @@ DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
 # LLM & Text processing defaults
 # ---------------------------------------------------------------------------
 DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
-DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
+# 4096 is sufficient: max_context_chars=6000 ≈ 1500 tokens + ~500 prompt overhead.
+# Lower context window reduces KV cache VRAM and speeds up LLM inference.
+DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "4096"))
 DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "384"))
 DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "192"))
 

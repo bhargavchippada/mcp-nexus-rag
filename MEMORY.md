@@ -2,13 +2,13 @@
 
 <!-- Logical state: known bugs, key findings, lessons learned -->
 
-**Version:** v6.21
+**Version:** v6.22
 
 ## Project Status
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 436 passed (448 total, 12 deselected) |
+| **Tests** | 435 passed (447 total, 12 deselected) |
 | **Coverage** | ~83% |
 | **Status** | Production-ready |
 | **Last Updated** | 2026-03-10 |
@@ -53,9 +53,7 @@
 
 - **`neo4j` Python driver deprecation warning** — still present because `llama-index-graph-stores-memgraph` uses `neo4j` driver internally. No functional impact.
 
-- **Context window not documented in config.py**
-  - Issue: `DEFAULT_CONTEXT_WINDOW = 8192` (reduced from 32768) lacks comment explaining trade-off
-  - Recommendation: Add comment about VRAM savings vs. context length
+- **Context window documented in config.py** (RESOLVED: reduced to 4096, comment added)
 
 - **Batch ingest returns different type than single ingest**
   - Single: Returns `str` ("Successfully ingested X chunks...")
@@ -74,7 +72,7 @@
 Each MCP client (Claude Code session, Gemini CLI, desktop app) spawns its own `server.py` via stdio. 3-4 concurrent instances is expected when multiple Claude Code sessions are open. These are NOT duplicates — each serves a different client. Do NOT kill them.
 
 ### Docker Ollama Is the Intended Runtime
-Ollama runs via Docker (`docker-compose.yml` service `turiya-ollama`). Key docker-compose settings: `OLLAMA_MAX_LOADED_MODELS=2` (embed + LLM both loaded). Context window is controlled by `DEFAULT_CONTEXT_WINDOW` in `nexus/config.py` (8192 tokens) — this is what LlamaIndex sends as `num_ctx` to Ollama. The env var on Ollama container has no effect; the client controls context size.
+Ollama runs via Docker (`docker-compose.yml` service `turiya-ollama`). Key docker-compose settings: `OLLAMA_MAX_LOADED_MODELS=2` (embed + LLM both loaded). Context window is controlled by `DEFAULT_CONTEXT_WINDOW` in `nexus/config.py` (4096 tokens) — this is what LlamaIndex sends as `num_ctx` to Ollama. The env var on Ollama container has no effect; the client controls context size.
 
 ### MCP SSE Server (port 8765) — For Docker Consumers
 Gravity-claw (Docker container) connects to Nexus RAG via MCP SSE transport on port 8765. Started via `start-services.sh --mcp-sse`. Uses `mcp.settings.host/port` + `mcp.run(transport='sse', mount_path='/')`. This is separate from the HTTP REST API (port 8766, for mission-control) and the stdio MCP server (for Claude Code/Gemini CLI). If gravity-claw shows "SSE error: Non-200 status code (404)", the MCP SSE server isn't running.
@@ -98,6 +96,32 @@ Gravity-claw (Docker container) connects to Nexus RAG via MCP SSE transport on p
 - `DEFAULT_RERANKER_TOP_N`: 8 → 5 (fewer focused passages for 3B model)
 
 **Benchmark results:** 5/6 queries pass (83%), avg 32s response time. One remaining failure ("what is the tech stack") is a qwen2.5:3b limitation — it has the answer in context but can't synthesize from dense markdown tables.
+
+### RAG Query Latency Optimization (2026-03-10)
+**Problem:** Queries took >1100ms per call. With a 3B model and small databases, response should be near-instant.
+
+**Root Causes (3 identified and fixed):**
+1. **LLMSynonymRetriever in graph retrieval (1137ms):** `PropertyGraphIndex.as_retriever()` defaults to `[LLMSynonymRetriever, VectorContextRetriever]`. The LLMSynonymRetriever makes a redundant LLM call (~800-1000ms) to generate synonym keywords before searching the graph. Fix: `get_graph_retriever()` in `indexes.py` creates a `VectorContextRetriever`-only retriever, bypassing the LLM synonym step entirely.
+2. **Missing `num_ctx` in Ollama payload:** `answer_query` called Ollama without specifying `num_ctx`, causing Ollama to allocate KV cache for the model's native 32768 context window instead of the 4096 we actually use. Fix: Added `"num_ctx": DEFAULT_CONTEXT_WINDOW` to the Ollama chat payload options.
+3. **Per-call httpx client overhead:** `_call_ollama_with_retry()` created a new `httpx.AsyncClient` per call (TCP connection setup/teardown). Fix: Module-level persistent `_ollama_client` via `_get_ollama_client()`.
+
+**Ingestion optimization:**
+- `SimpleLLMPathExtractor(max_paths_per_chunk=5, num_workers=1)` — reduced from default 10 paths, single worker for local Ollama. Reduces graph ingestion latency ~25-30%.
+
+**Latency benchmarks (before → after):**
+
+| Metric | Before | After | Improvement |
+|--------|--------|-------|-------------|
+| Query avg (cold) | ~1100ms | ~553ms | **50% faster** |
+| Query (cached) | N/A | 3ms | — |
+| Retrieval only | ~1200ms | 183ms | **85% faster** |
+| Graph ingestion (short) | ~992ms | ~717ms | **28% faster** |
+| Graph ingestion (medium) | ~896ms | ~650ms | **27% faster** |
+| Vector ingestion (short) | ~92ms | ~92ms | No change (already fast) |
+
+**Remaining bottleneck:** ~350-400ms of each query is the Ollama LLM synthesis call (qwen2.5:3b generating the answer). This is the irreducible minimum for a 3B model. Raw Ollama inference on warm model is 78-98ms — the gap is LlamaIndex wrapper overhead.
+
+> **Guideline:** Never use `PropertyGraphIndex.as_retriever()` directly for queries — always use `get_graph_retriever()` which bypasses the LLM synonym step. Always pass `num_ctx` in Ollama API calls.
 
 ### Orphan Nodes and Duplicates -- Root Causes and Fixes
 - **Unscoped entity nodes:** LlamaIndex's `PropertyGraphIndex.insert()` creates entity nodes during LLM extraction without propagating tenant metadata (project_id, tenant_scope). Fix: `backfill_all_unscoped()` in `neo4j.py` v2.4 runs after every graph insert -- tags ALL nodes with `project_id IS NULL`.
