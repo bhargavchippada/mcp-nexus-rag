@@ -1,52 +1,47 @@
-# Version: v1.5
+# Version: v3.0
 """
-nexus.sync — File synchronization for core documentation.
+nexus.sync — File synchronization for agent persona document.
 
-Provides pattern-based file watching and ingestion for project documentation.
-Only ingests core files (README.md, MEMORY.md, AGENTS.md, TODO.md) to keep
-the RAG focused on high-signal content.
+Provides pattern-based file watching and ingestion for the CLAUDE.md agent
+persona file. This is the only file automatically tracked by the RAG watcher.
+
+Includes a per-file asyncio lock to prevent concurrent ingestion of the same
+file from racing (e.g. watcher + manual sync_project_files overlap).
 """
 
+import asyncio
 from pathlib import Path
 from typing import Optional
 
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
+from nexus.backends import memgraph as graph_backend
+from nexus.backends import pgvector as vector_backend
 from nexus.config import logger
 from nexus.dedup import content_hash
 
+# Per-file asyncio lock to prevent concurrent ingestion of the same file.
+# Key: canonical file path string, Value: asyncio.Lock.
+_sync_locks: dict[str, asyncio.Lock] = {}
+
+
+def get_sync_lock(file_key: str) -> asyncio.Lock:
+    """Return a per-file asyncio lock (created on first access)."""
+    if file_key not in _sync_locks:
+        _sync_locks[file_key] = asyncio.Lock()
+    return _sync_locks[file_key]
+
+
 # ---------------------------------------------------------------------------
-# Core documentation patterns
+# Tracked files
 # ---------------------------------------------------------------------------
 
-# Files to ingest from each project
-CORE_DOC_PATTERNS = [
-    "README.md",
-    "MEMORY.md",
-    "AGENTS.md",
-    "TODO.md",
-]
-
-# Project ID mapping (directory name -> project_id)
-PROJECT_MAPPINGS = {
-    "mcp-nexus-rag": "MCP_NEXUS_RAG",
-    "gravity-claw": "GRAVITY_CLAW",
-    "mission-control": "MISSION_CONTROL",
-    "web-scrapers": "WEB_SCRAPERS",
-    "agentic-trader": "AGENTIC_TRADER",
-}
-
-# Workspace-level persona files (relative to antigravity root)
+# Only the agent persona file is auto-tracked
 PERSONA_FILES = [
     "CLAUDE.md",
-    "mission.md",
-    "MEMORY.md",
-    ".claude/rules/rules.md",
 ]
 
 
 def _classify_file(filepath: Path, workspace_root: Path) -> Optional[tuple[str, str]]:
-    """Return (project_id, scope) if filepath is a tracked core doc, else None.
+    """Return (project_id, scope) if filepath is a tracked file, else None.
 
     Works for both existing and deleted files — no filesystem I/O.
 
@@ -64,22 +59,9 @@ def _classify_file(filepath: Path, workspace_root: Path) -> Optional[tuple[str, 
 
     rel_str = str(rel)
 
-    # Persona files (CLAUDE.md, rules.md, MEMORY.md, mission.md, …)
+    # Persona files (CLAUDE.md only)
     if rel_str in PERSONA_FILES:
         return ("AGENT", "PERSONA")
-
-    # Project core docs: projects/<name>/README.md | MEMORY.md | AGENTS.md | TODO.md
-    parts = rel.parts
-    if (
-        len(parts) == 3
-        and parts[0] == "projects"
-        and filepath.name in CORE_DOC_PATTERNS
-    ):
-        project_dir = parts[1]
-        project_id = PROJECT_MAPPINGS.get(
-            project_dir, project_dir.upper().replace("-", "_")
-        )
-        return (project_id, "CORE_DOCS")
 
     return None
 
@@ -91,29 +73,6 @@ def _read_file_content(filepath: Path) -> Optional[str]:
     except Exception as e:
         logger.warning(f"Failed to read {filepath}: {e}")
         return None
-
-
-def _project_id_from_path(filepath: Path, workspace_root: Path) -> str:
-    """Derive project_id from file path.
-
-    Args:
-        filepath: Absolute path to the file.
-        workspace_root: Antigravity workspace root.
-
-    Returns:
-        Project ID string (e.g., 'GRAVITY_CLAW').
-    """
-    try:
-        rel = filepath.relative_to(workspace_root)
-        parts = rel.parts
-        if len(parts) >= 2 and parts[0] == "projects":
-            project_dir = parts[1]
-            return PROJECT_MAPPINGS.get(
-                project_dir, project_dir.upper().replace("-", "_")
-            )
-    except ValueError:
-        pass
-    return "AGENT"  # Default for workspace-level files
 
 
 def canonical_file_path(filepath: Path, workspace_root: Path) -> str:
@@ -130,7 +89,7 @@ def canonical_file_path(filepath: Path, workspace_root: Path) -> str:
 
 
 def get_core_doc_files(workspace_root: str | Path) -> list[dict]:
-    """Scan workspace and return all core documentation files.
+    """Scan workspace and return tracked documentation files.
 
     Args:
         workspace_root: Path to antigravity workspace root.
@@ -141,7 +100,7 @@ def get_core_doc_files(workspace_root: str | Path) -> list[dict]:
     root = Path(workspace_root)
     files = []
 
-    # 1. Persona files (workspace-level)
+    # Persona files (workspace-level)
     for rel_path in PERSONA_FILES:
         filepath = root / rel_path
         if filepath.exists():
@@ -154,32 +113,7 @@ def get_core_doc_files(workspace_root: str | Path) -> list[dict]:
                 }
             )
 
-    # 2. Project documentation files
-    projects_dir = root / "projects"
-    if projects_dir.exists():
-        for project_dir in projects_dir.iterdir():
-            if not project_dir.is_dir():
-                continue
-            if project_dir.name.startswith("."):
-                continue
-
-            project_id = PROJECT_MAPPINGS.get(
-                project_dir.name, project_dir.name.upper().replace("-", "_")
-            )
-
-            for pattern in CORE_DOC_PATTERNS:
-                filepath = project_dir / pattern
-                if filepath.exists():
-                    files.append(
-                        {
-                            "filepath": filepath,
-                            "project_id": project_id,
-                            "scope": "CORE_DOCS",
-                            "source": f"project:{project_dir.name}/{pattern}",
-                        }
-                    )
-
-    logger.info(f"Found {len(files)} core documentation files")
+    logger.info(f"Found {len(files)} tracked documentation files")
     return files
 
 
@@ -209,11 +143,16 @@ def check_file_sync_status(
 
     Returns a dict with:
         changed: True if any store needs updating
-        needs_graph: True if Neo4j is missing this content
-        needs_vector: True if Qdrant is missing this content
+        needs_graph: True if Memgraph is missing this content
+        needs_vector: True if pgvector is missing this content
 
     This allows callers to selectively ingest only into the store that
     needs it, preventing duplicates from partial-failure recovery.
+
+    Uses ``file_content_hash`` (whole-file hash stored on every chunk during
+    ingestion) rather than ``content_hash`` (per-chunk hash). This fixes the
+    whole-file vs per-chunk hash mismatch that previously caused every sync
+    call to re-ingest, creating duplicates on concurrent calls.
     """
     content = _read_file_content(filepath)
     if content is None:
@@ -221,18 +160,18 @@ def check_file_sync_status(
 
     chash = content_hash(content, project_id, scope)
 
-    neo4j_dup = neo4j_backend.is_duplicate(chash, project_id, scope)
-    qdrant_dup = qdrant_backend.is_duplicate(chash, project_id, scope)
+    graph_dup = graph_backend.is_file_content_duplicate(chash, project_id, scope)
+    vector_dup = vector_backend.is_file_content_duplicate(chash, project_id, scope)
 
     return {
-        "changed": not (neo4j_dup and qdrant_dup),
-        "needs_graph": not neo4j_dup,
-        "needs_vector": not qdrant_dup,
+        "changed": not (graph_dup and vector_dup),
+        "needs_graph": not graph_dup,
+        "needs_vector": not vector_dup,
     }
 
 
 def get_files_needing_sync(workspace_root: str | Path) -> list[dict]:
-    """Return list of core doc files that need to be synced (changed or new).
+    """Return list of tracked files that need to be synced (changed or new).
 
     Args:
         workspace_root: Path to antigravity workspace root.
@@ -269,10 +208,10 @@ def delete_stale_files(
     root = Path(workspace_root)
     deleted = []
 
-    # Union Neo4j + Qdrant — catch orphans in either store
-    neo4j_paths = set(neo4j_backend.get_all_filepaths(project_id, scope))
-    qdrant_paths = set(qdrant_backend.get_all_filepaths(project_id, scope))
-    indexed_paths = neo4j_paths | qdrant_paths
+    # Union Memgraph + pgvector — catch orphans in either store
+    graph_paths = set(graph_backend.get_all_filepaths(project_id, scope))
+    vector_paths = set(vector_backend.get_all_filepaths(project_id, scope))
+    indexed_paths = graph_paths | vector_paths
 
     for indexed_path in indexed_paths:
         full_path = (
@@ -283,8 +222,8 @@ def delete_stale_files(
         if not full_path.exists():
             # File was deleted - remove from both stores
             try:
-                neo4j_backend.delete_by_filepath(project_id, indexed_path, scope)
-                qdrant_backend.delete_by_filepath(project_id, indexed_path, scope)
+                graph_backend.delete_by_filepath(project_id, indexed_path, scope)
+                vector_backend.delete_by_filepath(project_id, indexed_path, scope)
                 deleted.append(indexed_path)
                 logger.info(f"Deleted stale document: {indexed_path}")
             except Exception as e:

@@ -15,15 +15,9 @@ nest_asyncio.apply()
 
 # Register all MCP tools (side-effect of import)
 import nexus.tools  # noqa: F401
-from nexus.backends.neo4j import (  # noqa: F401
-    neo4j_driver as _neo4j_driver,
-)
-from nexus.backends.qdrant import (  # noqa: F401
-    scroll_field as _scroll_qdrant_field,
-)
 
 # Shared FastMCP application
-from nexus.config import COLLECTION_NAME, logger, mcp, validate_config  # noqa: F401
+from nexus.config import PG_TABLE_NAME, logger, mcp, validate_config  # noqa: F401
 from nexus.dedup import content_hash as _content_hash  # noqa: F401
 from nexus.indexes import (  # noqa: F401
     get_graph_index,

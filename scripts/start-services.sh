@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version: v2.2
+# Version: v2.3
 # Antigravity AI Services Startup Script
 # Brings up all MCP backend services: Nexus RAG + Code-Graph-RAG + MCP SSE
 
@@ -16,11 +16,10 @@ ANTIGRAVITY_DIR="${HOME}/antigravity"
 
 # Service ports
 POSTGRES_PORT=5432
-NEO4J_PORT=7687
-QDRANT_PORT=6333
+MEMGRAPH_RAG_PORT=7689
 OLLAMA_PORT=11434
 REDIS_PORT=6379
-MEMGRAPH_PORT=7688
+MEMGRAPH_CGR_PORT=7688
 SEARXNG_PORT="${SEARXNG_PORT:-8888}"
 MCP_SSE_PORT="${MCP_SSE_PORT:-8765}"
 HTTP_API_PORT="${HTTP_API_PORT:-8766}"
@@ -99,14 +98,13 @@ show_status() {
 
     echo "MCP Nexus RAG Services:"
     check_port $POSTGRES_PORT "  Postgres (pgvector)" || true
-    check_port $NEO4J_PORT "  Neo4j (GraphRAG)" || true
-    check_port $QDRANT_PORT "  Qdrant (VectorRAG)" || true
+    check_port $MEMGRAPH_RAG_PORT "  Memgraph RAG (GraphRAG)" || true
     check_port $OLLAMA_PORT "  Ollama (LLM)" || true
     check_port $REDIS_PORT "  Redis (Cache)" || true
 
     echo ""
     echo "Code-Graph-RAG Services:"
-    check_port $MEMGRAPH_PORT "  Memgraph (Code Graph)" || true
+    check_port $MEMGRAPH_CGR_PORT "  Memgraph CGR (Code Graph)" || true
 
     echo ""
     echo "Search Services:"
@@ -201,14 +199,13 @@ start_nexus_rag() {
     done
 
     # Always start these via compose (no native alternative)
-    compose_services="postgres neo4j qdrant $compose_services"
+    compose_services="postgres memgraph-rag $compose_services"
 
     # shellcheck disable=SC2086
     docker compose up -d $compose_services
 
     # Wait for services
-    wait_for_port $NEO4J_PORT "Neo4j" 90
-    wait_for_port $QDRANT_PORT "Qdrant" 30
+    wait_for_port $MEMGRAPH_RAG_PORT "Memgraph RAG" 30
     wait_for_port $OLLAMA_PORT "Ollama" 60
     wait_for_port $REDIS_PORT "Redis" 15
 
@@ -263,13 +260,13 @@ start_code_graph_rag() {
         # Create new container
         log_info "Creating new Memgraph container..."
         docker run -d --name memgraph-cgr \
-            -p ${MEMGRAPH_PORT}:7687 \
+            -p ${MEMGRAPH_CGR_PORT}:7687 \
             -p 7445:7444 \
             --restart unless-stopped \
             memgraph/memgraph-mage
     fi
 
-    wait_for_port $MEMGRAPH_PORT "Memgraph" 30
+    wait_for_port $MEMGRAPH_CGR_PORT "Memgraph CGR" 30
     log_success "Code-Graph-RAG services started"
 }
 
@@ -373,13 +370,13 @@ reindex_antigravity() {
     fi
 
     cd "$CODE_GRAPH_RAG_DIR"
-    MEMGRAPH_PORT=$MEMGRAPH_PORT uv run cgr start \
+    MEMGRAPH_PORT=$MEMGRAPH_CGR_PORT uv run cgr start \
         --repo-path "$ANTIGRAVITY_DIR" \
         --update-graph --clean
 
     # Verify indexing
     local result
-    result=$(MEMGRAPH_PORT=$MEMGRAPH_PORT uv run cgr export -o /tmp/graph_check.json 2>&1 | grep -o '[0-9]* nodes' | head -1)
+    result=$(MEMGRAPH_PORT=$MEMGRAPH_CGR_PORT uv run cgr export -o /tmp/graph_check.json 2>&1 | grep -o '[0-9]* nodes' | head -1)
     log_success "Indexing complete: $result indexed"
 }
 
@@ -403,7 +400,7 @@ start_watcher() {
     # nohup & already detaches; setsid can fail if venv python symlinks to
     # a root-owned binary (e.g., uv-managed python under /root/).
     nohup .venv/bin/python realtime_updater.py "$ANTIGRAVITY_DIR" \
-        --host localhost --port $MEMGRAPH_PORT \
+        --host localhost --port $MEMGRAPH_CGR_PORT \
         < /dev/null > /tmp/cgr-watcher.log 2>&1 &
 
     local watcher_pid=$!
@@ -502,19 +499,11 @@ health_check() {
     log_info "Running health checks..."
     echo ""
 
-    # Neo4j
-    if curl -sf http://localhost:7474 > /dev/null 2>&1; then
-        log_success "Neo4j: healthy"
+    # Memgraph RAG (GraphRAG)
+    if nc -z localhost $MEMGRAPH_RAG_PORT 2>/dev/null; then
+        log_success "Memgraph RAG: healthy (port $MEMGRAPH_RAG_PORT)"
     else
-        log_error "Neo4j: unhealthy"
-        all_healthy=false
-    fi
-
-    # Qdrant
-    if curl -sf http://localhost:$QDRANT_PORT/collections > /dev/null 2>&1; then
-        log_success "Qdrant: healthy"
-    else
-        log_error "Qdrant: unhealthy"
+        log_error "Memgraph RAG: unhealthy"
         all_healthy=false
     fi
 
@@ -559,11 +548,11 @@ except: print('?/?')
         all_healthy=false
     fi
 
-    # Memgraph (check via port)
-    if nc -z localhost $MEMGRAPH_PORT 2>/dev/null; then
-        log_success "Memgraph: healthy"
+    # Memgraph CGR (Code-Graph-RAG)
+    if nc -z localhost $MEMGRAPH_CGR_PORT 2>/dev/null; then
+        log_success "Memgraph CGR: healthy (port $MEMGRAPH_CGR_PORT)"
     else
-        log_error "Memgraph: unhealthy"
+        log_error "Memgraph CGR: unhealthy"
         all_healthy=false
     fi
 

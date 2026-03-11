@@ -1,8 +1,11 @@
-# Version: v1.4
+# Version: v3.0
 """
 Tests for nexus.watcher — RAG sync daemon.
+
+v3.0: Migrated from Neo4j/Qdrant to Memgraph/pgvector backends.
 """
 
+import contextlib
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -34,48 +37,39 @@ class TestClassifyFile:
         p = WORKSPACE / "CLAUDE.md"
         assert _classify_file(p, WORKSPACE) == ("AGENT", "PERSONA")
 
-    def test_persona_rules_md(self):
-        p = WORKSPACE / ".claude/rules/rules.md"
-        assert _classify_file(p, WORKSPACE) == ("AGENT", "PERSONA")
-
-    def test_persona_memory_md(self):
-        p = WORKSPACE / "MEMORY.md"
-        assert _classify_file(p, WORKSPACE) == ("AGENT", "PERSONA")
-
-    def test_persona_mission_md(self):
-        p = WORKSPACE / "mission.md"
-        assert _classify_file(p, WORKSPACE) == ("AGENT", "PERSONA")
-
-    def test_project_readme(self):
+    def test_project_readme_not_tracked(self):
+        """Project core docs are no longer tracked."""
         p = WORKSPACE / "projects/gravity-claw/README.md"
-        result = _classify_file(p, WORKSPACE)
-        assert result == ("GRAVITY_CLAW", "CORE_DOCS")
+        assert _classify_file(p, WORKSPACE) is None
 
-    def test_project_memory(self):
+    def test_project_memory_not_tracked(self):
         p = WORKSPACE / "projects/mcp-nexus-rag/MEMORY.md"
-        result = _classify_file(p, WORKSPACE)
-        assert result == ("MCP_NEXUS_RAG", "CORE_DOCS")
+        assert _classify_file(p, WORKSPACE) is None
 
-    def test_project_todo(self):
+    def test_project_todo_not_tracked(self):
         p = WORKSPACE / "projects/web-scrapers/TODO.md"
-        assert _classify_file(p, WORKSPACE) == ("WEB_SCRAPERS", "CORE_DOCS")
+        assert _classify_file(p, WORKSPACE) is None
 
-    def test_project_agents(self):
+    def test_project_agents_not_tracked(self):
         p = WORKSPACE / "projects/mission-control/AGENTS.md"
-        assert _classify_file(p, WORKSPACE) == ("MISSION_CONTROL", "CORE_DOCS")
+        assert _classify_file(p, WORKSPACE) is None
 
-    def test_unknown_project_uses_fallback(self):
-        p = WORKSPACE / "projects/some-new-project/README.md"
-        result = _classify_file(p, WORKSPACE)
-        assert result == ("SOME_NEW_PROJECT", "CORE_DOCS")
+    def test_workspace_memory_not_tracked(self):
+        """Root MEMORY.md is no longer tracked."""
+        p = WORKSPACE / "MEMORY.md"
+        assert _classify_file(p, WORKSPACE) is None
 
-    def test_agentic_trader_in_mappings(self):
-        p = WORKSPACE / "projects/agentic-trader/README.md"
-        result = _classify_file(p, WORKSPACE)
-        assert result == ("AGENTIC_TRADER", "CORE_DOCS")
+    def test_workspace_rules_not_tracked(self):
+        """rules.md is no longer tracked."""
+        p = WORKSPACE / ".claude/rules/rules.md"
+        assert _classify_file(p, WORKSPACE) is None
+
+    def test_workspace_mission_not_tracked(self):
+        """mission.md is no longer tracked."""
+        p = WORKSPACE / "mission.md"
+        assert _classify_file(p, WORKSPACE) is None
 
     def test_nested_project_file_not_tracked(self):
-        # Nested README (depth > 1 under project dir) should not be tracked
         p = WORKSPACE / "projects/gravity-claw/src/README.md"
         assert _classify_file(p, WORKSPACE) is None
 
@@ -93,8 +87,8 @@ class TestClassifyFile:
 
     def test_deleted_file_classified_by_path(self):
         # Classification works even if file doesn't exist on disk
-        p = WORKSPACE / "projects/gravity-claw/MEMORY.md"
-        assert _classify_file(p, WORKSPACE) == ("GRAVITY_CLAW", "CORE_DOCS")
+        p = WORKSPACE / "CLAUDE.md"
+        assert _classify_file(p, WORKSPACE) == ("AGENT", "PERSONA")
 
 
 # ---------------------------------------------------------------------------
@@ -127,13 +121,21 @@ class TestCoreDocEventHandler:
         changed, deleted = h.pop_ready(debounce=0.0)
         assert changed == []
 
-    def test_deleted_queued_separately(self):
+    def test_modified_project_readme_ignored(self):
+        """Project core docs are no longer tracked by the watcher."""
         h = self._handler()
         e = self._make_event(str(WORKSPACE / "projects/gravity-claw/README.md"))
+        h.on_modified(e)
+        changed, deleted = h.pop_ready(debounce=0.0)
+        assert changed == []
+
+    def test_deleted_queued_separately(self):
+        h = self._handler()
+        e = self._make_event(str(WORKSPACE / "CLAUDE.md"))
         h.on_deleted(e)
         changed, deleted = h.pop_ready(debounce=0.0)
         assert changed == []
-        assert str(WORKSPACE / "projects/gravity-claw/README.md") in deleted
+        assert str(WORKSPACE / "CLAUDE.md") in deleted
 
     def test_delete_overrides_pending_change(self):
         h = self._handler()
@@ -184,7 +186,8 @@ class TestCoreDocEventHandler:
         assert changed == []
         assert deleted == []
 
-    def test_moved_event_queues_delete_and_change(self):
+    def test_moved_event_queues_delete_only_if_tracked(self):
+        """Move from CLAUDE.md to a project file: delete src, ignore dst."""
         h = self._handler()
         src = str(WORKSPACE / "CLAUDE.md")
         dst = str(WORKSPACE / "projects/gravity-claw/README.md")
@@ -195,7 +198,8 @@ class TestCoreDocEventHandler:
         h.on_moved(e)
         changed, deleted = h.pop_ready(debounce=0.0)
         assert src in deleted
-        assert dst in changed
+        # dst is a project README which is no longer tracked
+        assert dst not in changed
 
     def test_pop_clears_state(self):
         h = self._handler()
@@ -238,33 +242,33 @@ class TestWatcherLock:
 class TestDeleteFromRag:
     def test_calls_both_backends(self):
         with (
-            patch("nexus.watcher.neo4j_backend") as mock_neo4j,
-            patch("nexus.watcher.qdrant_backend") as mock_qdrant,
+            patch("nexus.watcher.graph_backend") as mock_graph,
+            patch("nexus.watcher.vector_backend") as mock_vector,
         ):
-            _delete_from_rag("PROJ", "/some/path.md", "CORE_DOCS")
-            mock_neo4j.delete_by_filepath.assert_called_once_with(
-                "PROJ", "/some/path.md", "CORE_DOCS"
+            _delete_from_rag("AGENT", "/some/path.md", "PERSONA")
+            mock_graph.delete_by_filepath.assert_called_once_with(
+                "AGENT", "/some/path.md", "PERSONA"
             )
-            mock_qdrant.delete_by_filepath.assert_called_once_with(
-                "PROJ", "/some/path.md", "CORE_DOCS"
+            mock_vector.delete_by_filepath.assert_called_once_with(
+                "AGENT", "/some/path.md", "PERSONA"
             )
 
-    def test_neo4j_error_does_not_raise(self):
+    def test_graph_error_does_not_raise(self):
         with (
-            patch("nexus.watcher.neo4j_backend") as mock_neo4j,
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend") as mock_graph,
+            patch("nexus.watcher.vector_backend"),
         ):
-            mock_neo4j.delete_by_filepath.side_effect = Exception("connection lost")
+            mock_graph.delete_by_filepath.side_effect = Exception("connection lost")
             # Should not raise
-            _delete_from_rag("PROJ", "/some/path.md", "CORE_DOCS")
+            _delete_from_rag("AGENT", "/some/path.md", "PERSONA")
 
-    def test_qdrant_error_does_not_raise(self):
+    def test_vector_error_does_not_raise(self):
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend") as mock_qdrant,
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend") as mock_vector,
         ):
-            mock_qdrant.delete_by_filepath.side_effect = Exception("timeout")
-            _delete_from_rag("PROJ", "/some/path.md", "CORE_DOCS")
+            mock_vector.delete_by_filepath.side_effect = Exception("timeout")
+            _delete_from_rag("AGENT", "/some/path.md", "PERSONA")
 
 
 # ---------------------------------------------------------------------------
@@ -286,8 +290,8 @@ class TestSyncChanged:
                 new_callable=AsyncMock,
                 return_value="Successfully ingested vector document",
             ),
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch(
                 "nexus.watcher.check_file_sync_status",
                 return_value={
@@ -352,8 +356,8 @@ class TestSyncChanged:
                     "needs_vector": True,
                 },
             ),
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch(
                 "nexus.tools.ingest_graph_document",
                 new_callable=AsyncMock,
@@ -373,39 +377,6 @@ class TestSyncChanged:
             assert call_kwargs["project_id"] == "AGENT"
             assert call_kwargs["scope"] == "PERSONA"
 
-    async def test_ingests_changed_project_file(self, tmp_path):
-        workspace = tmp_path / "antigravity"
-        proj = workspace / "projects" / "gravity-claw"
-        proj.mkdir(parents=True)
-        f = proj / "README.md"
-        f.write_text("project docs")
-        with (
-            patch(
-                "nexus.watcher.check_file_sync_status",
-                return_value={
-                    "changed": True,
-                    "needs_graph": True,
-                    "needs_vector": True,
-                },
-            ),
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
-            patch(
-                "nexus.tools.ingest_graph_document",
-                new_callable=AsyncMock,
-                return_value="Successfully ingested graph document",
-            ) as mock_g,
-            patch(
-                "nexus.tools.ingest_vector_document",
-                new_callable=AsyncMock,
-                return_value="Successfully ingested vector document",
-            ),
-        ):
-            await _sync_changed([str(f)], workspace)
-            call_kwargs = mock_g.call_args.kwargs
-            assert call_kwargs["project_id"] == "GRAVITY_CLAW"
-            assert call_kwargs["scope"] == "CORE_DOCS"
-
     async def test_deletes_old_chunks_before_ingest(self, tmp_path):
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
@@ -420,8 +391,8 @@ class TestSyncChanged:
                     "needs_vector": True,
                 },
             ),
-            patch("nexus.watcher.neo4j_backend") as mock_neo4j,
-            patch("nexus.watcher.qdrant_backend") as mock_qdrant,
+            patch("nexus.watcher.graph_backend") as mock_graph,
+            patch("nexus.watcher.vector_backend") as mock_vector,
             patch(
                 "nexus.tools.ingest_graph_document",
                 new_callable=AsyncMock,
@@ -434,8 +405,8 @@ class TestSyncChanged:
             ),
         ):
             await _sync_changed([str(f)], workspace)
-            mock_neo4j.delete_by_filepath.assert_called_once()
-            mock_qdrant.delete_by_filepath.assert_called_once()
+            mock_graph.delete_by_filepath.assert_called_once()
+            mock_vector.delete_by_filepath.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -450,41 +421,40 @@ class TestSyncDeleted:
         f = workspace / "CLAUDE.md"  # doesn't need to exist for delete
 
         with (
-            patch("nexus.watcher.neo4j_backend") as mock_neo4j,
-            patch("nexus.watcher.qdrant_backend") as mock_qdrant,
+            patch("nexus.watcher.graph_backend") as mock_graph,
+            patch("nexus.watcher.vector_backend") as mock_vector,
         ):
             await _sync_deleted([str(f)], workspace)
-            mock_neo4j.delete_by_filepath.assert_called_once_with(
+            mock_graph.delete_by_filepath.assert_called_once_with(
                 "AGENT", "CLAUDE.md", "PERSONA"
             )
-            mock_qdrant.delete_by_filepath.assert_called_once_with(
+            mock_vector.delete_by_filepath.assert_called_once_with(
                 "AGENT", "CLAUDE.md", "PERSONA"
             )
 
     async def test_skips_unclassified_path(self, tmp_path):
         untracked = str(tmp_path / "random.txt")
         with (
-            patch("nexus.watcher.neo4j_backend") as mock_neo4j,
-            patch("nexus.watcher.qdrant_backend") as mock_qdrant,
+            patch("nexus.watcher.graph_backend") as mock_graph,
+            patch("nexus.watcher.vector_backend") as mock_vector,
         ):
             await _sync_deleted([untracked], tmp_path)
-            mock_neo4j.delete_by_filepath.assert_not_called()
-            mock_qdrant.delete_by_filepath.assert_not_called()
+            mock_graph.delete_by_filepath.assert_not_called()
+            mock_vector.delete_by_filepath.assert_not_called()
 
-    async def test_deletes_project_core_doc(self, tmp_path):
+    async def test_project_core_doc_delete_ignored(self, tmp_path):
+        """Project core docs are no longer tracked — delete should be ignored."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "projects" / "mission-control" / "MEMORY.md"
 
         with (
-            patch("nexus.watcher.neo4j_backend") as mock_neo4j,
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend") as mock_graph,
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module"),
         ):
             await _sync_deleted([str(f)], workspace)
-            mock_neo4j.delete_by_filepath.assert_called_once_with(
-                "MISSION_CONTROL", "projects/mission-control/MEMORY.md", "CORE_DOCS"
-            )
+            mock_graph.delete_by_filepath.assert_not_called()
 
     async def test_cache_invalidated_after_delete(self, tmp_path):
         """_sync_deleted must invalidate cache so stale results are not served."""
@@ -493,8 +463,8 @@ class TestSyncDeleted:
         f = workspace / "CLAUDE.md"
 
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
         ):
             await _sync_deleted([str(f)], workspace)
@@ -504,8 +474,8 @@ class TestSyncDeleted:
         """Unclassified paths must not trigger cache invalidation."""
         untracked = str(tmp_path / "some_random_file.txt")
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
         ):
             await _sync_deleted([untracked], tmp_path)
@@ -513,17 +483,11 @@ class TestSyncDeleted:
 
 
 # ---------------------------------------------------------------------------
-# TestSyncChangedSuccessCheck (Loop 12 — Bug L12-4)
+# TestSyncChangedSuccessCheck
 # ---------------------------------------------------------------------------
 
 
 class TestSyncChangedSuccessCheck:
-    """_sync_changed success check must use 'Error' not in result instead of
-    'Successfully' in.  'Skipped: duplicate' is a valid non-error outcome
-    (content already ingested by a concurrent call) and must NOT trigger a
-    WARNING log.
-    """
-
     async def test_skipped_duplicate_does_not_log_warning(self, tmp_path):
         """'Skipped: duplicate' must log INFO (success), not WARNING."""
         workspace = tmp_path / "antigravity"
@@ -533,8 +497,8 @@ class TestSyncChangedSuccessCheck:
 
         skipped = "Skipped: duplicate content already exists."
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module"),
             patch(
                 "nexus.watcher.check_file_sync_status",
@@ -552,20 +516,18 @@ class TestSyncChangedSuccessCheck:
         ):
             await _sync_changed([str(f)], workspace)
 
-        # info logged for the synced file, warning must NOT have been logged
         mock_logger.info.assert_called()
         mock_logger.warning.assert_not_called()
 
     async def test_error_result_logs_warning(self, tmp_path):
-        """'Error:' in either ingest result must trigger a WARNING log."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "CLAUDE.md"
         f.write_text("content")
 
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module"),
             patch(
                 "nexus.watcher.check_file_sync_status",
@@ -577,7 +539,7 @@ class TestSyncChangedSuccessCheck:
             ),
             patch(
                 "nexus.tools.ingest_graph_document",
-                AsyncMock(return_value="Error: neo4j unavailable"),
+                AsyncMock(return_value="Error: memgraph unavailable"),
             ),
             patch(
                 "nexus.tools.ingest_vector_document",
@@ -591,15 +553,14 @@ class TestSyncChangedSuccessCheck:
         assert "partial sync" in mock_logger.warning.call_args[0][0]
 
     async def test_both_successfully_logs_info_not_warning(self, tmp_path):
-        """Full success path: both 'Successfully' results log INFO, no WARNING."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "CLAUDE.md"
         f.write_text("content")
 
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module"),
             patch(
                 "nexus.watcher.check_file_sync_status",
@@ -626,24 +587,20 @@ class TestSyncChangedSuccessCheck:
 
 
 # ---------------------------------------------------------------------------
-# TestSyncChangedCacheInvalidation (Loop 7)
+# TestSyncChangedCacheInvalidation
 # ---------------------------------------------------------------------------
 
 
 class TestSyncChangedCacheInvalidation:
-    """_sync_changed must invalidate cache right after _delete_from_rag,
-    before ingest, so stale cached results aren't served if ingest fails."""
-
     async def test_cache_invalidated_before_ingest_on_ingest_failure(self, tmp_path):
-        """If both ingest calls fail, cache is still invalidated after delete."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "CLAUDE.md"
         f.write_text("some content")
 
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
             patch(
                 "nexus.watcher.check_file_sync_status",
@@ -655,28 +612,26 @@ class TestSyncChangedCacheInvalidation:
             ),
             patch(
                 "nexus.tools.ingest_graph_document",
-                AsyncMock(side_effect=RuntimeError("neo4j down")),
+                AsyncMock(side_effect=RuntimeError("memgraph down")),
             ),
             patch(
                 "nexus.tools.ingest_vector_document",
-                AsyncMock(side_effect=RuntimeError("qdrant down")),
+                AsyncMock(side_effect=RuntimeError("pgvector down")),
             ),
         ):
             await _sync_changed([str(f)], workspace)
 
-        # Cache should be invalidated even though both ingests failed
         mock_cache.invalidate_cache.assert_called_with("AGENT", "PERSONA")
 
     async def test_cache_invalidated_before_ingest_on_ingest_success(self, tmp_path):
-        """On successful ingest, cache is invalidated (at least once) after delete."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "CLAUDE.md"
         f.write_text("updated content")
 
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
             patch(
                 "nexus.watcher.check_file_sync_status",
@@ -697,19 +652,17 @@ class TestSyncChangedCacheInvalidation:
         ):
             await _sync_changed([str(f)], workspace)
 
-        # At minimum the pre-ingest invalidation must have fired
         assert mock_cache.invalidate_cache.call_count >= 1
 
     async def test_unchanged_file_does_not_invalidate_cache(self, tmp_path):
-        """If check_file_sync_status returns unchanged, cache must not be invalidated."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "CLAUDE.md"
         f.write_text("same content")
 
         with (
-            patch("nexus.watcher.neo4j_backend"),
-            patch("nexus.watcher.qdrant_backend"),
+            patch("nexus.watcher.graph_backend"),
+            patch("nexus.watcher.vector_backend"),
             patch("nexus.watcher.cache_module") as mock_cache,
             patch(
                 "nexus.watcher.check_file_sync_status",
@@ -726,39 +679,30 @@ class TestSyncChangedCacheInvalidation:
 
 
 # ---------------------------------------------------------------------------
-# Heartbeat flush (prevents stale log mtime under nohup)
+# Heartbeat flush
 # ---------------------------------------------------------------------------
 
 
 class TestHeartbeatFlush:
-    """The heartbeat must flush stderr so log file mtime updates under nohup."""
-
     async def test_heartbeat_flushes_stderr(self, tmp_path):
-        """After heartbeat fires, sys.stderr.flush() must be called."""
         import asyncio
 
         with (
             patch("nexus.watcher._acquire_single_instance_lock") as mock_lock,
             patch("nexus.watcher._release_single_instance_lock"),
             patch("nexus.watcher.Observer") as mock_observer_cls,
-            patch("nexus.watcher.HEARTBEAT_SECONDS", 0),  # fire immediately
+            patch("nexus.watcher.HEARTBEAT_SECONDS", 0),
             patch("nexus.watcher.sys") as mock_sys,
         ):
             mock_lock.return_value = MagicMock()
             mock_observer_cls.return_value = MagicMock()
 
-            # Cancel after first loop iteration
-            call_count = 0
-            original_sleep = asyncio.sleep
-
-            async def counting_sleep(secs):
-                nonlocal call_count
-                call_count += 1
-                if call_count >= 2:
-                    raise asyncio.CancelledError
-                await original_sleep(0)
-
-            with patch("nexus.watcher.asyncio.sleep", side_effect=counting_sleep):
-                await run_watcher(workspace_root=tmp_path, debounce=1.0)
+            task = asyncio.create_task(
+                run_watcher(workspace_root=tmp_path, debounce=1.0)
+            )
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
             mock_sys.stderr.flush.assert_called()

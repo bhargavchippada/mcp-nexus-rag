@@ -1,10 +1,15 @@
-# Version: v1.6
+# Version: v2.1
 """
 nexus.watcher — Continuous RAG sync daemon.
 
-Watches the antigravity workspace for changes to core documentation files
-and automatically syncs them into RAG stores (Neo4j + Qdrant):
+v2.1: Add initial sync on startup — bootstraps tracked files into RAG stores
+      if they haven't been ingested yet.
 
+Watches the antigravity workspace for changes to the agent persona file
+(CLAUDE.md) and automatically syncs it into RAG stores (Memgraph + pgvector):
+
+  - Initial sync on startup — ensures tracked files are ingested even if
+    no filesystem events have fired yet
   - Content hash deduplication — skips unchanged files
   - Filepath deletion before re-ingest on updates (no stale chunks)
   - Stale document removal on file deletion
@@ -30,16 +35,15 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
 from nexus import cache as cache_module
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
+from nexus.backends import memgraph as graph_backend
+from nexus.backends import pgvector as vector_backend
 from nexus.config import logger
 from nexus.sync import (
-    CORE_DOC_PATTERNS,
     PERSONA_FILES,
-    PROJECT_MAPPINGS,
     _classify_file,
     canonical_file_path,
     check_file_sync_status,
+    get_sync_lock,
 )
 
 # ---------------------------------------------------------------------------
@@ -172,17 +176,21 @@ class CoreDocEventHandler(FileSystemEventHandler):
 def _delete_from_rag(project_id: str, filepath_str: str, scope: str) -> None:
     """Remove all RAG documents tagged with canonical *filepath_str* from both stores."""
     try:
-        neo4j_backend.delete_by_filepath(project_id, filepath_str, scope)
+        graph_backend.delete_by_filepath(project_id, filepath_str, scope)
     except Exception as e:
-        logger.debug(f"Neo4j delete skip ({filepath_str}): {e}")
+        logger.debug(f"Memgraph delete skip ({filepath_str}): {e}")
     try:
-        qdrant_backend.delete_by_filepath(project_id, filepath_str, scope)
+        vector_backend.delete_by_filepath(project_id, filepath_str, scope)
     except Exception as e:
-        logger.debug(f"Qdrant delete skip ({filepath_str}): {e}")
+        logger.debug(f"pgvector delete skip ({filepath_str}): {e}")
 
 
 async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
-    """For each path: delete old RAG chunks then ingest updated content."""
+    """For each path: delete old RAG chunks then ingest updated content.
+
+    Acquires a per-file asyncio lock to prevent concurrent ingestion of the
+    same file (e.g. watcher + manual sync_project_files overlap).
+    """
     from nexus.tools import ingest_graph_document, ingest_vector_document
 
     for abs_path_str in paths:
@@ -196,78 +204,74 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
             continue
         project_id, scope = classification
 
-        # Check which stores need updating (selective ingest prevents duplicates)
-        sync_status = check_file_sync_status(filepath, project_id, scope)
-        if not sync_status["changed"]:
-            logger.debug(f"Watcher: unchanged, skipping {abs_path_str}")
-            continue
+        canonical_path = canonical_file_path(filepath, workspace_root)
+        lock = get_sync_lock(canonical_path)
 
-        try:
-            content = filepath.read_text(encoding="utf-8")
+        async with lock:
+            # Re-check after acquiring lock — another caller may have synced it
+            sync_status = check_file_sync_status(filepath, project_id, scope)
+            if not sync_status["changed"]:
+                logger.debug(f"Watcher: unchanged, skipping {abs_path_str}")
+                continue
+
             try:
-                source_id = str(filepath.relative_to(workspace_root))
-            except ValueError:
-                source_id = abs_path_str
+                content = filepath.read_text(encoding="utf-8")
+                try:
+                    source_id = str(filepath.relative_to(workspace_root))
+                except ValueError:
+                    source_id = abs_path_str
 
-            canonical_path = canonical_file_path(filepath, workspace_root)
-            needs_graph = sync_status["needs_graph"]
-            needs_vector = sync_status["needs_vector"]
+                needs_graph = sync_status["needs_graph"]
+                needs_vector = sync_status["needs_vector"]
 
-            # Only delete + re-ingest into stores that need updating.
-            # This prevents duplicates from partial-failure recovery where
-            # one store already has the content.
-            if needs_graph and needs_vector:
-                # Both stores need updating — full delete + re-ingest
-                _delete_from_rag(project_id, canonical_path, scope)
-            elif needs_graph:
-                neo4j_backend.delete_by_filepath(project_id, canonical_path, scope)
-            elif needs_vector:
-                qdrant_backend.delete_by_filepath(project_id, canonical_path, scope)
+                # Only delete + re-ingest into stores that need updating.
+                if needs_graph and needs_vector:
+                    _delete_from_rag(project_id, canonical_path, scope)
+                elif needs_graph:
+                    graph_backend.delete_by_filepath(project_id, canonical_path, scope)
+                elif needs_vector:
+                    vector_backend.delete_by_filepath(project_id, canonical_path, scope)
 
-            cache_module.invalidate_cache(project_id, scope)
+                cache_module.invalidate_cache(project_id, scope)
 
-            graph_result = "Skipped: already in graph"
-            vector_result = "Skipped: already in vector"
+                graph_result = "Skipped: already in graph"
+                vector_result = "Skipped: already in vector"
 
-            if needs_graph:
-                graph_result = await ingest_graph_document(
-                    text=content,
-                    project_id=project_id,
-                    scope=scope,
-                    source_identifier=source_id,
-                    file_path=canonical_path,
-                )
-                # Backfill any orphan entity nodes created by PropertyGraphIndex
-                backfilled = neo4j_backend.backfill_all_unscoped(project_id, scope)
-                if backfilled:
-                    logger.info(
-                        "Watcher: backfilled %d unscoped nodes for %s/%s",
-                        backfilled,
-                        project_id,
-                        scope,
+                if needs_graph:
+                    graph_result = await ingest_graph_document(
+                        text=content,
+                        project_id=project_id,
+                        scope=scope,
+                        source_identifier=source_id,
+                        file_path=canonical_path,
+                    )
+                    backfilled = graph_backend.backfill_all_unscoped(project_id, scope)
+                    if backfilled:
+                        logger.info(
+                            "Watcher: backfilled %d unscoped nodes for %s/%s",
+                            backfilled,
+                            project_id,
+                            scope,
+                        )
+
+                if needs_vector:
+                    vector_result = await ingest_vector_document(
+                        text=content,
+                        project_id=project_id,
+                        scope=scope,
+                        source_identifier=source_id,
+                        file_path=canonical_path,
                     )
 
-            if needs_vector:
-                vector_result = await ingest_vector_document(
-                    text=content,
-                    project_id=project_id,
-                    scope=scope,
-                    source_identifier=source_id,
-                    file_path=canonical_path,
-                )
-
-            # Bug L12-4 fix: use "Error" not in instead of "Successfully" in.
-            # "Skipped: duplicate" is a valid non-error result (content already ingested
-            # by a concurrent call) and should NOT trigger a WARNING.
-            if "Error" not in graph_result and "Error" not in vector_result:
-                logger.info(f"Watcher: synced {source_id} ({project_id}/{scope})")
-            else:
-                logger.warning(
-                    f"Watcher: partial sync {source_id}: "
-                    f"graph={graph_result[:80]!r}, vector={vector_result[:80]!r}"
-                )
-        except Exception as e:
-            logger.error(f"Watcher: sync error for {abs_path_str}: {e}")
+                if "Error" not in graph_result and "Error" not in vector_result:
+                    logger.info(f"Watcher: synced {source_id} ({project_id}/{scope})")
+                else:
+                    logger.warning(
+                        f"Watcher: partial sync {source_id}: "
+                        f"graph={graph_result[:80]!r}, vector={vector_result[:80]!r}"
+                    )
+            except Exception as e:
+                logger.error(f"Watcher: sync error for {abs_path_str}: {e}")
 
 
 async def _sync_deleted(paths: list[str], workspace_root: Path) -> None:
@@ -308,20 +312,39 @@ async def run_watcher(
     logger.info(
         f"RAG sync watcher started | workspace={workspace_root} | debounce={debounce}s"
     )
-    logger.info(
-        f"Tracking: {len(PERSONA_FILES)} persona files + "
-        f"{len(CORE_DOC_PATTERNS)} core-doc patterns × {len(PROJECT_MAPPINGS)} projects"
-    )
-    last_heartbeat = 0.0
+    logger.info(f"Tracking: {len(PERSONA_FILES)} persona file(s): {PERSONA_FILES}")
+
+    # ---- Initial sync: bootstrap any unsynced tracked files on startup ----
+    from nexus.sync import get_files_needing_sync
+
+    files_needing_sync = get_files_needing_sync(str(workspace_root))
+    if files_needing_sync:
+        initial_paths = [str(f["filepath"]) for f in files_needing_sync]
+        logger.info(
+            f"Watcher: initial sync — {len(initial_paths)} file(s) need ingestion"
+        )
+        await _sync_changed(initial_paths, workspace_root)
+        logger.info("Watcher: initial sync complete")
+    else:
+        logger.info("Watcher: all tracked files already synced")
+
+    async def _heartbeat_loop() -> None:
+        """Emit periodic heartbeat log lines independently of sync operations.
+
+        Runs as a concurrent task so that long-running _sync_changed calls
+        don't starve the heartbeat — gravity-claw's HeartbeatCollector uses
+        the log file mtime to determine watcher liveness.
+        """
+        while True:
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            logger.info("Watcher: idle heartbeat")
+            sys.stderr.flush()
+
+    heartbeat_task = asyncio.create_task(_heartbeat_loop())
 
     try:
         while True:
             await asyncio.sleep(1.0)
-            now = time.monotonic()
-            if now - last_heartbeat >= HEARTBEAT_SECONDS:
-                logger.info("Watcher: idle heartbeat")
-                sys.stderr.flush()
-                last_heartbeat = now
             changed, deleted = handler.pop_ready(debounce)
             if changed:
                 logger.info(f"Watcher: {len(changed)} file(s) changed")
@@ -332,6 +355,7 @@ async def run_watcher(
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("RAG sync watcher shutting down...")
     finally:
+        heartbeat_task.cancel()
         observer.stop()
         observer.join()
         _release_single_instance_lock(lock_file)

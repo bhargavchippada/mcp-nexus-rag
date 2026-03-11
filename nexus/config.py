@@ -1,4 +1,4 @@
-# Version: v3.1
+# Version: v4.1
 """
 nexus.config — All constants, logging, and the shared FastMCP instance.
 """
@@ -12,11 +12,15 @@ from mcp.server.fastmcp import FastMCP
 # Service defaults
 # ---------------------------------------------------------------------------
 DEFAULT_OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-DEFAULT_NEO4J_URL = os.environ.get("NEO4J_URL", "bolt://localhost:7687")
-DEFAULT_NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
-# WARNING: Default password for development only. Set NEO4J_PASSWORD env var in production.
-DEFAULT_NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password123")
-DEFAULT_QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+DEFAULT_MEMGRAPH_URL = os.environ.get("MEMGRAPH_URL", "bolt://localhost:7689")
+DEFAULT_MEMGRAPH_USER = os.environ.get("MEMGRAPH_USER", "")
+DEFAULT_MEMGRAPH_PASSWORD = os.environ.get("MEMGRAPH_PASSWORD", "")
+DEFAULT_PG_HOST = os.environ.get("PG_HOST", "localhost")
+DEFAULT_PG_PORT = int(os.environ.get("PG_PORT", "5432"))
+DEFAULT_PG_DATABASE = os.environ.get("PG_DATABASE", "turiya_memory")
+DEFAULT_PG_USER = os.environ.get("PG_USER", "admin")
+# WARNING: Default password for development only. Set PG_PASSWORD env var in production.
+DEFAULT_PG_PASSWORD = os.environ.get("PG_PASSWORD", "password123")
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 DEFAULT_EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
@@ -26,8 +30,8 @@ DEFAULT_LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:3b")
 # ---------------------------------------------------------------------------
 DEFAULT_LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "300.0"))
 DEFAULT_CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "8192"))
-DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "1024"))
-DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "128"))
+DEFAULT_CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", "512"))
+DEFAULT_CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "64"))
 
 # Ollama retry settings for transient network failures
 # Clamp to safe minimums to avoid invalid runtime behavior from env config.
@@ -54,7 +58,7 @@ INGEST_CHUNK_OVERLAP = int(
 # Reranker defaults
 # ---------------------------------------------------------------------------
 DEFAULT_RERANKER_MODEL = os.environ.get("RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
-DEFAULT_RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "5"))
+DEFAULT_RERANKER_TOP_N = int(os.environ.get("RERANKER_TOP_N", "8"))
 DEFAULT_RERANKER_CANDIDATE_K = int(os.environ.get("RERANKER_CANDIDATE_K", "20"))
 RERANKER_ENABLED = os.environ.get("RERANKER_ENABLED", "true").lower() != "false"
 RERANKER_MODE = os.environ.get("RERANKER_MODE", "local")  # "local" or "remote"
@@ -82,9 +86,13 @@ ALLOWED_META_KEYS = frozenset(
 )
 
 # ---------------------------------------------------------------------------
-# Qdrant collection name — single source of truth
+# pgvector table name — single source of truth
 # ---------------------------------------------------------------------------
-COLLECTION_NAME = "nexus_rag"
+# LlamaIndex PGVectorStore prepends "data_" to table_name.
+# PG_TABLE_NAME is passed to PGVectorStore.from_params(table_name=...).
+# PG_TABLE_NAME_SQL is the actual table in Postgres (for raw SQL queries).
+PG_TABLE_NAME = "nexus_rag"
+PG_TABLE_NAME_SQL = f"data_{PG_TABLE_NAME}"
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -119,19 +127,19 @@ def validate_config() -> list[str]:
     """
     warnings: list[str] = []
 
-    # Detect default Neo4j password — most likely misconfiguration in production
-    if DEFAULT_NEO4J_PASSWORD == "password123":  # nosec B105
+    # Detect default PG password — most likely misconfiguration in production
+    if DEFAULT_PG_PASSWORD == "password123":  # nosec B105
         warnings.append(
-            "NEO4J_PASSWORD is using the insecure default value 'password123'. "
-            "Set a strong password via the NEO4J_PASSWORD environment variable."
+            "PG_PASSWORD is using the insecure default value 'password123'. "
+            "Set a strong password via the PG_PASSWORD environment variable."
         )
 
     # Localhost service URLs in a production-flagged environment
     is_production = os.environ.get("NEXUS_ENV", "").lower() in _PROD_ENVS
     if is_production:
         for label, url in [
-            ("NEO4J_URL", DEFAULT_NEO4J_URL),
-            ("QDRANT_URL", DEFAULT_QDRANT_URL),
+            ("MEMGRAPH_URL", DEFAULT_MEMGRAPH_URL),
+            ("PG_HOST", DEFAULT_PG_HOST),
             ("OLLAMA_URL", DEFAULT_OLLAMA_URL),
         ]:
             if "localhost" in url or "127.0.0.1" in url:

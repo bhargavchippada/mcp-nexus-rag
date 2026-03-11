@@ -1,4 +1,4 @@
-# Version: v5.0
+# Version: v6.0
 """
 nexus.tools — All @mcp.tool() decorated functions.
 
@@ -15,20 +15,18 @@ from typing import Optional
 import httpx
 import pathspec
 from llama_index.core import Document
-from llama_index.core.schema import QueryBundle
+from llama_index.core.schema import QueryBundle, TextNode
 from llama_index.core.vector_stores import ExactMatchFilter, MetadataFilters
-from qdrant_client.http import models as qdrant_models
 
 from nexus import cache as cache_module
 from nexus import sync as sync_module
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
+from nexus.backends import memgraph as graph_backend
+from nexus.backends import pgvector as vector_backend
 from nexus.chunking import chunk_document, needs_chunking
 from nexus.config import (
     DEFAULT_LLM_MODEL,
     DEFAULT_LLM_TIMEOUT,
     DEFAULT_OLLAMA_URL,
-    DEFAULT_QDRANT_URL,
     DEFAULT_RERANKER_CANDIDATE_K,
     MAX_ANSWER_CONTEXT_LIMIT,
     MAX_CONTEXT_CHARS,
@@ -136,6 +134,7 @@ def _make_metadata(
     source: str,
     content_hash: str,
     file_path: str = "",
+    file_content_hash: str = "",
 ) -> dict:
     """Create standard metadata dict with timestamps for all ingestion.
 
@@ -143,8 +142,12 @@ def _make_metadata(
         project_id: Tenant project ID.
         scope: Tenant scope.
         source: Source identifier.
-        content_hash: SHA-256 hash of content.
+        content_hash: SHA-256 hash of chunk content.
         file_path: Optional file path.
+        file_content_hash: SHA-256 hash of the full original file content.
+            Used by check_file_sync_status to detect whether a file has
+            changed since last ingestion, avoiding the whole-file vs
+            per-chunk hash mismatch that previously caused false "needs sync".
 
     Returns:
         Metadata dict with created_at timestamp.
@@ -163,16 +166,19 @@ def _make_metadata(
             # Keep original value on any normalization failure.
             normalized_path = file_path
 
-    return {
+    meta = {
         "project_id": project_id,
         "tenant_scope": scope,
-        "scope": scope,  # Duplicate for Qdrant compatibility
+        "scope": scope,  # Duplicate for vector store compatibility
         "source": source,
         "content_hash": content_hash,
         "file_path": normalized_path,
         "created_at": now,
         "updated_at": now,
     }
+    if file_content_hash:
+        meta["file_content_hash"] = file_content_hash
+    return meta
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +245,11 @@ async def ingest_graph_document(
     if err:
         return err
 
+    # Compute whole-file content hash for sync status tracking.
+    # Stored on every chunk so check_file_sync_status can detect unchanged files
+    # without needing to re-chunk (fixes whole-file vs per-chunk hash mismatch).
+    file_chash = content_hash(text, project_id, scope)
+
     # Handle large documents
     if needs_chunking(text):
         if not auto_chunk:
@@ -253,20 +264,24 @@ async def ingest_graph_document(
             chash = content_hash(chunk, project_id, scope)
             chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
-            if neo4j_backend.is_duplicate(chash, project_id, scope):
+            if graph_backend.is_duplicate(chash, project_id, scope):
                 skipped += 1
                 continue
 
             try:
                 index = get_graph_index()
-                doc = Document(
+                node = TextNode(
                     text=chunk,
-                    doc_id=chash,
                     metadata=_make_metadata(
-                        project_id, scope, chunk_source, chash, file_path
+                        project_id,
+                        scope,
+                        chunk_source,
+                        chash,
+                        file_path,
+                        file_content_hash=file_chash,
                     ),
                 )
-                index.insert(doc)
+                index.insert_nodes([node])
                 ingested += 1
             except Exception as e:
                 logger.error(f"Error ingesting Graph chunk {i + 1}: {e}")
@@ -278,7 +293,7 @@ async def ingest_graph_document(
         )
         if ingested > 0:
             if file_path:
-                updated = neo4j_backend.backfill_file_metadata(
+                updated = graph_backend.backfill_file_metadata(
                     project_id, scope, file_path
                 )
                 if updated:
@@ -288,7 +303,7 @@ async def ingest_graph_document(
                         file_path,
                     )
             # Catch-all: tag any orphan entity nodes created by PropertyGraphIndex
-            orphans = neo4j_backend.backfill_all_unscoped(project_id, scope)
+            orphans = graph_backend.backfill_all_unscoped(project_id, scope)
             if orphans:
                 logger.warning(
                     "Graph backfill_all_unscoped tagged %d orphan node(s) for %s/%s",
@@ -309,11 +324,11 @@ async def ingest_graph_document(
             f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
         )
 
-    # Standard single-document path
+    # Standard single-document path (no chunking needed)
     chash = content_hash(text, project_id, scope)
     logger.info(f"Graph ingest: project={project_id} scope={scope} hash={chash[:8]}")
 
-    if neo4j_backend.is_duplicate(chash, project_id, scope):
+    if graph_backend.is_duplicate(chash, project_id, scope):
         logger.info("Duplicate Graph document — skipping LLM extraction.")
         return (
             f"Skipped: duplicate content already exists in GraphRAG for "
@@ -326,20 +341,25 @@ async def ingest_graph_document(
             text=text,
             doc_id=chash,
             metadata=_make_metadata(
-                project_id, scope, source_identifier, chash, file_path
+                project_id,
+                scope,
+                source_identifier,
+                chash,
+                file_path,
+                file_content_hash=file_chash,
             ),
         )
         index.insert(doc)
         # Backfill entity nodes: file_path-based first, then catch-all for orphans
         if file_path:
-            updated = neo4j_backend.backfill_file_metadata(project_id, scope, file_path)
+            updated = graph_backend.backfill_file_metadata(project_id, scope, file_path)
             if updated:
                 logger.warning(
                     "Graph metadata backfill updated %d unscoped node(s) for %s",
                     updated,
                     file_path,
                 )
-        orphans = neo4j_backend.backfill_all_unscoped(project_id, scope)
+        orphans = graph_backend.backfill_all_unscoped(project_id, scope)
         if orphans:
             logger.warning(
                 "Graph backfill_all_unscoped tagged %d orphan node(s) for %s/%s",
@@ -425,7 +445,7 @@ async def ingest_graph_documents_batch(
                     chash = content_hash(chunk, project_id, scope)
                     chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
-                    if skip_duplicates and neo4j_backend.is_duplicate(
+                    if skip_duplicates and graph_backend.is_duplicate(
                         chash, project_id, scope
                     ):
                         skipped += 1
@@ -433,14 +453,14 @@ async def ingest_graph_documents_batch(
 
                     try:
                         index = get_graph_index()
-                        doc = Document(
+                        node = TextNode(
                             text=chunk,
-                            doc_id=chash,
+                            id_=chash,
                             metadata=_make_metadata(
                                 project_id, scope, chunk_source, chash, file_path
                             ),
                         )
-                        index.insert(doc)
+                        index.insert_nodes([node])
                         ingested += 1
                         invalidation_keys.add((project_id, scope))
                         if file_path:
@@ -455,7 +475,7 @@ async def ingest_graph_documents_batch(
             # Standard single-document path
             chash = content_hash(text, project_id, scope)
 
-            if skip_duplicates and neo4j_backend.is_duplicate(chash, project_id, scope):
+            if skip_duplicates and graph_backend.is_duplicate(chash, project_id, scope):
                 skipped += 1
                 continue
 
@@ -482,7 +502,7 @@ async def ingest_graph_documents_batch(
         cache_module.invalidate_cache(pid, sc)
 
     for pid, sc, fp in backfill_targets:
-        updated = neo4j_backend.backfill_file_metadata(pid, sc, fp)
+        updated = graph_backend.backfill_file_metadata(pid, sc, fp)
         if updated:
             logger.warning(
                 "Graph metadata backfill updated %d unscoped node(s) for %s",
@@ -627,6 +647,9 @@ async def ingest_vector_document(
     if err:
         return err
 
+    # Compute whole-file content hash for sync status tracking.
+    file_chash = content_hash(text, project_id, scope)
+
     # Handle large documents
     if needs_chunking(text):
         if not auto_chunk:
@@ -641,20 +664,24 @@ async def ingest_vector_document(
             chash = content_hash(chunk, project_id, scope)
             chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
-            if qdrant_backend.is_duplicate(chash, project_id, scope):
+            if vector_backend.is_duplicate(chash, project_id, scope):
                 skipped += 1
                 continue
 
             try:
                 index = get_vector_index()
-                doc = Document(
+                node = TextNode(
                     text=chunk,
-                    doc_id=chash,
                     metadata=_make_metadata(
-                        project_id, scope, chunk_source, chash, file_path
+                        project_id,
+                        scope,
+                        chunk_source,
+                        chash,
+                        file_path,
+                        file_content_hash=file_chash,
                     ),
                 )
-                index.insert(doc)
+                index.insert_nodes([node])
                 ingested += 1
             except Exception as e:
                 logger.error(f"Error ingesting Vector chunk {i + 1}: {e}")
@@ -678,11 +705,11 @@ async def ingest_vector_document(
             f"'{project_id}' in scope '{scope}' (skipped={skipped}, errors={errors})."
         )
 
-    # Standard single-document path
+    # Standard single-document path (no chunking — file_chash == chash)
     chash = content_hash(text, project_id, scope)
     logger.info(f"Vector ingest: project={project_id} scope={scope} hash={chash[:8]}")
 
-    if qdrant_backend.is_duplicate(chash, project_id, scope):
+    if vector_backend.is_duplicate(chash, project_id, scope):
         logger.info("Duplicate Vector document — skipping embedding call.")
         return (
             f"Skipped: duplicate content already exists in VectorRAG for "
@@ -695,7 +722,12 @@ async def ingest_vector_document(
             text=text,
             doc_id=chash,
             metadata=_make_metadata(
-                project_id, scope, source_identifier, chash, file_path
+                project_id,
+                scope,
+                source_identifier,
+                chash,
+                file_path,
+                file_content_hash=file_chash,
             ),
         )
         index.insert(doc)
@@ -775,7 +807,7 @@ async def ingest_vector_documents_batch(
                     chash = content_hash(chunk, project_id, scope)
                     chunk_source = f"{source_identifier}:chunk_{i + 1}_of_{len(chunks)}"
 
-                    if skip_duplicates and qdrant_backend.is_duplicate(
+                    if skip_duplicates and vector_backend.is_duplicate(
                         chash, project_id, scope
                     ):
                         skipped += 1
@@ -783,14 +815,14 @@ async def ingest_vector_documents_batch(
 
                     try:
                         index = get_vector_index()
-                        doc = Document(
+                        node = TextNode(
                             text=chunk,
-                            doc_id=chash,
+                            id_=chash,
                             metadata=_make_metadata(
                                 project_id, scope, chunk_source, chash, file_path
                             ),
                         )
-                        index.insert(doc)
+                        index.insert_nodes([node])
                         ingested += 1
                         invalidation_keys.add((project_id, scope))
                     except Exception as chunk_err:
@@ -803,7 +835,7 @@ async def ingest_vector_documents_batch(
             # Standard single-document path
             chash = content_hash(text, project_id, scope)
 
-            if skip_duplicates and qdrant_backend.is_duplicate(
+            if skip_duplicates and vector_backend.is_duplicate(
                 chash, project_id, scope
             ):
                 skipped += 1
@@ -1263,14 +1295,18 @@ async def answer_query(
         )
 
     # ── 1. Retrieve from both backends concurrently ──────────────────────────
+    import time as _time
+
+    _t_retrieve_start = _time.monotonic()
     graph_passages, vector_passages = await asyncio.gather(
         _fetch_graph_passages(query, project_id, scope, rerank),
         _fetch_vector_passages(query, project_id, scope, rerank),
     )
+    _t_retrieve_ms = (_time.monotonic() - _t_retrieve_start) * 1000
 
     logger.info(
-        f"answer_query: {len(graph_passages)} graph passages, "
-        f"{len(vector_passages)} vector passages before dedup"
+        f"answer_query: {len(graph_passages)} graph + {len(vector_passages)} vector "
+        f"passages in {_t_retrieve_ms:.0f}ms"
     )
 
     # ── 2. Deduplicate across both sources, preserve attribution ─────────────
@@ -1292,13 +1328,13 @@ async def answer_query(
         )
 
     system_prompt = (
-        "You are Ari's core identity processor. Answer the user's question using "
-        "ONLY the provided context passages. Provide a professional, natural, and "
-        "concise summary in flowing prose. Each passage is prefixed with its "
-        "source ([graph] or [vector]). Use this attribution internally to ensure "
-        "accuracy, but do not mimic relationship arrows (e.g., 'A -> B') or "
-        "internal data formats in your final response. If the answer cannot be "
-        "found in the context, say so explicitly. Do not hallucinate."
+        "You are a helpful knowledge assistant. Answer the user's question using "
+        "the provided context passages. Look carefully through ALL passages for "
+        "any relevant information, even partial mentions or indirect references. "
+        "Provide a concise, direct answer. Each passage is prefixed with [graph] "
+        "or [vector] — ignore these labels in your answer. Do not reproduce "
+        "raw data formats like arrows or code blocks unless specifically asked. "
+        "If truly no relevant information exists in any passage, say so briefly."
     )
     user_prompt = (
         f"Context passages for project '{project_id}' / scope '{scope_msg}':\n\n"
@@ -1319,7 +1355,9 @@ async def answer_query(
     }
 
     try:
+        _t_llm_start = _time.monotonic()
         data = await _call_ollama_with_retry(f"{DEFAULT_OLLAMA_URL}/api/chat", payload)
+        _t_llm_ms = (_time.monotonic() - _t_llm_start) * 1000
         answer: str = data["message"]["content"].strip()
 
         # Validate answer before caching - prevent caching empty/malformed responses
@@ -1331,7 +1369,8 @@ async def answer_query(
             return "Error: LLM returned empty response. Please retry."
 
         logger.info(
-            f"answer_query: answer generated ({len(answer)} chars) via {llm_model}"
+            f"answer_query: LLM {_t_llm_ms:.0f}ms, answer {len(answer)} chars "
+            f"(retrieve={_t_retrieve_ms:.0f}ms, total={_t_retrieve_ms + _t_llm_ms:.0f}ms)"
         )
         cache_module.set_cached(
             f"answer:{query}", project_id, scope, answer, tool_type="answer"
@@ -1354,28 +1393,28 @@ async def answer_query(
 
 @mcp.tool()
 async def health_check() -> dict[str, str]:
-    """Check connectivity to all backend services (Neo4j, Qdrant, Ollama).
+    """Check connectivity to all backend services (Memgraph, pgvector, Ollama).
 
     Returns:
         Dictionary with status of each service: "ok" or error message.
     """
     status = {}
 
-    # Check Neo4j
+    # Check Memgraph
     try:
-        with neo4j_backend.get_driver().session() as session:
+        with graph_backend.get_driver().session() as session:
             session.run("RETURN 1")
-        status["neo4j"] = "ok"
+        status["memgraph"] = "ok"
     except Exception as e:
-        status["neo4j"] = f"error: {str(e)[:100]}"
+        status["memgraph"] = f"error: {str(e)[:100]}"
 
-    # Check Qdrant
+    # Check pgvector (PostgreSQL)
     try:
-        client = qdrant_backend.get_client(DEFAULT_QDRANT_URL)
-        client.get_collections()
-        status["qdrant"] = "ok"
+        vector_backend.get_connection()
+        rows = vector_backend._query_metadata("SELECT 1 AS ok")
+        status["pgvector"] = "ok" if rows else "error: no response"
     except Exception as e:
-        status["qdrant"] = f"error: {str(e)[:100]}"
+        status["pgvector"] = f"error: {str(e)[:100]}"
 
     # Check Ollama
     try:
@@ -1400,8 +1439,8 @@ async def get_all_project_ids() -> list[str]:
         A sorted list of project_id strings.
     """
     logger.info("Retrieving all project IDs")
-    graph_ids = neo4j_backend.get_distinct_metadata("project_id")
-    vector_ids = qdrant_backend.get_distinct_metadata("project_id")
+    graph_ids = graph_backend.get_distinct_metadata("project_id")
+    vector_ids = vector_backend.get_distinct_metadata("project_id")
     return sorted(set(graph_ids) | set(vector_ids))
 
 
@@ -1419,28 +1458,16 @@ async def get_all_tenant_scopes(project_id: Optional[str] = None) -> list[str]:
     """
     logger.info(f"Retrieving all tenant scopes (project_id={project_id})")
     if project_id:
-        graph_scopes = neo4j_backend.get_scopes_for_project(project_id)
+        graph_scopes = graph_backend.get_scopes_for_project(project_id)
         try:
-            vector_scopes = set(
-                qdrant_backend.scroll_field(
-                    "tenant_scope",
-                    qdrant_filter=qdrant_models.Filter(
-                        must=[
-                            qdrant_models.FieldCondition(
-                                key="project_id",
-                                match=qdrant_models.MatchValue(value=project_id),
-                            )
-                        ]
-                    ),
-                )
-            )
+            vector_scopes = set(vector_backend.get_scopes_for_project(project_id))
         except Exception as e:
-            logger.warning(f"Qdrant scopes error: {e}")
+            logger.warning(f"pgvector scopes error: {e}")
             vector_scopes = set()
         return sorted(set(graph_scopes) | vector_scopes)
     else:
-        graph_scopes = neo4j_backend.get_distinct_metadata("tenant_scope")
-        vector_scopes = qdrant_backend.get_distinct_metadata("tenant_scope")
+        graph_scopes = graph_backend.get_distinct_metadata("tenant_scope")
+        vector_scopes = vector_backend.get_distinct_metadata("tenant_scope")
         return sorted(set(graph_scopes) | set(vector_scopes))
 
 
@@ -1463,13 +1490,13 @@ async def delete_tenant_data(project_id: str, scope: str = "") -> str:
     logger.info(f"Deleting data: project_id={project_id!r} scope={scope!r}")
     errors: list[str] = []
     try:
-        neo4j_backend.delete_data(project_id, scope)
+        graph_backend.delete_data(project_id, scope)
     except Exception as e:
-        errors.append(f"Neo4j: {e}")
+        errors.append(f"Memgraph: {e}")
     try:
-        qdrant_backend.delete_data(project_id, scope)
+        vector_backend.delete_data(project_id, scope)
     except Exception as e:
-        errors.append(f"Qdrant: {e}")
+        errors.append(f"pgvector: {e}")
 
     # Always invalidate cache — even on partial failure, cached results are stale
     cache_module.invalidate_cache(project_id, scope)
@@ -1487,7 +1514,7 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> str | dict[str, 
     """Get statistics for a project (and optionally a specific scope).
 
     Returns document counts from both GraphRAG and VectorRAG backends,
-    including a breakdown of Neo4j chunk nodes (ingested source documents)
+    including a breakdown of Memgraph chunk nodes (ingested source documents)
     versus entity nodes (LLM-extracted concepts and relationships).
 
     Args:
@@ -1496,10 +1523,10 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> str | dict[str, 
 
     Returns:
         Dictionary with keys:
-        - ``graph_nodes_total``: all Neo4j nodes for this project/scope
+        - ``graph_nodes_total``: all Memgraph nodes for this project/scope
         - ``graph_chunk_nodes``: source doc nodes (have content_hash)
         - ``graph_entity_nodes``: LLM-extracted entity nodes (no content_hash)
-        - ``vector_docs``: Qdrant points
+        - ``vector_docs``: pgvector rows
         - ``total_docs``: graph_nodes_total + vector_docs
         Or an error string on invalid input.
     """
@@ -1508,10 +1535,10 @@ async def get_tenant_stats(project_id: str, scope: str = "") -> str | dict[str, 
 
     logger.info(f"Getting stats: project_id={project_id!r} scope={scope!r}")
 
-    graph_total = neo4j_backend.get_document_count(project_id, scope)
-    graph_chunks = neo4j_backend.get_chunk_node_count(project_id, scope)
-    graph_entities = neo4j_backend.get_entity_node_count(project_id, scope)
-    vector_count = qdrant_backend.get_document_count(project_id, scope)
+    graph_total = graph_backend.get_document_count(project_id, scope)
+    graph_chunks = graph_backend.get_chunk_node_count(project_id, scope)
+    graph_entities = graph_backend.get_entity_node_count(project_id, scope)
+    vector_count = vector_backend.get_document_count(project_id, scope)
 
     return {
         "graph_nodes_total": graph_total,
@@ -1528,9 +1555,9 @@ async def print_all_stats() -> str:
 
     Displays statistics across all tenants including:
     - Project ID and scope
-    - Graph chunk node count (source docs ingested into Neo4j)
+    - Graph chunk node count (source docs ingested into Memgraph)
     - Graph entity node count (LLM-extracted concept/entity nodes)
-    - Vector document count (Qdrant)
+    - Vector document count (pgvector)
     - Total per row
     - Summary totals at the bottom
 
@@ -1540,8 +1567,8 @@ async def print_all_stats() -> str:
     logger.info("Generating comprehensive stats table")
 
     # Gather all project IDs
-    graph_project_ids = set(neo4j_backend.get_distinct_metadata("project_id"))
-    vector_project_ids = set(qdrant_backend.get_distinct_metadata("project_id"))
+    graph_project_ids = set(graph_backend.get_distinct_metadata("project_id"))
+    vector_project_ids = set(vector_backend.get_distinct_metadata("project_id"))
     all_project_ids = sorted(graph_project_ids | vector_project_ids)
 
     if not all_project_ids:
@@ -1551,30 +1578,20 @@ async def print_all_stats() -> str:
     rows: list[tuple[str, str, int, int, int, int]] = []
 
     for project_id in all_project_ids:
-        graph_scopes = set(neo4j_backend.get_scopes_for_project(project_id))
+        graph_scopes = set(graph_backend.get_scopes_for_project(project_id))
         try:
-            vector_scopes = qdrant_backend.scroll_field(
-                "tenant_scope",
-                qdrant_filter=qdrant_models.Filter(
-                    must=[
-                        qdrant_models.FieldCondition(
-                            key="project_id",
-                            match=qdrant_models.MatchValue(value=project_id),
-                        )
-                    ]
-                ),
-            )
+            vector_scopes = set(vector_backend.get_scopes_for_project(project_id))
         except Exception as e:
-            logger.warning(f"Qdrant scopes error for project '{project_id}': {e}")
+            logger.warning(f"pgvector scopes error for project '{project_id}': {e}")
             vector_scopes = set()
 
         all_scopes = sorted(graph_scopes | vector_scopes)
 
         if not all_scopes:
-            graph_total = neo4j_backend.get_document_count(project_id, "")
-            graph_chunks = neo4j_backend.get_chunk_node_count(project_id, "")
-            graph_entities = neo4j_backend.get_entity_node_count(project_id, "")
-            vector_count = qdrant_backend.get_document_count(project_id, "")
+            graph_total = graph_backend.get_document_count(project_id, "")
+            graph_chunks = graph_backend.get_chunk_node_count(project_id, "")
+            graph_entities = graph_backend.get_entity_node_count(project_id, "")
+            vector_count = vector_backend.get_document_count(project_id, "")
             rows.append(
                 (
                     project_id,
@@ -1587,10 +1604,10 @@ async def print_all_stats() -> str:
             )
         else:
             for scope in all_scopes:
-                graph_total = neo4j_backend.get_document_count(project_id, scope)
-                graph_chunks = neo4j_backend.get_chunk_node_count(project_id, scope)
-                graph_entities = neo4j_backend.get_entity_node_count(project_id, scope)
-                vector_count = qdrant_backend.get_document_count(project_id, scope)
+                graph_total = graph_backend.get_document_count(project_id, scope)
+                graph_chunks = graph_backend.get_chunk_node_count(project_id, scope)
+                graph_entities = graph_backend.get_entity_node_count(project_id, scope)
+                vector_count = vector_backend.get_document_count(project_id, scope)
                 rows.append(
                     (
                         project_id,
@@ -1685,7 +1702,7 @@ async def print_all_stats() -> str:
 
 @mcp.tool()
 async def delete_all_data() -> str:
-    """Delete ALL data from both GraphRAG (Neo4j) and VectorRAG (Qdrant).
+    """Delete ALL data from both GraphRAG (Memgraph) and VectorRAG (pgvector).
 
     This is a destructive, irreversible operation that removes every document
     across ALL project IDs and scopes. Use only for full database resets.
@@ -1696,20 +1713,20 @@ async def delete_all_data() -> str:
     logger.warning("delete_all_data called — wiping ALL data from both backends")
     errors: list[str] = []
     try:
-        neo4j_backend.delete_all_data()
+        graph_backend.delete_all_data()
     except Exception as e:
-        errors.append(f"Neo4j: {e}")
+        errors.append(f"Memgraph: {e}")
     try:
-        qdrant_backend.delete_all_data()
+        vector_backend.delete_all_data()
     except Exception as e:
-        errors.append(f"Qdrant: {e}")
+        errors.append(f"pgvector: {e}")
 
     # Invalidate the entire Redis cache — all entries are now stale
     cache_module.invalidate_all_cache()
 
     if errors:
         return f"Partial failure deleting all data: {'; '.join(errors)}"
-    return "Successfully deleted ALL data from GraphRAG (Neo4j) and VectorRAG (Qdrant)."
+    return "Successfully deleted ALL data from GraphRAG (Memgraph) and VectorRAG (pgvector)."
 
 
 DEFAULT_INCLUDE_EXTENSIONS = [".py", ".ts", ".js", ".md", ".txt", ".json"]
@@ -1851,10 +1868,10 @@ async def sync_deleted_files(
     if not base_path.is_dir():
         return f"Error: {directory_path} is not a directory."
 
-    # Union Neo4j + Qdrant — catch orphans in either store
-    neo4j_paths = set(neo4j_backend.get_all_filepaths(project_id, scope))
-    qdrant_paths = set(qdrant_backend.get_all_filepaths(project_id, scope))
-    stored_paths = neo4j_paths | qdrant_paths
+    # Union Memgraph + pgvector — catch orphans in either store
+    graph_paths = set(graph_backend.get_all_filepaths(project_id, scope))
+    vector_paths = set(vector_backend.get_all_filepaths(project_id, scope))
+    stored_paths = graph_paths | vector_paths
     if not stored_paths:
         return "No files found in database to sync."
 
@@ -1867,10 +1884,10 @@ async def sync_deleted_files(
         full_path = base_path / rel_path
         if not full_path.exists():
             try:
-                # Delete from Neo4j
-                neo4j_backend.delete_by_filepath(project_id, rel_path, scope)
-                # Delete from Qdrant
-                qdrant_backend.delete_by_filepath(project_id, rel_path, scope)
+                # Delete from Memgraph
+                graph_backend.delete_by_filepath(project_id, rel_path, scope)
+                # Delete from pgvector
+                vector_backend.delete_by_filepath(project_id, rel_path, scope)
                 removed_count += 1
                 logger.info(f"Sync: Removed stale file {rel_path} from database")
             except Exception as e:
@@ -1916,70 +1933,91 @@ async def sync_project_files(
             lines.append(f"  - {f['source']} ({f['project_id']}/{f['scope']})")
         return "\n".join(lines)
 
-    # Perform sync
+    # Perform sync (with per-file lock to prevent races with watcher)
     ingested = 0
     errors = []
 
     for f in files_to_sync:
         filepath = f["filepath"]
-        try:
-            content = filepath.read_text(encoding="utf-8")
-            canonical_path = sync_module.canonical_file_path(
-                filepath, workspace_root_path
-            )
+        canonical_path = sync_module.canonical_file_path(filepath, workspace_root_path)
+        lock = sync_module.get_sync_lock(canonical_path)
 
-            # Delete old version first (by filepath).
-            # Bug L10-1 fix: log + skip on connection error (bare pass hid failures,
-            # leaving old chunks alongside newly ingested ones = duplicate content).
-            try:
-                neo4j_backend.delete_by_filepath(
-                    f["project_id"], canonical_path, f["scope"]
-                )
-                qdrant_backend.delete_by_filepath(
-                    f["project_id"], canonical_path, f["scope"]
-                )
-            except Exception as e:
-                logger.warning(f"Pre-delete error for {f['source']}: {e}")
-                errors.append(f"{f['source']}: pre-delete failed: {e}")
+        async with lock:
+            # Re-check after acquiring lock — watcher may have synced it
+            sync_status = sync_module.check_file_sync_status(
+                filepath, f["project_id"], f["scope"]
+            )
+            if not sync_status["changed"]:
+                logger.info(f"Sync: {f['source']} already up to date (lock re-check)")
                 continue
 
-            # Bug L10-2 fix: invalidate cache immediately after pre-delete and before
-            # ingest so stale results aren't served if ingest fails (fail-open: empty > stale).
-            cache_module.invalidate_cache(f["project_id"], f["scope"])
+            try:
+                content = filepath.read_text(encoding="utf-8")
 
-            # Ingest to both stores
-            graph_result = await ingest_graph_document(
-                text=content,
-                project_id=f["project_id"],
-                scope=f["scope"],
-                source_identifier=f["source"],
-                file_path=canonical_path,
-            )
-            vector_result = await ingest_vector_document(
-                text=content,
-                project_id=f["project_id"],
-                scope=f["scope"],
-                source_identifier=f["source"],
-                file_path=canonical_path,
-            )
+                # Delete old version first (by filepath).
+                try:
+                    if sync_status["needs_graph"]:
+                        graph_backend.delete_by_filepath(
+                            f["project_id"], canonical_path, f["scope"]
+                        )
+                    if sync_status["needs_vector"]:
+                        vector_backend.delete_by_filepath(
+                            f["project_id"], canonical_path, f["scope"]
+                        )
+                except Exception as e:
+                    logger.warning(f"Pre-delete error for {f['source']}: {e}")
+                    errors.append(f"{f['source']}: pre-delete failed: {e}")
+                    continue
 
-            if "Error" not in graph_result and "Error" not in vector_result:
-                ingested += 1
-                logger.info(f"Synced: {f['source']}")
-            else:
-                errors.append(
-                    f"{f['source']}: graph={graph_result[:50]}, vector={vector_result[:50]}"
-                )
+                cache_module.invalidate_cache(f["project_id"], f["scope"])
 
-        except Exception as e:
-            errors.append(f"{f['source']}: {e}")
-            logger.error(f"Sync error for {f['source']}: {e}")
+                # Ingest to both stores (concurrently when both needed)
+                graph_result = "Skipped: already in graph"
+                vector_result = "Skipped: already in vector"
+
+                graph_coro = None
+                vector_coro = None
+                if sync_status["needs_graph"]:
+                    graph_coro = ingest_graph_document(
+                        text=content,
+                        project_id=f["project_id"],
+                        scope=f["scope"],
+                        source_identifier=f["source"],
+                        file_path=canonical_path,
+                    )
+                if sync_status["needs_vector"]:
+                    vector_coro = ingest_vector_document(
+                        text=content,
+                        project_id=f["project_id"],
+                        scope=f["scope"],
+                        source_identifier=f["source"],
+                        file_path=canonical_path,
+                    )
+
+                if graph_coro and vector_coro:
+                    graph_result, vector_result = await asyncio.gather(
+                        graph_coro, vector_coro
+                    )
+                elif graph_coro:
+                    graph_result = await graph_coro
+                elif vector_coro:
+                    vector_result = await vector_coro
+
+                if "Error" not in graph_result and "Error" not in vector_result:
+                    ingested += 1
+                    logger.info(f"Synced: {f['source']}")
+                else:
+                    errors.append(
+                        f"{f['source']}: graph={graph_result[:50]}, vector={vector_result[:50]}"
+                    )
+
+            except Exception as e:
+                errors.append(f"{f['source']}: {e}")
+                logger.error(f"Sync error for {f['source']}: {e}")
 
     # Delete stale RAG documents (files deleted from disk since last sync)
     stale_deleted: list[str] = []
-    stale_scopes = [("AGENT", "PERSONA")] + [
-        (pid, "CORE_DOCS") for pid in sync_module.PROJECT_MAPPINGS.values()
-    ]
+    stale_scopes = [("AGENT", "PERSONA")]
     for project_id, scope in stale_scopes:
         try:
             deleted = sync_module.delete_stale_files(workspace_root, project_id, scope)

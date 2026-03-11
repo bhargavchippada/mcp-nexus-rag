@@ -1,9 +1,11 @@
-# Version: v1.1
+# Version: v2.0
 """
 tests/conftest.py — Shared fixtures and mock helpers for the Nexus RAG test suite.
 
 Centralises the mock-builder functions previously duplicated between
 test_unit.py and test_integration.py so each test module stays lean.
+
+v2.0: Migrated from Neo4j/Qdrant to Memgraph/pgvector backends.
 """
 
 from unittest.mock import MagicMock
@@ -11,12 +13,12 @@ from unittest.mock import MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
-# Neo4j mock builders — re-usable across all test modules
+# Memgraph mock builders — re-usable across all test modules
 # ---------------------------------------------------------------------------
 
 
-def make_neo4j_driver(session_records=None):
-    """Build a MagicMock Neo4j driver whose session.run() returns *session_records*.
+def make_graph_driver(session_records=None):
+    """Build a MagicMock Memgraph driver whose session.run() returns *session_records*.
 
     Args:
         session_records: Iterable returned by session.run(); defaults to [].
@@ -34,8 +36,8 @@ def make_neo4j_driver(session_records=None):
     return mock_driver, mock_session
 
 
-def make_neo4j_driver_with_single(single_return):
-    """Build a MagicMock Neo4j driver whose session.run().single() returns *single_return*.
+def make_graph_driver_with_single(single_return):
+    """Build a MagicMock Memgraph driver whose session.run().single() returns *single_return*.
 
     Args:
         single_return: Value returned by result.single().
@@ -72,23 +74,23 @@ def disable_cache(monkeypatch):
 
 
 @pytest.fixture()
-def mock_neo4j_driver(monkeypatch):
-    """Fixture that returns a helper that patches neo4j_backend.get_driver."""
-    from nexus.backends import neo4j as neo4j_backend
+def mock_graph_driver(monkeypatch):
+    """Fixture that returns a helper that patches graph_backend.get_driver."""
+    from nexus.backends import memgraph as graph_backend
 
     def _factory(session_records=None):
-        driver, session = make_neo4j_driver(session_records)
-        monkeypatch.setattr(neo4j_backend, "get_driver", lambda: driver)
+        driver, session = make_graph_driver(session_records)
+        monkeypatch.setattr(graph_backend, "get_driver", lambda: driver)
         return driver, session
 
     return _factory
 
 
 @pytest.fixture()
-def mock_qdrant_client(monkeypatch):
-    """Fixture that injects a MagicMock QdrantClient into qdrant_backend.get_client."""
-    from nexus.backends import qdrant as qdrant_backend
+def mock_pgvector_conn(monkeypatch):
+    """Fixture that injects a MagicMock psycopg2 connection into pgvector_backend."""
+    from nexus.backends import pgvector as vector_backend
 
-    client = MagicMock()
-    monkeypatch.setattr(qdrant_backend, "get_client", lambda *a, **kw: client)
-    return client
+    conn = MagicMock()
+    monkeypatch.setattr(vector_backend, "get_connection", lambda *a, **kw: conn)
+    return conn

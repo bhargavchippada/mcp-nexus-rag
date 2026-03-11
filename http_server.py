@@ -31,7 +31,7 @@ from nexus.tools import (
 
 # Per-task timeout (seconds) for individual retrieval calls.
 # Graph context is the bottleneck: PropertyGraphIndex → Ollama LLM (Cypher gen)
-# → Neo4j → Ollama LLM (synthesis).  Two sequential LLM calls can take 30-60s
+# → Memgraph → Ollama LLM (synthesis).  Two sequential LLM calls can take 30-60s
 # on cold model.  Synthesis (answer_query) adds another LLM call on top.
 _RETRIEVAL_TIMEOUT = 60  # seconds per vector/graph scope query
 _SYNTHESIS_TIMEOUT = 90  # seconds for answer_query (includes its own retrieval)
@@ -89,8 +89,8 @@ class QueryResponse(BaseModel):
 class HealthResponse(BaseModel):
     """Response body for /health endpoint."""
 
-    neo4j: str
-    qdrant: str
+    memgraph: str
+    pgvector: str
     ollama: str
     status: str
 
@@ -144,18 +144,18 @@ app.add_middleware(
 async def http_health_check():
     """Check connectivity to all backends."""
     result = await health_check()
-    # health_check() returns a dict with keys: neo4j, qdrant, ollama
+    # health_check() returns a dict with keys: memgraph, pgvector, ollama
     # Values are "ok" or "error: <message>"
     health = {
-        "neo4j": "OK" if result.get("neo4j") == "ok" else "ERROR",
-        "qdrant": "OK" if result.get("qdrant") == "ok" else "ERROR",
+        "memgraph": "OK" if result.get("memgraph") == "ok" else "ERROR",
+        "pgvector": "OK" if result.get("pgvector") == "ok" else "ERROR",
         "ollama": "OK" if result.get("ollama") == "ok" else "ERROR",
     }
 
     all_ok = all(v == "OK" for v in health.values())
     return HealthResponse(
-        neo4j=health["neo4j"],
-        qdrant=health["qdrant"],
+        memgraph=health["memgraph"],
+        pgvector=health["pgvector"],
         ollama=health["ollama"],
         status="healthy" if all_ok else "degraded",
     )

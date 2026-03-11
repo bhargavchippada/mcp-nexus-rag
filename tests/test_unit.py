@@ -1,7 +1,7 @@
-# Version: v3.9
+# Version: v4.0
 """
 Unit tests for the nexus/ package.
-All database calls are mocked — no live Qdrant or Neo4j required.
+All database calls are mocked — no live pgvector or Memgraph required.
 asyncio_mode=auto (set in pyproject.toml) removes the need for @pytest.mark.asyncio decorators.
 """
 
@@ -22,8 +22,8 @@ from nexus import dedup as nexus_dedup
 from nexus import indexes as nexus_indexes
 from nexus import sync as nexus_sync
 from nexus import tools as nexus_tools
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
+from nexus.backends import memgraph as graph_backend
+from nexus.backends import pgvector as vector_backend
 
 _orig_set_cached = _nexus_cache.set_cached
 _orig_get_cached = _nexus_cache.get_cached
@@ -35,8 +35,8 @@ _orig_invalidate_cache = _nexus_cache.invalidate_cache
 # ---------------------------------------------------------------------------
 
 
-def _make_neo4j_driver(session_records=None):
-    """Build a MagicMock Neo4j driver whose session.run() returns *session_records*."""
+def _make_graph_driver(session_records=None):
+    """Build a MagicMock Memgraph driver whose session.run() returns *session_records*."""
     mock_session = MagicMock()
     mock_session.run.return_value = session_records or []
     mock_driver = MagicMock()
@@ -47,8 +47,8 @@ def _make_neo4j_driver(session_records=None):
     return mock_driver, mock_session
 
 
-def _make_neo4j_driver_with_single(single_return):
-    """Build a MagicMock Neo4j driver whose session.run().single() returns *single_return*."""
+def _make_graph_driver_with_single(single_return):
+    """Build a MagicMock Memgraph driver whose session.run().single() returns *single_return*."""
     mock_session = MagicMock()
     mock_session.run.return_value.single.return_value = single_return
     mock_driver = MagicMock()
@@ -65,190 +65,170 @@ def _make_neo4j_driver_with_single(single_return):
 
 
 class TestAllowedMetaKeys:
-    def test_get_distinct_qdrant_rejects_unknown_key(self):
+    def test_get_distinct_vector_rejects_unknown_key(self):
         with pytest.raises(ValueError, match="Disallowed metadata key"):
-            qdrant_backend.get_distinct_metadata("arbitrary_field; DROP TABLE")
+            vector_backend.get_distinct_metadata("arbitrary_field; DROP TABLE")
 
-    def test_get_distinct_neo4j_rejects_unknown_key(self):
+    def test_get_distinct_graph_rejects_unknown_key(self):
         with pytest.raises(ValueError, match="Disallowed metadata key"):
-            neo4j_backend.get_distinct_metadata("'; MATCH (n) DELETE n //")
+            graph_backend.get_distinct_metadata("'; MATCH (n) DELETE n //")
 
     def test_empty_string_key_is_rejected(self):
         with pytest.raises(ValueError, match="Disallowed metadata key"):
-            qdrant_backend.get_distinct_metadata("")
+            vector_backend.get_distinct_metadata("")
 
     def test_content_hash_is_allowed(self):
         assert "content_hash" in nexus_config.ALLOWED_META_KEYS
 
-    def test_get_distinct_qdrant_allows_project_id(self):
-        with patch.object(qdrant_backend, "scroll_field", return_value={"P1", "P2"}):
-            result = qdrant_backend.get_distinct_metadata("project_id")
+    def test_get_distinct_vector_allows_project_id(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": "P1"}, {"value": "P2"}],
+        ):
+            result = vector_backend.get_distinct_metadata("project_id")
         assert set(result) == {"P1", "P2"}
 
-    def test_get_distinct_neo4j_allows_tenant_scope(self):
-        mock_driver, _ = _make_neo4j_driver(
+    def test_get_distinct_graph_allows_tenant_scope(self):
+        mock_driver, _ = _make_graph_driver(
             [{"value": "SCOPE_A"}, {"value": "SCOPE_B"}]
         )
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            result = neo4j_backend.get_distinct_metadata("tenant_scope")
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            result = graph_backend.get_distinct_metadata("tenant_scope")
         assert set(result) == {"SCOPE_A", "SCOPE_B"}
 
-    def test_get_distinct_neo4j_returns_empty_on_error(self):
-        with patch.object(neo4j_backend, "get_driver", side_effect=Exception("down")):
-            result = neo4j_backend.get_distinct_metadata("project_id")
+    def test_get_distinct_graph_returns_empty_on_error(self):
+        with patch.object(graph_backend, "get_driver", side_effect=Exception("down")):
+            result = graph_backend.get_distinct_metadata("project_id")
         assert result == []
 
-    def test_get_distinct_qdrant_returns_empty_on_error(self):
-        with patch.object(
-            qdrant_backend, "scroll_field", side_effect=Exception("timeout")
+    def test_get_distinct_vector_returns_empty_on_error(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            side_effect=Exception("timeout"),
         ):
-            result = qdrant_backend.get_distinct_metadata("project_id")
+            result = vector_backend.get_distinct_metadata("project_id")
         assert result == []
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — scroll_field pagination loop
+# nexus.backends.pgvector — get_scopes_for_project
 # ---------------------------------------------------------------------------
 
 
-class TestScrollQdrantField:
-    def test_collects_across_multiple_pages(self):
-        page1 = [
-            MagicMock(payload={"project_id": "A"}),
-            MagicMock(payload={"project_id": "B"}),
-        ]
-        page2 = [MagicMock(payload={"project_id": "C"})]
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [(page1, "cursor"), (page2, None)]
+class TestPgvectorGetScopesForProject:
+    def test_returns_scopes_for_project(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": "CORE_CODE"}, {"value": "DOCS"}],
+        ):
+            result = vector_backend.get_scopes_for_project("PROJ")
+        assert set(result) == {"CORE_CODE", "DOCS"}
 
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("project_id")
-
-        assert result == {"A", "B", "C"}
-        assert mock_client.scroll.call_count == 2
-
-    def test_skips_records_without_the_key(self):
-        records = [
-            MagicMock(payload={"project_id": "FOUND"}),
-            MagicMock(payload={"other_key": "ignored"}),
-            MagicMock(payload=None),
-        ]
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [(records, None)]
-
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("project_id")
-
-        assert result == {"FOUND"}
-
-    def test_passes_qdrant_filter_to_scroll(self):
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [([], None)]
-        mock_filter = MagicMock()
-
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.scroll_field("project_id", qdrant_filter=mock_filter)
-
-        _, kwargs = mock_client.scroll.call_args
-        assert kwargs["scroll_filter"] is mock_filter
+    def test_returns_empty_on_error(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            side_effect=Exception("timeout"),
+        ):
+            result = vector_backend.get_scopes_for_project("PROJ")
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — get_client caching (Bug fix #2)
+# nexus.backends.pgvector — get_connection caching
 # ---------------------------------------------------------------------------
 
 
-class TestQdrantClientCache:
-    def test_same_url_returns_same_instance(self):
-        # Clear cache so we test fresh creation
-        qdrant_backend._client_cache.clear()
-        mock_client = MagicMock()
-        with patch("qdrant_client.QdrantClient", return_value=mock_client) as mock_cls:
-            c1 = qdrant_backend.get_client("http://fake-qdrant:9999")
-            c2 = qdrant_backend.get_client("http://fake-qdrant:9999")
-        # QdrantClient constructor should only be called once
-        assert mock_cls.call_count == 1
+class TestPgvectorConnectionCache:
+    def test_returns_same_connection_on_repeated_calls(self):
+        mock_conn = MagicMock()
+        mock_conn.closed = False
+        with patch("nexus.backends.pgvector.psycopg2.connect", return_value=mock_conn):
+            vector_backend._conn_cache.clear()
+            c1 = vector_backend.get_connection()
+            c2 = vector_backend.get_connection()
         assert c1 is c2
-        qdrant_backend._client_cache.clear()
+        vector_backend._conn_cache.clear()
 
-    def test_different_url_creates_separate_instance(self):
-        qdrant_backend._client_cache.clear()
-        mock_a = MagicMock()
-        mock_b = MagicMock()
-        with patch("qdrant_client.QdrantClient", side_effect=[mock_a, mock_b]):
-            ca = qdrant_backend.get_client("http://url-a")
-            cb = qdrant_backend.get_client("http://url-b")
-        assert ca is mock_a
-        assert cb is mock_b
-        qdrant_backend._client_cache.clear()
+    def test_reconnects_when_closed(self):
+        mock_conn1 = MagicMock()
+        mock_conn1.closed = True
+        mock_conn2 = MagicMock()
+        mock_conn2.closed = False
+        with patch("nexus.backends.pgvector.psycopg2.connect", return_value=mock_conn2):
+            vector_backend._conn_cache.clear()
+            # Pre-populate with closed connection
+            dsn = vector_backend._dsn()
+            vector_backend._conn_cache[dsn] = mock_conn1
+            conn = vector_backend.get_connection()
+        assert conn is mock_conn2
+        vector_backend._conn_cache.clear()
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.neo4j — delete_data Cypher branching (Bug fix #1: re-raises)
+# nexus.backends.memgraph — delete_data Cypher branching (Bug fix #1: re-raises)
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteNeo4j:
+class TestDeleteMemgraph:
     def test_without_scope_uses_project_only_cypher(self):
-        mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            neo4j_backend.delete_data("MY_PROJECT")
+        mock_driver, mock_session = _make_graph_driver()
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            graph_backend.delete_data("MY_PROJECT")
         cypher, kwargs = mock_session.run.call_args
         assert "tenant_scope" not in cypher[0]
         assert kwargs == {"project_id": "MY_PROJECT"}
 
     def test_with_scope_includes_tenant_scope_in_cypher(self):
-        mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            neo4j_backend.delete_data("MY_PROJECT", "MY_SCOPE")
+        mock_driver, mock_session = _make_graph_driver()
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            graph_backend.delete_data("MY_PROJECT", "MY_SCOPE")
         cypher, kwargs = mock_session.run.call_args
         assert "tenant_scope" in cypher[0]
         assert kwargs == {"project_id": "MY_PROJECT", "scope": "MY_SCOPE"}
 
-    def test_neo4j_error_is_re_raised(self):
-        """Bug fix #1: delete_data_neo4j now re-raises instead of swallowing."""
+    def test_graph_error_is_re_raised(self):
+        """Bug fix #1: delete_data now re-raises instead of swallowing."""
         with patch.object(
-            neo4j_backend, "get_driver", side_effect=Exception("connection refused")
+            graph_backend, "get_driver", side_effect=Exception("connection refused")
         ):
             with pytest.raises(Exception, match="connection refused"):
-                neo4j_backend.delete_data("PROJ")
+                graph_backend.delete_data("PROJ")
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — delete_data filter construction
+# nexus.backends.pgvector — delete_data filter construction
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteQdrant:
-    def test_without_scope_single_must_condition(self):
-        mock_client = MagicMock()
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.delete_data("MY_PROJECT")
-        must = mock_client.delete.call_args[1]["points_selector"].filter.must
-        assert len(must) == 1
-        assert must[0].key == "project_id"
+class TestDeletepgvector:
+    def test_without_scope_deletes_by_project_only(self):
+        with patch("nexus.backends.pgvector._execute") as mock_exec:
+            vector_backend.delete_data("MY_PROJECT")
+        sql = mock_exec.call_args[0][0]
+        assert "project_id" in sql
+        assert "tenant_scope" not in sql
 
-    def test_with_scope_two_must_conditions(self):
-        mock_client = MagicMock()
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.delete_data("MY_PROJECT", "MY_SCOPE")
-        must = mock_client.delete.call_args[1]["points_selector"].filter.must
-        assert len(must) == 2
-        assert {c.key for c in must} == {"project_id", "tenant_scope"}
+    def test_with_scope_includes_tenant_scope(self):
+        with patch("nexus.backends.pgvector._execute") as mock_exec:
+            vector_backend.delete_data("MY_PROJECT", "MY_SCOPE")
+        sql = mock_exec.call_args[0][0]
+        assert "project_id" in sql
+        assert "tenant_scope" in sql
 
-    def test_qdrant_error_is_propagated(self):
-        with patch.object(
-            qdrant_backend, "get_client", side_effect=Exception("timeout")
+    def test_vector_error_is_propagated(self):
+        with patch(
+            "nexus.backends.pgvector.get_connection",
+            side_effect=Exception("timeout"),
         ):
             with pytest.raises(Exception, match="timeout"):
-                qdrant_backend.delete_data("PROJ")
+                vector_backend.delete_data("PROJ")
 
 
 class TestDeleteByFilepath:
-    def test_neo4j_delete_by_filepath_matches_chunk_variants(self):
-        mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            neo4j_backend.delete_by_filepath(
+    def test_graph_delete_by_filepath_matches_chunk_variants(self):
+        mock_driver, mock_session = _make_graph_driver()
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            graph_backend.delete_by_filepath(
                 "MY_PROJECT", "docs/README.md", "CORE_DOCS"
             )
 
@@ -258,46 +238,30 @@ class TestDeleteByFilepath:
         assert kwargs["chunk_prefix"] == "docs/README.md:chunk_"
         assert kwargs["scope"] == "CORE_DOCS"
 
-    def test_qdrant_delete_by_filepath_deletes_exact_and_chunk_ids(self):
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [
-            (
-                [
-                    MagicMock(id="a", payload={"file_path": "docs/README.md"}),
-                    MagicMock(
-                        id="b", payload={"file_path": "docs/README.md:chunk_1_of_2"}
-                    ),
-                    MagicMock(id="c", payload={"file_path": "docs/OTHER.md"}),
-                ],
-                None,
-            )
-        ]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.delete_by_filepath(
+    def test_vector_delete_by_filepath_uses_like_for_chunks(self):
+        with patch("nexus.backends.pgvector._execute") as mock_exec:
+            vector_backend.delete_by_filepath(
                 "MY_PROJECT", "docs/README.md", "CORE_DOCS"
             )
+        sql = mock_exec.call_args[0][0]
+        params = mock_exec.call_args[0][1]
+        assert "LIKE" in sql
+        assert "docs/README.md" in params
+        assert "docs/README.md:chunk_%" in params
 
-        mock_client.delete.assert_called_once_with(
-            collection_name=nexus_config.COLLECTION_NAME, points_selector=["a", "b"]
-        )
+    def test_vector_delete_by_filepath_without_scope(self):
+        with patch("nexus.backends.pgvector._execute") as mock_exec:
+            vector_backend.delete_by_filepath("MY_PROJECT", "docs/README.md")
+        sql = mock_exec.call_args[0][0]
+        assert "tenant_scope" not in sql
 
-    def test_qdrant_delete_by_filepath_no_matches_skips_delete(self):
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [
-            ([MagicMock(id="x", payload={"file_path": "docs/OTHER.md"})], None)
-        ]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.delete_by_filepath("MY_PROJECT", "docs/README.md")
-
-        mock_client.delete.assert_not_called()
-
-    def test_neo4j_backfill_file_metadata_sets_missing_scope(self):
-        mock_driver, mock_session = _make_neo4j_driver()
+    def test_graph_backfill_file_metadata_sets_missing_scope(self):
+        mock_driver, mock_session = _make_graph_driver()
         mock_result = MagicMock()
         mock_result.single.return_value = {"updated": 4}
         mock_session.run.return_value = mock_result
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            updated = neo4j_backend.backfill_file_metadata(
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            updated = graph_backend.backfill_file_metadata(
                 "MY_PROJECT", "CORE_DOCS", "docs/README.md"
             )
 
@@ -315,19 +279,19 @@ class TestDeleteByFilepath:
 class TestDeleteTenantData:
     async def test_calls_both_backends(self):
         with (
-            patch.object(neo4j_backend, "delete_data") as mock_neo4j,
-            patch.object(qdrant_backend, "delete_data") as mock_qdrant,
+            patch.object(graph_backend, "delete_data") as mock_graph,
+            patch.object(vector_backend, "delete_data") as mock_vector,
         ):
             result = await nexus_tools.delete_tenant_data("PROJ", "SCOPE")
-        mock_neo4j.assert_called_once_with("PROJ", "SCOPE")
-        mock_qdrant.assert_called_once_with("PROJ", "SCOPE")
+        mock_graph.assert_called_once_with("PROJ", "SCOPE")
+        mock_vector.assert_called_once_with("PROJ", "SCOPE")
         assert "Successfully" in result
         assert "PROJ" in result
 
     async def test_without_scope_omits_scope_from_message(self):
         with (
-            patch.object(neo4j_backend, "delete_data"),
-            patch.object(qdrant_backend, "delete_data"),
+            patch.object(graph_backend, "delete_data"),
+            patch.object(vector_backend, "delete_data"),
         ):
             result = await nexus_tools.delete_tenant_data("PROJ")
         assert "PROJ" in result
@@ -345,13 +309,13 @@ class TestDeleteTenantData:
     async def test_partial_failure_reported(self):
         with (
             patch.object(
-                neo4j_backend, "delete_data", side_effect=Exception("neo4j down")
+                graph_backend, "delete_data", side_effect=Exception("memgraph down")
             ),
-            patch.object(qdrant_backend, "delete_data"),
+            patch.object(vector_backend, "delete_data"),
         ):
             result = await nexus_tools.delete_tenant_data("PROJ")
         assert "Partial failure" in result
-        assert "Neo4j" in result
+        assert "Memgraph" in result
 
 
 # ---------------------------------------------------------------------------
@@ -399,7 +363,7 @@ class TestIngestErrorPaths:
         """Exception message must be generic (not expose raw exception details)."""
         with (
             patch("nexus.tools.get_vector_index", side_effect=Exception("DB down")),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
         ):
             result = await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
         assert "Error" in result
@@ -410,14 +374,14 @@ class TestIngestErrorPaths:
         """Exception message must be generic (not expose raw exception details)."""
         with (
             patch(
-                "nexus.tools.get_graph_index", side_effect=Exception("Neo4j offline")
+                "nexus.tools.get_graph_index", side_effect=Exception("Memgraph offline")
             ),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
         ):
             result = await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
         assert "Error" in result
         # Raw exception text must NOT be exposed to client
-        assert "Neo4j offline" not in result
+        assert "Memgraph offline" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +416,7 @@ class TestContextRetrieval:
 
     async def test_get_vector_context_error_returns_string(self):
         with patch(
-            "nexus.tools.get_vector_index", side_effect=Exception("Qdrant exploded")
+            "nexus.tools.get_vector_index", side_effect=Exception("pgvector exploded")
         ):
             result = await nexus_tools.get_vector_context("query", "PROJ", "SCOPE")
         assert "Error" in result
@@ -464,7 +428,7 @@ class TestContextRetrieval:
 
     async def test_get_graph_context_error_returns_string(self):
         with patch(
-            "nexus.tools.get_graph_index", side_effect=Exception("Neo4j exploded")
+            "nexus.tools.get_graph_index", side_effect=Exception("Memgraph exploded")
         ):
             result = await nexus_tools.get_graph_context("query", "PROJ", "SCOPE")
         assert "Error" in result
@@ -687,10 +651,10 @@ class TestGetAllProjectIds:
     async def test_merges_and_deduplicates(self):
         with (
             patch.object(
-                neo4j_backend, "get_distinct_metadata", return_value=["A", "B"]
+                graph_backend, "get_distinct_metadata", return_value=["A", "B"]
             ),
             patch.object(
-                qdrant_backend, "get_distinct_metadata", return_value=["B", "C"]
+                vector_backend, "get_distinct_metadata", return_value=["B", "C"]
             ),
         ):
             result = await nexus_tools.get_all_project_ids()
@@ -699,18 +663,18 @@ class TestGetAllProjectIds:
     async def test_returns_sorted(self):
         with (
             patch.object(
-                neo4j_backend, "get_distinct_metadata", return_value=["Z", "M"]
+                graph_backend, "get_distinct_metadata", return_value=["Z", "M"]
             ),
-            patch.object(qdrant_backend, "get_distinct_metadata", return_value=["A"]),
+            patch.object(vector_backend, "get_distinct_metadata", return_value=["A"]),
         ):
             result = await nexus_tools.get_all_project_ids()
         assert result == sorted(result)
 
     async def test_one_backend_down_returns_partial(self):
         with (
-            patch.object(neo4j_backend, "get_distinct_metadata", return_value=[]),
+            patch.object(graph_backend, "get_distinct_metadata", return_value=[]),
             patch.object(
-                qdrant_backend, "get_distinct_metadata", return_value=["QDRANT_ONLY"]
+                vector_backend, "get_distinct_metadata", return_value=["QDRANT_ONLY"]
             ),
         ):
             result = await nexus_tools.get_all_project_ids()
@@ -726,10 +690,10 @@ class TestGetAllTenantScopes:
     async def test_global_path_merges_both_backends(self):
         with (
             patch.object(
-                neo4j_backend, "get_distinct_metadata", return_value=["SCOPE_A"]
+                graph_backend, "get_distinct_metadata", return_value=["SCOPE_A"]
             ),
             patch.object(
-                qdrant_backend, "get_distinct_metadata", return_value=["SCOPE_B"]
+                vector_backend, "get_distinct_metadata", return_value=["SCOPE_B"]
             ),
         ):
             result = await nexus_tools.get_all_tenant_scopes()
@@ -739,28 +703,40 @@ class TestGetAllTenantScopes:
     async def test_project_filter_path(self):
         with (
             patch.object(
-                neo4j_backend, "get_scopes_for_project", return_value=["GRAPH_SCOPE"]
+                graph_backend, "get_scopes_for_project", return_value=["GRAPH_SCOPE"]
             ),
-            patch.object(qdrant_backend, "scroll_field", return_value={"QDRANT_SCOPE"}),
+            patch.object(
+                vector_backend,
+                "get_scopes_for_project",
+                return_value=["VECTOR_SCOPE"],
+            ),
         ):
             result = await nexus_tools.get_all_tenant_scopes(project_id="PROJ")
         assert "GRAPH_SCOPE" in result
-        assert "QDRANT_SCOPE" in result
+        assert "VECTOR_SCOPE" in result
 
-    async def test_project_filter_neo4j_down_returns_qdrant_only(self):
+    async def test_project_filter_memgraph_down_returns_vector_only(self):
         with (
-            patch.object(neo4j_backend, "get_scopes_for_project", return_value=[]),
-            patch.object(qdrant_backend, "scroll_field", return_value={"QDRANT_SCOPE"}),
+            patch.object(graph_backend, "get_scopes_for_project", return_value=[]),
+            patch.object(
+                vector_backend,
+                "get_scopes_for_project",
+                return_value=["VECTOR_SCOPE"],
+            ),
         ):
             result = await nexus_tools.get_all_tenant_scopes(project_id="PROJ")
-        assert "QDRANT_SCOPE" in result
+        assert "VECTOR_SCOPE" in result
 
-    async def test_project_filter_qdrant_down_returns_neo4j_only(self):
+    async def test_project_filter_vector_down_returns_graph_only(self):
         with (
             patch.object(
-                neo4j_backend, "get_scopes_for_project", return_value=["GRAPH_SCOPE"]
+                graph_backend, "get_scopes_for_project", return_value=["GRAPH_SCOPE"]
             ),
-            patch.object(qdrant_backend, "scroll_field", side_effect=Exception("down")),
+            patch.object(
+                vector_backend,
+                "get_scopes_for_project",
+                side_effect=Exception("down"),
+            ),
         ):
             result = await nexus_tools.get_all_tenant_scopes(project_id="PROJ")
         assert "GRAPH_SCOPE" in result
@@ -829,65 +805,66 @@ class TestContentHash:
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — is_duplicate
+# nexus.backends.pgvector — is_duplicate
 # ---------------------------------------------------------------------------
 
 
-class TestIsDuplicateQdrant:
+class TestIsDuplicatepgvector:
     def test_returns_true_when_record_found(self):
-        mock_client = MagicMock()
-        mock_client.scroll.return_value = (["fake_record"], None)
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            assert qdrant_backend.is_duplicate("abc", "PROJ", "SCOPE") is True
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"?column?": 1}],
+        ):
+            assert vector_backend.is_duplicate("abc", "PROJ", "SCOPE") is True
 
     def test_returns_false_when_no_record(self):
-        mock_client = MagicMock()
-        mock_client.scroll.return_value = ([], None)
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            assert qdrant_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
+        with patch("nexus.backends.pgvector._query_metadata", return_value=[]):
+            assert vector_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_fail_open_on_exception(self):
-        with patch.object(
-            qdrant_backend, "get_client", side_effect=Exception("timeout")
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            side_effect=Exception("timeout"),
         ):
-            assert qdrant_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
+            assert vector_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
-    def test_scroll_uses_all_three_filters(self):
-        mock_client = MagicMock()
-        mock_client.scroll.return_value = ([], None)
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.is_duplicate("HASH123", "MY_PROJ", "MY_SCOPE")
-        _, kwargs = mock_client.scroll.call_args
-        keys = {c.key for c in kwargs["scroll_filter"].must}
-        assert keys == {"project_id", "tenant_scope", "content_hash"}
+    def test_query_uses_all_three_filters(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata", return_value=[]
+        ) as mock_q:
+            vector_backend.is_duplicate("HASH123", "MY_PROJ", "MY_SCOPE")
+        sql = mock_q.call_args[0][0]
+        assert "project_id" in sql
+        assert "tenant_scope" in sql
+        assert "content_hash" in sql
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.neo4j — is_duplicate
+# nexus.backends.memgraph — is_duplicate
 # ---------------------------------------------------------------------------
 
 
-class TestIsDuplicateNeo4j:
+class TestIsDuplicateMemgraph:
     def test_returns_true_when_exists(self):
-        driver = _make_neo4j_driver_with_single({"exists": True})
-        with patch.object(neo4j_backend, "get_driver", return_value=driver):
-            assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is True
+        driver = _make_graph_driver_with_single({"exists": True})
+        with patch.object(graph_backend, "get_driver", return_value=driver):
+            assert graph_backend.is_duplicate("abc", "PROJ", "SCOPE") is True
 
     def test_returns_false_when_not_exists(self):
-        driver = _make_neo4j_driver_with_single({"exists": False})
-        with patch.object(neo4j_backend, "get_driver", return_value=driver):
-            assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
+        driver = _make_graph_driver_with_single({"exists": False})
+        with patch.object(graph_backend, "get_driver", return_value=driver):
+            assert graph_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_returns_false_when_no_record(self):
-        driver = _make_neo4j_driver_with_single(None)
-        with patch.object(neo4j_backend, "get_driver", return_value=driver):
-            assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
+        driver = _make_graph_driver_with_single(None)
+        with patch.object(graph_backend, "get_driver", return_value=driver):
+            assert graph_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
     def test_fail_open_on_exception(self):
         with patch.object(
-            neo4j_backend, "get_driver", side_effect=Exception("bolt down")
+            graph_backend, "get_driver", side_effect=Exception("bolt down")
         ):
-            assert neo4j_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
+            assert graph_backend.is_duplicate("abc", "PROJ", "SCOPE") is False
 
 
 # ---------------------------------------------------------------------------
@@ -900,7 +877,7 @@ class TestIngestVectorDedup:
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
             patch.object(
-                qdrant_backend, "is_duplicate", return_value=True
+                vector_backend, "is_duplicate", return_value=True
             ) as mock_check,
             patch("nexus.tools.get_vector_index") as mock_index,
         ):
@@ -913,7 +890,7 @@ class TestIngestVectorDedup:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
         ):
             result = await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
@@ -924,7 +901,7 @@ class TestIngestVectorDedup:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="DEADBEEF"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
         ):
             await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
@@ -935,7 +912,7 @@ class TestIngestVectorDedup:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="CAFEF00D"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
         ):
             await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
@@ -948,7 +925,7 @@ class TestIngestGraphDedup:
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
             patch.object(
-                neo4j_backend, "is_duplicate", return_value=True
+                graph_backend, "is_duplicate", return_value=True
             ) as mock_check,
             patch("nexus.tools.get_graph_index") as mock_index,
         ):
@@ -961,7 +938,7 @@ class TestIngestGraphDedup:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
         ):
             result = await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
@@ -972,7 +949,7 @@ class TestIngestGraphDedup:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="GRAPHHASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
         ):
             await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
@@ -981,38 +958,36 @@ class TestIngestGraphDedup:
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — delete_all_data
+# nexus.backends.pgvector — delete_all_data
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteAllQdrant:
-    def test_calls_client_delete_with_empty_filter(self):
-        mock_client = MagicMock()
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            qdrant_backend.delete_all_data()
-        mock_client.delete.assert_called_once()
-        selector = mock_client.delete.call_args[1]["points_selector"]
-        # must= [] means no conditions — deletes everything
-        assert selector.filter.must == []
+class TestDeleteAllpgvector:
+    def test_calls_truncate(self):
+        with patch("nexus.backends.pgvector._execute") as mock_exec:
+            vector_backend.delete_all_data()
+        sql = mock_exec.call_args[0][0]
+        assert "TRUNCATE" in sql
 
     def test_propagates_exception(self):
-        with patch.object(
-            qdrant_backend, "get_client", side_effect=Exception("qdrant down")
+        with patch(
+            "nexus.backends.pgvector.get_connection",
+            side_effect=Exception("pgvector down"),
         ):
-            with pytest.raises(Exception, match="qdrant down"):
-                qdrant_backend.delete_all_data()
+            with pytest.raises(Exception, match="pgvector down"):
+                vector_backend.delete_all_data()
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.neo4j — delete_all_data
+# nexus.backends.memgraph — delete_all_data
 # ---------------------------------------------------------------------------
 
 
-class TestDeleteAllNeo4j:
+class TestDeleteAllMemgraph:
     def test_runs_detach_delete_all_cypher(self):
-        mock_driver, mock_session = _make_neo4j_driver()
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            neo4j_backend.delete_all_data()
+        mock_driver, mock_session = _make_graph_driver()
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            graph_backend.delete_all_data()
         cypher = mock_session.run.call_args[0][0]
         assert "MATCH (n)" in cypher
         assert "DETACH DELETE" in cypher
@@ -1021,10 +996,10 @@ class TestDeleteAllNeo4j:
 
     def test_propagates_exception(self):
         with patch.object(
-            neo4j_backend, "get_driver", side_effect=Exception("bolt down")
+            graph_backend, "get_driver", side_effect=Exception("bolt down")
         ):
             with pytest.raises(Exception, match="bolt down"):
-                neo4j_backend.delete_all_data()
+                graph_backend.delete_all_data()
 
 
 # ---------------------------------------------------------------------------
@@ -1035,50 +1010,52 @@ class TestDeleteAllNeo4j:
 class TestDeleteAllDataTool:
     async def test_calls_both_backends(self):
         with (
-            patch.object(neo4j_backend, "delete_all_data") as mock_neo4j,
-            patch.object(qdrant_backend, "delete_all_data") as mock_qdrant,
+            patch.object(graph_backend, "delete_all_data") as mock_graph,
+            patch.object(vector_backend, "delete_all_data") as mock_vector,
         ):
             result = await nexus_tools.delete_all_data()
-        mock_neo4j.assert_called_once()
-        mock_qdrant.assert_called_once()
+        mock_graph.assert_called_once()
+        mock_vector.assert_called_once()
         assert "Successfully" in result
         assert "ALL" in result
 
-    async def test_partial_failure_neo4j(self):
+    async def test_partial_failure_graph(self):
         with (
             patch.object(
-                neo4j_backend, "delete_all_data", side_effect=Exception("neo4j down")
+                graph_backend, "delete_all_data", side_effect=Exception("memgraph down")
             ),
-            patch.object(qdrant_backend, "delete_all_data"),
+            patch.object(vector_backend, "delete_all_data"),
         ):
             result = await nexus_tools.delete_all_data()
         assert "Partial failure" in result
-        assert "Neo4j" in result
+        assert "Memgraph" in result
 
-    async def test_partial_failure_qdrant(self):
+    async def test_partial_failure_pgvector(self):
         with (
-            patch.object(neo4j_backend, "delete_all_data"),
+            patch.object(graph_backend, "delete_all_data"),
             patch.object(
-                qdrant_backend, "delete_all_data", side_effect=Exception("qdrant down")
+                vector_backend,
+                "delete_all_data",
+                side_effect=Exception("pgvector down"),
             ),
         ):
             result = await nexus_tools.delete_all_data()
         assert "Partial failure" in result
-        assert "Qdrant" in result
+        assert "pgvector" in result
 
     async def test_both_backends_fail_reports_both(self):
         with (
             patch.object(
-                neo4j_backend, "delete_all_data", side_effect=Exception("neo4j err")
+                graph_backend, "delete_all_data", side_effect=Exception("neo4j err")
             ),
             patch.object(
-                qdrant_backend, "delete_all_data", side_effect=Exception("qdrant err")
+                vector_backend, "delete_all_data", side_effect=Exception("pgvector err")
             ),
         ):
             result = await nexus_tools.delete_all_data()
         assert "Partial failure" in result
-        assert "Neo4j" in result
-        assert "Qdrant" in result
+        assert "Memgraph" in result
+        assert "pgvector" in result
 
 
 # ---------------------------------------------------------------------------
@@ -1376,14 +1353,14 @@ class TestExceptionSanitization:
         """Exception during vector ingest must not expose internals."""
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch(
                 "nexus.tools.get_vector_index",
-                side_effect=RuntimeError("disk /dev/sda1 is full at /data/qdrant"),
+                side_effect=RuntimeError("disk /dev/sda1 is full at /data/pgvector"),
             ),
         ):
             result = await nexus_tools.ingest_vector_document("text", "P", "S")
-        assert "/data/qdrant" not in result
+        assert "/data/pgvector" not in result
         assert "disk" not in result
         assert "Error" in result
 
@@ -1391,7 +1368,7 @@ class TestExceptionSanitization:
         """Exception during graph ingest must not expose internals."""
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch(
                 "nexus.tools.get_graph_index",
                 side_effect=RuntimeError("BOLT port 7687 auth=neo4j:letmein"),
@@ -1415,7 +1392,7 @@ class TestCacheInvalidationOnIngest:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
         ):
@@ -1426,7 +1403,7 @@ class TestCacheInvalidationOnIngest:
         """No cache invalidation when document is skipped as duplicate."""
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=True),
+            patch.object(vector_backend, "is_duplicate", return_value=True),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
         ):
             await nexus_tools.ingest_vector_document("text", "PROJ", "SCOPE")
@@ -1436,7 +1413,7 @@ class TestCacheInvalidationOnIngest:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
         ):
@@ -1446,7 +1423,7 @@ class TestCacheInvalidationOnIngest:
     async def test_graph_ingest_does_not_invalidate_on_duplicate(self):
         with (
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=True),
+            patch.object(graph_backend, "is_duplicate", return_value=True),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
         ):
             await nexus_tools.ingest_graph_document("text", "PROJ", "SCOPE")
@@ -1463,7 +1440,7 @@ class TestCacheInvalidationOnIngest:
             patch("nexus.tools.needs_chunking", return_value=True),
             patch("nexus.tools.chunk_document", return_value=["chunk1", "chunk2"]),
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_invalidate,
         ):
@@ -1484,30 +1461,30 @@ class TestValidateConfig:
         import nexus.config as nc
         from nexus.config import validate_config
 
-        original = nc.DEFAULT_NEO4J_PASSWORD
+        original = nc.DEFAULT_PG_PASSWORD
         try:
-            nc.DEFAULT_NEO4J_PASSWORD = "password123"
+            nc.DEFAULT_PG_PASSWORD = "password123"
             warnings = validate_config()
         finally:
-            nc.DEFAULT_NEO4J_PASSWORD = original
+            nc.DEFAULT_PG_PASSWORD = original
 
         assert len(warnings) >= 1
-        assert any("password" in w.lower() or "NEO4J_PASSWORD" in w for w in warnings)
+        assert any("password" in w.lower() or "PG_PASSWORD" in w for w in warnings)
 
     def test_strong_password_no_warning(self):
         import nexus.config as nc
         from nexus.config import validate_config
 
-        original = nc.DEFAULT_NEO4J_PASSWORD
+        original = nc.DEFAULT_PG_PASSWORD
         try:
-            nc.DEFAULT_NEO4J_PASSWORD = "s3cr3t!PasswordXYZ"
+            nc.DEFAULT_PG_PASSWORD = "s3cr3t!PasswordXYZ"
             warnings = validate_config()
         finally:
-            nc.DEFAULT_NEO4J_PASSWORD = original
+            nc.DEFAULT_PG_PASSWORD = original
 
         # Only localhost-in-production warnings might fire; not password warning
         password_warns = [
-            w for w in warnings if "NEO4J_PASSWORD" in w and "password123" in w
+            w for w in warnings if "PG_PASSWORD" in w and "password123" in w
         ]
         assert len(password_warns) == 0
 
@@ -1517,13 +1494,13 @@ class TestValidateConfig:
         import nexus.config as nc
         from nexus.config import validate_config
 
-        original_pw = nc.DEFAULT_NEO4J_PASSWORD
+        original_pw = nc.DEFAULT_PG_PASSWORD
         try:
-            nc.DEFAULT_NEO4J_PASSWORD = "strongpass"
+            nc.DEFAULT_PG_PASSWORD = "strongpass"
             with patch.dict(os.environ, {"NEXUS_ENV": "production"}):
                 warnings = validate_config()
         finally:
-            nc.DEFAULT_NEO4J_PASSWORD = original_pw
+            nc.DEFAULT_PG_PASSWORD = original_pw
 
         # All three default service URLs point to localhost — expect 3 warnings
         localhost_warns = [w for w in warnings if "localhost" in w]
@@ -1535,13 +1512,13 @@ class TestValidateConfig:
         import nexus.config as nc
         from nexus.config import validate_config
 
-        original_pw = nc.DEFAULT_NEO4J_PASSWORD
+        original_pw = nc.DEFAULT_PG_PASSWORD
         try:
-            nc.DEFAULT_NEO4J_PASSWORD = "strongpass"
+            nc.DEFAULT_PG_PASSWORD = "strongpass"
             with patch.dict(os.environ, {"NEXUS_ENV": "development"}):
                 warnings = validate_config()
         finally:
-            nc.DEFAULT_NEO4J_PASSWORD = original_pw
+            nc.DEFAULT_PG_PASSWORD = original_pw
 
         assert warnings == []
 
@@ -1628,7 +1605,7 @@ class TestAnswerQueryHelpers:
         from nexus.tools import _fetch_graph_passages
 
         with patch(
-            "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+            "nexus.tools.get_graph_index", side_effect=RuntimeError("memgraph down")
         ):
             result = await _fetch_graph_passages("q", "P", "S", rerank=False)
         assert result == []
@@ -1638,7 +1615,7 @@ class TestAnswerQueryHelpers:
         from nexus.tools import _fetch_vector_passages
 
         with patch(
-            "nexus.tools.get_vector_index", side_effect=RuntimeError("qdrant down")
+            "nexus.tools.get_vector_index", side_effect=RuntimeError("pgvector down")
         ):
             result = await _fetch_vector_passages("q", "P", "S", rerank=False)
         assert result == []
@@ -1721,7 +1698,7 @@ class TestBatchIngestCacheInvalidation:
         with (
             patch("nexus.tools.needs_chunking", return_value=False),
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
         ):
@@ -1738,7 +1715,7 @@ class TestBatchIngestCacheInvalidation:
         with (
             patch("nexus.tools.needs_chunking", return_value=False),
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=True),
+            patch.object(graph_backend, "is_duplicate", return_value=True),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
         ):
             result = await nexus_tools.ingest_graph_documents_batch(docs)
@@ -1754,7 +1731,7 @@ class TestBatchIngestCacheInvalidation:
         with (
             patch("nexus.tools.needs_chunking", return_value=False),
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
         ):
@@ -1769,7 +1746,7 @@ class TestBatchIngestCacheInvalidation:
         with (
             patch("nexus.tools.needs_chunking", return_value=False),
             patch("nexus.tools.content_hash", return_value="HASH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=True),
+            patch.object(vector_backend, "is_duplicate", return_value=True),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inv,
         ):
             result = await nexus_tools.ingest_vector_documents_batch(docs)
@@ -1915,22 +1892,22 @@ class TestDeleteTenantDataCacheInvalidation:
     async def test_invalidates_cache_on_success(self):
         """Cache is invalidated when both backends succeed."""
         with (
-            patch("nexus.tools.neo4j_backend.delete_data"),
-            patch("nexus.tools.qdrant_backend.delete_data"),
+            patch("nexus.tools.graph_backend.delete_data"),
+            patch("nexus.tools.vector_backend.delete_data"),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inval,
         ):
             result = await nexus_tools.delete_tenant_data("PROJ", "SCOPE")
         assert "Successfully" in result
         mock_inval.assert_called_once_with("PROJ", "SCOPE")
 
-    async def test_invalidates_cache_on_partial_neo4j_failure(self):
-        """Cache is still invalidated even if Neo4j deletion fails."""
+    async def test_invalidates_cache_on_partial_graph_failure(self):
+        """Cache is still invalidated even if Memgraph deletion fails."""
         with (
             patch(
-                "nexus.tools.neo4j_backend.delete_data",
-                side_effect=Exception("neo4j down"),
+                "nexus.tools.graph_backend.delete_data",
+                side_effect=Exception("memgraph down"),
             ),
-            patch("nexus.tools.qdrant_backend.delete_data"),
+            patch("nexus.tools.vector_backend.delete_data"),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inval,
         ):
             result = await nexus_tools.delete_tenant_data("PROJ", "SCOPE")
@@ -1941,12 +1918,12 @@ class TestDeleteTenantDataCacheInvalidation:
         """Cache is still invalidated when both backends fail (stale entries must go)."""
         with (
             patch(
-                "nexus.tools.neo4j_backend.delete_data",
-                side_effect=Exception("neo4j down"),
+                "nexus.tools.graph_backend.delete_data",
+                side_effect=Exception("memgraph down"),
             ),
             patch(
-                "nexus.tools.qdrant_backend.delete_data",
-                side_effect=Exception("qdrant down"),
+                "nexus.tools.vector_backend.delete_data",
+                side_effect=Exception("pgvector down"),
             ),
             patch("nexus.tools.cache_module.invalidate_cache") as mock_inval,
         ):
@@ -2104,10 +2081,10 @@ class TestSyncProjectFilesSuccessCheck:
                 return_value=files_needing_sync,
             ),
             patch(
-                "nexus.tools.neo4j_backend.delete_by_filepath",
+                "nexus.tools.graph_backend.delete_by_filepath",
             ),
             patch(
-                "nexus.tools.qdrant_backend.delete_by_filepath",
+                "nexus.tools.vector_backend.delete_by_filepath",
             ),
             patch(
                 "nexus.tools.ingest_graph_document",
@@ -2151,8 +2128,8 @@ class TestSyncProjectFilesSuccessCheck:
                 "nexus.tools.sync_module.get_files_needing_sync",
                 return_value=files_needing_sync,
             ),
-            patch("nexus.tools.neo4j_backend.delete_by_filepath"),
-            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch("nexus.tools.graph_backend.delete_by_filepath"),
+            patch("nexus.tools.vector_backend.delete_by_filepath"),
             patch(
                 "nexus.tools.ingest_graph_document",
                 new_callable=AsyncMock,
@@ -2212,10 +2189,10 @@ class TestSyncProjectFilesPreDeleteErrors:
                 return_value=[self._make_file_entry(fake_file)],
             ),
             patch(
-                "nexus.tools.neo4j_backend.delete_by_filepath",
+                "nexus.tools.graph_backend.delete_by_filepath",
                 side_effect=RuntimeError("connection refused"),
             ),
-            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch("nexus.tools.vector_backend.delete_by_filepath"),
             patch(
                 "nexus.tools.ingest_graph_document", new_callable=AsyncMock
             ) as mock_graph,
@@ -2247,10 +2224,10 @@ class TestSyncProjectFilesPreDeleteErrors:
                 return_value=[self._make_file_entry(fake_file)],
             ),
             patch(
-                "nexus.tools.neo4j_backend.delete_by_filepath",
+                "nexus.tools.graph_backend.delete_by_filepath",
                 side_effect=ConnectionError("neo4j unreachable"),
             ),
-            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch("nexus.tools.vector_backend.delete_by_filepath"),
             patch("nexus.tools.ingest_graph_document", new_callable=AsyncMock),
             patch("nexus.tools.ingest_vector_document", new_callable=AsyncMock),
             patch("nexus.tools.sync_module.delete_stale_files", return_value=[]),
@@ -2274,8 +2251,8 @@ class TestSyncProjectFilesPreDeleteErrors:
                 "nexus.tools.sync_module.get_files_needing_sync",
                 return_value=[self._make_file_entry(fake_file)],
             ),
-            patch("nexus.tools.neo4j_backend.delete_by_filepath"),
-            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch("nexus.tools.graph_backend.delete_by_filepath"),
+            patch("nexus.tools.vector_backend.delete_by_filepath"),
             patch(
                 "nexus.tools.ingest_graph_document",
                 new_callable=AsyncMock,
@@ -2306,8 +2283,8 @@ class TestSyncProjectFilesPreDeleteErrors:
                 "nexus.tools.sync_module.get_files_needing_sync",
                 return_value=[self._make_file_entry(fake_file)],
             ),
-            patch("nexus.tools.neo4j_backend.delete_by_filepath"),
-            patch("nexus.tools.qdrant_backend.delete_by_filepath"),
+            patch("nexus.tools.graph_backend.delete_by_filepath"),
+            patch("nexus.tools.vector_backend.delete_by_filepath"),
             patch(
                 "nexus.tools.ingest_graph_document",
                 new_callable=AsyncMock,
@@ -2327,8 +2304,8 @@ class TestSyncProjectFilesPreDeleteErrors:
         mock_cache.invalidate_cache.assert_called_with("TEST", "CORE_DOCS")
         assert "Synced 1 of 1" in result
 
-    async def test_pre_delete_qdrant_error_skips_ingest(self):
-        """Bug L10-1: Qdrant pre-delete failure also skips ingest (not just Neo4j)."""
+    async def test_pre_delete_pgvector_error_skips_ingest(self):
+        """Bug L10-1: pgvector pre-delete failure also skips ingest (not just Memgraph)."""
         from pathlib import Path
 
         fake_file = MagicMock(spec=Path)
@@ -2339,10 +2316,10 @@ class TestSyncProjectFilesPreDeleteErrors:
                 "nexus.tools.sync_module.get_files_needing_sync",
                 return_value=[self._make_file_entry(fake_file)],
             ),
-            patch("nexus.tools.neo4j_backend.delete_by_filepath"),  # neo4j succeeds
+            patch("nexus.tools.graph_backend.delete_by_filepath"),  # graph succeeds
             patch(
-                "nexus.tools.qdrant_backend.delete_by_filepath",
-                side_effect=RuntimeError("qdrant timeout"),
+                "nexus.tools.vector_backend.delete_by_filepath",
+                side_effect=RuntimeError("pgvector timeout"),
             ),
             patch(
                 "nexus.tools.ingest_graph_document", new_callable=AsyncMock
@@ -2361,48 +2338,48 @@ class TestSyncProjectFilesPreDeleteErrors:
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.neo4j — get_driver() singleton (Fix: v2.2 — connection pool)
+# nexus.backends.memgraph — get_driver() singleton (Fix: v2.2 — connection pool)
 # ---------------------------------------------------------------------------
 
 
-class TestNeo4jGetDriverSingleton:
+class TestMemgraphGetDriverSingleton:
     """Verify get_driver() initialises the driver exactly once (singleton)."""
 
     def test_get_driver_returns_same_instance_on_repeated_calls(self):
-        import nexus.backends.neo4j as _neo4j_mod
+        import nexus.backends.memgraph as _memgraph_mod
 
         mock_driver = MagicMock()
-        original = _neo4j_mod._driver_instance
+        original = _memgraph_mod._driver_instance
         try:
-            _neo4j_mod._driver_instance = None  # reset singleton for this test
-            with patch("nexus.backends.neo4j.GraphDatabase") as mock_gdb:
+            _memgraph_mod._driver_instance = None  # reset singleton for this test
+            with patch("nexus.backends.memgraph.GraphDatabase") as mock_gdb:
                 mock_gdb.driver.return_value = mock_driver
-                d1 = _neo4j_mod.get_driver()
-                d2 = _neo4j_mod.get_driver()
+                d1 = _memgraph_mod.get_driver()
+                d2 = _memgraph_mod.get_driver()
             assert d1 is d2
             assert mock_gdb.driver.call_count == 1
         finally:
-            _neo4j_mod._driver_instance = original  # restore
+            _memgraph_mod._driver_instance = original  # restore
 
     def test_get_driver_uses_configured_url_and_auth(self):
-        import nexus.backends.neo4j as _neo4j_mod
+        import nexus.backends.memgraph as _memgraph_mod
 
         mock_driver = MagicMock()
-        original = _neo4j_mod._driver_instance
+        original = _memgraph_mod._driver_instance
         try:
-            _neo4j_mod._driver_instance = None
-            with patch("nexus.backends.neo4j.GraphDatabase") as mock_gdb:
+            _memgraph_mod._driver_instance = None
+            with patch("nexus.backends.memgraph.GraphDatabase") as mock_gdb:
                 mock_gdb.driver.return_value = mock_driver
-                _neo4j_mod.get_driver()
+                _memgraph_mod.get_driver()
             call_args = mock_gdb.driver.call_args
-            assert call_args[0][0] == _neo4j_mod.DEFAULT_NEO4J_URL
+            assert call_args[0][0] == _memgraph_mod.DEFAULT_MEMGRAPH_URL
         finally:
-            _neo4j_mod._driver_instance = original
+            _memgraph_mod._driver_instance = original
 
 
 # ---------------------------------------------------------------------------
 # nexus.tools — project_id validation in get_graph_context / get_vector_context
-# (Fix: v3.6 — missing validation allowed empty project_id through to Neo4j)
+# (Fix: v3.6 — missing validation allowed empty project_id through to Memgraph)
 # ---------------------------------------------------------------------------
 
 
@@ -2463,33 +2440,33 @@ class TestDeleteAllDataCacheInvalidation:
 
     async def test_invalidate_all_cache_called_on_success(self):
         with (
-            patch("nexus.tools.neo4j_backend.delete_all_data"),
-            patch("nexus.tools.qdrant_backend.delete_all_data"),
+            patch("nexus.tools.graph_backend.delete_all_data"),
+            patch("nexus.tools.vector_backend.delete_all_data"),
             patch.object(nexus_tools.cache_module, "invalidate_all_cache") as mock_inv,
         ):
             result = await nexus_tools.delete_all_data()
         mock_inv.assert_called_once()
         assert "Successfully" in result
 
-    async def test_invalidate_all_cache_called_even_when_neo4j_fails(self):
+    async def test_invalidate_all_cache_called_even_when_graph_fails(self):
         with (
             patch(
-                "nexus.tools.neo4j_backend.delete_all_data",
-                side_effect=Exception("neo4j down"),
+                "nexus.tools.graph_backend.delete_all_data",
+                side_effect=Exception("memgraph down"),
             ),
-            patch("nexus.tools.qdrant_backend.delete_all_data"),
+            patch("nexus.tools.vector_backend.delete_all_data"),
             patch.object(nexus_tools.cache_module, "invalidate_all_cache") as mock_inv,
         ):
             result = await nexus_tools.delete_all_data()
         mock_inv.assert_called_once()
         assert "Partial failure" in result
 
-    async def test_invalidate_all_cache_called_even_when_qdrant_fails(self):
+    async def test_invalidate_all_cache_called_even_when_pgvector_fails(self):
         with (
-            patch("nexus.tools.neo4j_backend.delete_all_data"),
+            patch("nexus.tools.graph_backend.delete_all_data"),
             patch(
-                "nexus.tools.qdrant_backend.delete_all_data",
-                side_effect=Exception("qdrant down"),
+                "nexus.tools.vector_backend.delete_all_data",
+                side_effect=Exception("pgvector down"),
             ),
             patch.object(nexus_tools.cache_module, "invalidate_all_cache") as mock_inv,
         ):
@@ -2573,57 +2550,50 @@ class TestSeparateIndexLocks:
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — scroll_field None-value filtering (Bug fix v2.3)
+# nexus.backends.pgvector — None-value filtering in metadata queries
 # ---------------------------------------------------------------------------
 
 
-class TestScrollFieldNoneFiltering:
-    """scroll_field must not add None payload values to the result set.
+class TestPgvectorNoneFiltering:
+    """get_distinct_metadata must not include None values in results.
 
-    A None payload value would cause sorted() to raise TypeError when mixed
+    A None value would cause sorted() to raise TypeError when mixed
     with strings in get_all_tenant_scopes and print_all_stats.
     """
 
-    def test_none_value_not_added_to_set(self):
-        record = MagicMock()
-        record.payload = {"tenant_scope": None}
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [([record], None)]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("tenant_scope")
+    def test_none_value_not_in_results(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": None}],
+        ):
+            result = vector_backend.get_distinct_metadata("tenant_scope")
         assert None not in result
-        assert result == set()
+        assert result == []
 
-    def test_valid_value_still_added(self):
-        record = MagicMock()
-        record.payload = {"tenant_scope": "CORE_CODE"}
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [([record], None)]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("tenant_scope")
-        assert result == {"CORE_CODE"}
+    def test_valid_value_still_returned(self):
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": "CORE_CODE"}],
+        ):
+            result = vector_backend.get_distinct_metadata("tenant_scope")
+        assert result == ["CORE_CODE"]
 
     def test_mixed_none_and_valid_filters_none(self):
-        r1, r2 = MagicMock(), MagicMock()
-        r1.payload = {"tenant_scope": "CORE_CODE"}
-        r2.payload = {"tenant_scope": None}
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [([r1, r2], None)]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("tenant_scope")
-        assert result == {"CORE_CODE"}
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": "CORE_CODE"}, {"value": None}],
+        ):
+            result = vector_backend.get_distinct_metadata("tenant_scope")
+        assert result == ["CORE_CODE"]
         assert None not in result
 
-    def test_sorted_does_not_crash_after_fix(self):
-        """sorted() must succeed on scroll_field results even with None payloads."""
-        records = [MagicMock(), MagicMock()]
-        records[0].payload = {"project_id": None}
-        records[1].payload = {"project_id": "MY_PROJECT"}
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [(records, None)]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("project_id")
-        # This must not raise TypeError
+    def test_sorted_does_not_crash(self):
+        """sorted() must succeed on results even with None in raw data."""
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": None}, {"value": "MY_PROJECT"}],
+        ):
+            result = vector_backend.get_distinct_metadata("project_id")
         assert sorted(result) == ["MY_PROJECT"]
 
 
@@ -2642,12 +2612,12 @@ class TestSyncDeletedFilesCache:
 
         with (
             patch.object(
-                neo4j_backend,
+                graph_backend,
                 "get_all_filepaths",
                 return_value=["stale_file.md"],
             ),
-            patch.object(neo4j_backend, "delete_by_filepath"),
-            patch.object(qdrant_backend, "delete_by_filepath"),
+            patch.object(graph_backend, "delete_by_filepath"),
+            patch.object(vector_backend, "delete_by_filepath"),
             patch("nexus.tools.cache_module") as mock_cache,
         ):
             result = await nexus_tools.sync_deleted_files(
@@ -2666,7 +2636,7 @@ class TestSyncDeletedFilesCache:
 
         with (
             patch.object(
-                neo4j_backend,
+                graph_backend,
                 "get_all_filepaths",
                 return_value=["exists.md"],
             ),
@@ -2683,7 +2653,7 @@ class TestSyncDeletedFilesCache:
         base_path.mkdir()
 
         with (
-            patch.object(neo4j_backend, "get_all_filepaths", return_value=[]),
+            patch.object(graph_backend, "get_all_filepaths", return_value=[]),
             patch("nexus.tools.cache_module") as mock_cache,
         ):
             await nexus_tools.sync_deleted_files(
@@ -2735,63 +2705,57 @@ class TestInvalidateProjectCache:
 
 
 # ---------------------------------------------------------------------------
-# TestQdrantGetAllFilepaths (Loop 4 — Bug L1-1)
+# TestpgvectorGetAllFilepaths (Loop 4 — Bug L1-1)
 # ---------------------------------------------------------------------------
 
 
-class TestQdrantGetAllFilepaths:
+class TestpgvectorGetAllFilepaths:
     def test_returns_distinct_paths(self):
-        """get_all_filepaths returns unique non-empty paths via scroll_field."""
+        """get_all_filepaths returns unique non-empty paths."""
         with patch(
-            "nexus.backends.qdrant.scroll_field", return_value={"/a.md", "/b.md"}
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": "/a.md"}, {"value": "/b.md"}],
         ):
-            result = qdrant_backend.get_all_filepaths("PROJ", "SCOPE")
+            result = vector_backend.get_all_filepaths("PROJ", "SCOPE")
         assert set(result) == {"/a.md", "/b.md"}
 
     def test_filters_empty_strings(self):
-        """Empty strings from payload are excluded."""
-        with patch("nexus.backends.qdrant.scroll_field", return_value={"", "/real.md"}):
-            result = qdrant_backend.get_all_filepaths("PROJ", "SCOPE")
+        """Empty strings from query results are excluded."""
+        with patch(
+            "nexus.backends.pgvector._query_metadata",
+            return_value=[{"value": ""}, {"value": "/real.md"}],
+        ):
+            result = vector_backend.get_all_filepaths("PROJ", "SCOPE")
         assert "" not in result
         assert "/real.md" in result
 
     def test_no_scope_omits_scope_filter(self):
-        """When scope is empty, only project_id condition is passed."""
-        captured = {}
-
-        def fake_scroll(key, qdrant_filter=None):
-            captured["filter"] = qdrant_filter
-            return set()
-
-        with patch("nexus.backends.qdrant.scroll_field", side_effect=fake_scroll):
-            qdrant_backend.get_all_filepaths("PROJ", "")
-
-        must = captured["filter"].must
-        keys = [c.key for c in must]
-        assert "project_id" in keys
-        assert "tenant_scope" not in keys
+        """When scope is empty, only project_id condition is in SQL."""
+        with patch(
+            "nexus.backends.pgvector._query_metadata", return_value=[]
+        ) as mock_q:
+            vector_backend.get_all_filepaths("PROJ", "")
+        sql = mock_q.call_args[0][0]
+        assert "project_id" in sql
+        assert "tenant_scope" not in sql
 
     def test_with_scope_adds_scope_condition(self):
-        """When scope is provided, both project_id and tenant_scope conditions appear."""
-        captured = {}
-
-        def fake_scroll(key, qdrant_filter=None):
-            captured["filter"] = qdrant_filter
-            return set()
-
-        with patch("nexus.backends.qdrant.scroll_field", side_effect=fake_scroll):
-            qdrant_backend.get_all_filepaths("PROJ", "MY_SCOPE")
-
-        keys = [c.key for c in captured["filter"].must]
-        assert "project_id" in keys
-        assert "tenant_scope" in keys
+        """When scope is provided, both project_id and tenant_scope in SQL."""
+        with patch(
+            "nexus.backends.pgvector._query_metadata", return_value=[]
+        ) as mock_q:
+            vector_backend.get_all_filepaths("PROJ", "MY_SCOPE")
+        sql = mock_q.call_args[0][0]
+        assert "project_id" in sql
+        assert "tenant_scope" in sql
 
     def test_error_returns_empty_list(self):
-        """Any exception from scroll_field returns [] without raising."""
+        """Any exception returns [] without raising."""
         with patch(
-            "nexus.backends.qdrant.scroll_field", side_effect=Exception("conn error")
+            "nexus.backends.pgvector._query_metadata",
+            side_effect=Exception("conn error"),
         ):
-            result = qdrant_backend.get_all_filepaths("PROJ", "SCOPE")
+            result = vector_backend.get_all_filepaths("PROJ", "SCOPE")
         assert result == []
 
 
@@ -2801,47 +2765,47 @@ class TestQdrantGetAllFilepaths:
 
 
 class TestDeleteStaleFilesUnion:
-    def test_catches_qdrant_only_orphan(self, tmp_path):
-        """delete_stale_files removes a file present in Qdrant but not on disk or Neo4j."""
+    def test_catches_vector_only_orphan(self, tmp_path):
+        """delete_stale_files removes a file present in pgvector but not on disk or Memgraph."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
 
-        qdrant_only_path = "/orphan/file.md"
+        vector_only_path = "/orphan/file.md"
 
         with (
-            patch("nexus.sync.neo4j_backend") as mock_neo4j,
-            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+            patch("nexus.sync.graph_backend") as mock_graph,
+            patch("nexus.sync.vector_backend") as mock_vector,
         ):
-            mock_neo4j.get_all_filepaths.return_value = []
-            mock_qdrant.get_all_filepaths.return_value = [qdrant_only_path]
+            mock_graph.get_all_filepaths.return_value = []
+            mock_vector.get_all_filepaths.return_value = [vector_only_path]
 
             deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
 
-        assert qdrant_only_path in deleted
-        mock_neo4j.delete_by_filepath.assert_called_once_with(
-            "PROJ", qdrant_only_path, "SCOPE"
+        assert vector_only_path in deleted
+        mock_graph.delete_by_filepath.assert_called_once_with(
+            "PROJ", vector_only_path, "SCOPE"
         )
-        mock_qdrant.delete_by_filepath.assert_called_once_with(
-            "PROJ", qdrant_only_path, "SCOPE"
+        mock_vector.delete_by_filepath.assert_called_once_with(
+            "PROJ", vector_only_path, "SCOPE"
         )
 
-    def test_catches_neo4j_only_orphan(self, tmp_path):
-        """delete_stale_files removes a file present in Neo4j but not on disk or Qdrant."""
+    def test_catches_graph_only_orphan(self, tmp_path):
+        """delete_stale_files removes a file present in Memgraph but not on disk or pgvector."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
 
-        neo4j_only_path = "/neo4j_only/file.md"
+        graph_only_path = "/graph_only/file.md"
 
         with (
-            patch("nexus.sync.neo4j_backend") as mock_neo4j,
-            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+            patch("nexus.sync.graph_backend") as mock_graph,
+            patch("nexus.sync.vector_backend") as mock_vector,
         ):
-            mock_neo4j.get_all_filepaths.return_value = [neo4j_only_path]
-            mock_qdrant.get_all_filepaths.return_value = []
+            mock_graph.get_all_filepaths.return_value = [graph_only_path]
+            mock_vector.get_all_filepaths.return_value = []
 
             deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
 
-        assert neo4j_only_path in deleted
+        assert graph_only_path in deleted
 
     def test_existing_file_not_deleted(self, tmp_path):
         """A file that exists on disk is not deleted even if indexed."""
@@ -2851,36 +2815,36 @@ class TestDeleteStaleFilesUnion:
         real_file.write_text("content")
 
         with (
-            patch("nexus.sync.neo4j_backend") as mock_neo4j,
-            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+            patch("nexus.sync.graph_backend") as mock_graph,
+            patch("nexus.sync.vector_backend") as mock_vector,
         ):
-            mock_neo4j.get_all_filepaths.return_value = [str(real_file)]
-            mock_qdrant.get_all_filepaths.return_value = [str(real_file)]
+            mock_graph.get_all_filepaths.return_value = [str(real_file)]
+            mock_vector.get_all_filepaths.return_value = [str(real_file)]
 
             deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
 
         assert deleted == []
-        mock_neo4j.delete_by_filepath.assert_not_called()
-        mock_qdrant.delete_by_filepath.assert_not_called()
+        mock_graph.delete_by_filepath.assert_not_called()
+        mock_vector.delete_by_filepath.assert_not_called()
 
     def test_union_deduplication(self, tmp_path):
-        """Paths present in both Neo4j and Qdrant are only deleted once."""
+        """Paths present in both Memgraph and pgvector are only deleted once."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         shared_path = "/shared/file.md"
 
         with (
-            patch("nexus.sync.neo4j_backend") as mock_neo4j,
-            patch("nexus.sync.qdrant_backend") as mock_qdrant,
+            patch("nexus.sync.graph_backend") as mock_graph,
+            patch("nexus.sync.vector_backend") as mock_vector,
         ):
-            mock_neo4j.get_all_filepaths.return_value = [shared_path]
-            mock_qdrant.get_all_filepaths.return_value = [shared_path]
+            mock_graph.get_all_filepaths.return_value = [shared_path]
+            mock_vector.get_all_filepaths.return_value = [shared_path]
 
             deleted = nexus_sync.delete_stale_files(workspace, "PROJ", "SCOPE")
 
         assert deleted.count(shared_path) == 1
-        assert mock_neo4j.delete_by_filepath.call_count == 1
-        assert mock_qdrant.delete_by_filepath.call_count == 1
+        assert mock_graph.delete_by_filepath.call_count == 1
+        assert mock_vector.delete_by_filepath.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2889,31 +2853,31 @@ class TestDeleteStaleFilesUnion:
 
 
 class TestSyncDeletedFilesUnion:
-    async def test_catches_qdrant_only_orphan(self, tmp_path):
-        """sync_deleted_files removes an entry present only in Qdrant."""
+    async def test_catches_vector_only_orphan(self, tmp_path):
+        """sync_deleted_files removes an entry present only in pgvector."""
         with (
-            patch("nexus.tools.neo4j_backend") as mock_neo4j,
-            patch("nexus.tools.qdrant_backend") as mock_qdrant,
+            patch("nexus.tools.graph_backend") as mock_graph,
+            patch("nexus.tools.vector_backend") as mock_vector,
             patch("nexus.tools.cache_module"),
         ):
-            mock_neo4j.get_all_filepaths.return_value = []
-            mock_qdrant.get_all_filepaths.return_value = ["orphan.md"]
+            mock_graph.get_all_filepaths.return_value = []
+            mock_vector.get_all_filepaths.return_value = ["orphan.md"]
 
             result = await nexus_tools.sync_deleted_files(
                 str(tmp_path), "PROJ", "SCOPE"
             )
 
         assert "1" in result
-        mock_qdrant.delete_by_filepath.assert_called_once()
+        mock_vector.delete_by_filepath.assert_called_once()
 
     async def test_no_paths_in_either_store_returns_no_files(self, tmp_path):
         """Returns early when both stores report no indexed files."""
         with (
-            patch("nexus.tools.neo4j_backend") as mock_neo4j,
-            patch("nexus.tools.qdrant_backend") as mock_qdrant,
+            patch("nexus.tools.graph_backend") as mock_graph,
+            patch("nexus.tools.vector_backend") as mock_vector,
         ):
-            mock_neo4j.get_all_filepaths.return_value = []
-            mock_qdrant.get_all_filepaths.return_value = []
+            mock_graph.get_all_filepaths.return_value = []
+            mock_vector.get_all_filepaths.return_value = []
 
             result = await nexus_tools.sync_deleted_files(
                 str(tmp_path), "PROJ", "SCOPE"
@@ -2925,17 +2889,17 @@ class TestSyncDeletedFilesUnion:
         """A path present in both stores triggers exactly one delete per backend."""
         shared = "shared/path.md"
         with (
-            patch("nexus.tools.neo4j_backend") as mock_neo4j,
-            patch("nexus.tools.qdrant_backend") as mock_qdrant,
+            patch("nexus.tools.graph_backend") as mock_graph,
+            patch("nexus.tools.vector_backend") as mock_vector,
             patch("nexus.tools.cache_module"),
         ):
-            mock_neo4j.get_all_filepaths.return_value = [shared]
-            mock_qdrant.get_all_filepaths.return_value = [shared]
+            mock_graph.get_all_filepaths.return_value = [shared]
+            mock_vector.get_all_filepaths.return_value = [shared]
 
             await nexus_tools.sync_deleted_files(str(tmp_path), "PROJ", "SCOPE")
 
-        assert mock_neo4j.delete_by_filepath.call_count == 1
-        assert mock_qdrant.delete_by_filepath.call_count == 1
+        assert mock_graph.delete_by_filepath.call_count == 1
+        assert mock_vector.delete_by_filepath.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2994,24 +2958,24 @@ class TestBatchChunkErrorRecovery:
     @patch("nexus.tools.needs_chunking", return_value=True)
     @patch("nexus.tools.chunk_document", return_value=["chunk_a", "chunk_b", "chunk_c"])
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.graph_backend")
     @patch("nexus.tools.cache_module")
     async def test_graph_batch_chunk_error_continues_remaining_chunks(
-        self, mock_cache, mock_neo4j, mock_get_index, _mock_chunk, _mock_needs
+        self, mock_cache, mock_graph, mock_get_index, _mock_chunk, _mock_needs
     ):
         """A chunk insert error must not abort remaining chunks of the same document."""
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         call_count = 0
 
-        def failing_insert(doc):
+        def failing_insert_nodes(nodes):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("simulated chunk insert failure")
 
         mock_index = MagicMock()
-        mock_index.insert.side_effect = failing_insert
+        mock_index.insert_nodes.side_effect = failing_insert_nodes
         mock_get_index.return_value = mock_index
 
         result = await nexus_tools.ingest_graph_documents_batch(
@@ -3021,29 +2985,29 @@ class TestBatchChunkErrorRecovery:
         # First chunk errored, remaining 2 were still attempted
         assert result["errors"] >= 1
         assert result["ingested"] >= 1  # At least 2 of 3 succeeded
-        assert mock_index.insert.call_count == 3  # All 3 chunks were attempted
+        assert mock_index.insert_nodes.call_count == 3  # All 3 chunks were attempted
 
     @patch("nexus.tools.needs_chunking", return_value=True)
     @patch("nexus.tools.chunk_document", return_value=["chunk_a", "chunk_b", "chunk_c"])
     @patch("nexus.tools.get_vector_index")
-    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.vector_backend")
     @patch("nexus.tools.cache_module")
     async def test_vector_batch_chunk_error_continues_remaining_chunks(
-        self, mock_cache, mock_qdrant, mock_get_index, _mock_chunk, _mock_needs
+        self, mock_cache, mock_vector, mock_get_index, _mock_chunk, _mock_needs
     ):
         """A chunk insert error must not abort remaining chunks (vector batch)."""
-        mock_qdrant.is_duplicate.return_value = False
+        mock_vector.is_duplicate.return_value = False
 
         call_count = 0
 
-        def failing_insert(doc):
+        def failing_insert_nodes(nodes):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise RuntimeError("simulated chunk insert failure")
 
         mock_index = MagicMock()
-        mock_index.insert.side_effect = failing_insert
+        mock_index.insert_nodes.side_effect = failing_insert_nodes
         mock_get_index.return_value = mock_index
 
         result = await nexus_tools.ingest_vector_documents_batch(
@@ -3052,23 +3016,23 @@ class TestBatchChunkErrorRecovery:
 
         assert result["errors"] >= 1
         assert result["ingested"] >= 1  # Remaining chunks succeeded
-        assert mock_index.insert.call_count == 3  # All 3 chunks attempted
+        assert mock_index.insert_nodes.call_count == 3  # All 3 chunks attempted
 
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.graph_backend")
     @patch("nexus.tools.cache_module")
     async def test_graph_batch_empty_documents_returns_zeros(
-        self, mock_cache, mock_neo4j, mock_get_index
+        self, mock_cache, mock_graph, mock_get_index
     ):
         """Empty document list returns all-zero counts."""
         result = await nexus_tools.ingest_graph_documents_batch([])
         assert result == {"ingested": 0, "skipped": 0, "errors": 0, "chunks": 0}
 
     @patch("nexus.tools.get_vector_index")
-    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.vector_backend")
     @patch("nexus.tools.cache_module")
     async def test_vector_batch_empty_documents_returns_zeros(
-        self, mock_cache, mock_qdrant, mock_get_index
+        self, mock_cache, mock_vector, mock_get_index
     ):
         """Empty document list returns all-zero counts."""
         result = await nexus_tools.ingest_vector_documents_batch([])
@@ -3087,10 +3051,11 @@ class TestAnswerQueryBothBackendsFail:
         """When graph and vector both fail, returns 'No context found' (not an exception)."""
         with (
             patch(
-                "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+                "nexus.tools.get_graph_index", side_effect=RuntimeError("memgraph down")
             ),
             patch(
-                "nexus.tools.get_vector_index", side_effect=RuntimeError("qdrant down")
+                "nexus.tools.get_vector_index",
+                side_effect=RuntimeError("pgvector down"),
             ),
             patch("nexus.tools.cache_module") as mock_cache,
         ):
@@ -3113,7 +3078,7 @@ class TestAnswerQueryBothBackendsFail:
 
         with (
             patch(
-                "nexus.tools.get_graph_index", side_effect=RuntimeError("neo4j down")
+                "nexus.tools.get_graph_index", side_effect=RuntimeError("memgraph down")
             ),
             patch("nexus.tools.get_vector_index", return_value=mock_vector_index),
             patch("nexus.tools.cache_module") as mock_cache,
@@ -3256,10 +3221,10 @@ class TestChunkedIngestAllFail:
     ):
         """ingest_graph_document: all chunks fail → 'Error:' in result (not 'Successfully')."""
         mock_index = MagicMock()
-        mock_index.insert.side_effect = RuntimeError("DB unavailable")
+        mock_index.insert_nodes.side_effect = RuntimeError("DB unavailable")
 
         with (
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
         ):
             result = await nexus_tools.ingest_graph_document(
@@ -3279,10 +3244,10 @@ class TestChunkedIngestAllFail:
     ):
         """ingest_vector_document: all chunks fail → 'Error:' in result (not 'Successfully')."""
         mock_index = MagicMock()
-        mock_index.insert.side_effect = RuntimeError("DB unavailable")
+        mock_index.insert_nodes.side_effect = RuntimeError("DB unavailable")
 
         with (
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
         ):
             result = await nexus_tools.ingest_vector_document(
@@ -3304,15 +3269,15 @@ class TestChunkedIngestAllFail:
         mock_index = MagicMock()
         call_count = {"n": 0}
 
-        def insert_side_effect(doc):
+        def insert_nodes_side_effect(nodes):
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise RuntimeError("first chunk fails")
 
-        mock_index.insert.side_effect = insert_side_effect
+        mock_index.insert_nodes.side_effect = insert_nodes_side_effect
 
         with (
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
         ):
             result = await nexus_tools.ingest_graph_document(
@@ -3330,7 +3295,7 @@ class TestChunkedIngestAllFail:
     ):
         """ingest_graph_document: all chunks already ingested (skipped) → 'Successfully 0'
         with no errors — not an error condition, content was already there."""
-        with patch.object(neo4j_backend, "is_duplicate", return_value=True):
+        with patch.object(graph_backend, "is_duplicate", return_value=True):
             result = await nexus_tools.ingest_graph_document(
                 "big text", "PROJ", "SCOPE"
             )
@@ -3345,7 +3310,7 @@ class TestChunkedIngestAllFail:
         self, _mock_hash, _mock_chunk, _mock_needs
     ):
         """ingest_vector_document: all chunks already ingested (skipped) → no error."""
-        with patch.object(qdrant_backend, "is_duplicate", return_value=True):
+        with patch.object(vector_backend, "is_duplicate", return_value=True):
             result = await nexus_tools.ingest_vector_document(
                 "big text", "PROJ", "SCOPE"
             )
@@ -3373,10 +3338,10 @@ class TestGetTenantStatsValidation:
     async def test_valid_project_id_returns_dict(self):
         """Valid project_id must return a dict with expected keys."""
         with (
-            patch.object(neo4j_backend, "get_document_count", return_value=5),
-            patch.object(neo4j_backend, "get_chunk_node_count", return_value=3),
-            patch.object(neo4j_backend, "get_entity_node_count", return_value=2),
-            patch.object(qdrant_backend, "get_document_count", return_value=4),
+            patch.object(graph_backend, "get_document_count", return_value=5),
+            patch.object(graph_backend, "get_chunk_node_count", return_value=3),
+            patch.object(graph_backend, "get_entity_node_count", return_value=2),
+            patch.object(vector_backend, "get_document_count", return_value=4),
         ):
             result = await nexus_tools.get_tenant_stats("PROJ")
 
@@ -3551,7 +3516,7 @@ class TestParseContextResultsGraphScores:
     """Regression: graph results with negative scores must be parsed correctly.
 
     Bug: HTTP /query returned graph_results=[] when graph context had valid
-    scored entries. Root cause was transient Neo4j warmup after docker-compose
+    scored entries. Root cause was transient Memgraph warmup after docker-compose
     restart + 24h cache TTL caching empty results.
     """
 
@@ -4306,8 +4271,12 @@ class TestCheckFileSyncStatus:
         f = tmp_path / "test.md"
         f.write_text("content")
         with (
-            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=True),
-            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=True),
+            patch(
+                "nexus.sync.graph_backend.is_file_content_duplicate", return_value=True
+            ),
+            patch(
+                "nexus.sync.vector_backend.is_file_content_duplicate", return_value=True
+            ),
         ):
             from nexus.sync import check_file_sync_status
 
@@ -4322,8 +4291,13 @@ class TestCheckFileSyncStatus:
         f = tmp_path / "test.md"
         f.write_text("content")
         with (
-            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=False),
-            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=False),
+            patch(
+                "nexus.sync.graph_backend.is_file_content_duplicate", return_value=False
+            ),
+            patch(
+                "nexus.sync.vector_backend.is_file_content_duplicate",
+                return_value=False,
+            ),
         ):
             from nexus.sync import check_file_sync_status
 
@@ -4339,8 +4313,13 @@ class TestCheckFileSyncStatus:
         f = tmp_path / "test.md"
         f.write_text("content")
         with (
-            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=True),
-            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=False),
+            patch(
+                "nexus.sync.graph_backend.is_file_content_duplicate", return_value=True
+            ),
+            patch(
+                "nexus.sync.vector_backend.is_file_content_duplicate",
+                return_value=False,
+            ),
         ):
             from nexus.sync import check_file_sync_status
 
@@ -4354,8 +4333,12 @@ class TestCheckFileSyncStatus:
         f = tmp_path / "test.md"
         f.write_text("content")
         with (
-            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=False),
-            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=True),
+            patch(
+                "nexus.sync.graph_backend.is_file_content_duplicate", return_value=False
+            ),
+            patch(
+                "nexus.sync.vector_backend.is_file_content_duplicate", return_value=True
+            ),
         ):
             from nexus.sync import check_file_sync_status
 
@@ -4380,8 +4363,13 @@ class TestCheckFileSyncStatus:
         f = tmp_path / "test.md"
         f.write_text("content")
         with (
-            patch("nexus.sync.neo4j_backend.is_duplicate", return_value=True),
-            patch("nexus.sync.qdrant_backend.is_duplicate", return_value=False),
+            patch(
+                "nexus.sync.graph_backend.is_file_content_duplicate", return_value=True
+            ),
+            patch(
+                "nexus.sync.vector_backend.is_file_content_duplicate",
+                return_value=False,
+            ),
         ):
             from nexus.sync import check_file_changed
 
@@ -4394,7 +4382,7 @@ class TestCheckFileSyncStatus:
 
 
 class TestBackfillAllUnscoped:
-    """Tests for neo4j.backfill_all_unscoped."""
+    """Tests for memgraph.backfill_all_unscoped."""
 
     def test_tags_unscoped_nodes(self):
         mock_record = MagicMock()
@@ -4402,15 +4390,13 @@ class TestBackfillAllUnscoped:
         mock_session = MagicMock()
         mock_session.run.return_value.single.return_value = mock_record
 
-        with patch("nexus.backends.neo4j.get_driver") as mock_driver:
+        with patch("nexus.backends.memgraph.get_driver") as mock_driver:
             mock_driver.return_value.session.return_value.__enter__ = lambda s: (
                 mock_session
             )
             mock_driver.return_value.session.return_value.__exit__ = lambda s, *a: None
 
-            from nexus.backends.neo4j import backfill_all_unscoped
-
-            result = backfill_all_unscoped("PROJ", "SCOPE")
+            result = graph_backend.backfill_all_unscoped("PROJ", "SCOPE")
             assert result == 5
 
             # Verify Cypher sets project_id and tenant_scope
@@ -4425,22 +4411,18 @@ class TestBackfillAllUnscoped:
         mock_session = MagicMock()
         mock_session.run.return_value.single.return_value = mock_record
 
-        with patch("nexus.backends.neo4j.get_driver") as mock_driver:
+        with patch("nexus.backends.memgraph.get_driver") as mock_driver:
             mock_driver.return_value.session.return_value.__enter__ = lambda s: (
                 mock_session
             )
             mock_driver.return_value.session.return_value.__exit__ = lambda s, *a: None
 
-            from nexus.backends.neo4j import backfill_all_unscoped
+            assert graph_backend.backfill_all_unscoped("PROJ", "SCOPE") == 0
 
-            assert backfill_all_unscoped("PROJ", "SCOPE") == 0
-
-    def test_handles_neo4j_error_gracefully(self):
+    def test_handles_memgraph_error_gracefully(self):
         with patch(
-            "nexus.backends.neo4j.get_driver",
+            "nexus.backends.memgraph.get_driver",
             side_effect=Exception("connection refused"),
         ):
-            from nexus.backends.neo4j import backfill_all_unscoped
-
-            result = backfill_all_unscoped("PROJ", "SCOPE")
+            result = graph_backend.backfill_all_unscoped("PROJ", "SCOPE")
             assert result == 0

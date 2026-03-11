@@ -1,4 +1,4 @@
-# Version: v1.9
+# Version: v2.0
 """
 nexus — Multi-Tenant RAG package for the Antigravity agent ecosystem.
 
@@ -8,7 +8,7 @@ config    : Service defaults, constants, shared FastMCP instance.
 dedup     : Tenant-scoped SHA-256 content hashing.
 indexes   : LlamaIndex settings bootstrap and index factories.
 tools     : All @mcp.tool()-decorated MCP tool functions.
-backends  : Database-specific helpers (neo4j, qdrant).
+backends  : Database-specific helpers (memgraph, pgvector).
 """
 
-__version__ = "1.9.0"
+__version__ = "2.0.0"

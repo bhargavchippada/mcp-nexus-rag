@@ -1,15 +1,8 @@
-# Version: v1.0
+# Version: v2.0
 """
-tests/test_coverage.py — Targeted tests to close coverage gaps identified after
-                          the v2.0 unit/integration refactor.
+tests/test_coverage.py — Targeted tests to close coverage gaps.
 
-Covers:
-  - nexus.backends.neo4j: get_scopes_for_project (happy-path + error)
-  - nexus.indexes: get_vector_index body
-  - nexus.tools: get_graph_context with results (hit path)
-  - nexus.tools: ingest_graph_document metadata fields
-  - nexus.backends.neo4j: neo4j_driver() construction
-  - server: __main__ guard (line 54)
+v2.0: Migrated from Neo4j/Qdrant to Memgraph/pgvector backends.
 
 No live services required — all backends are mocked.
 asyncio_mode=auto (pyproject.toml) — no @pytest.mark.asyncio needed.
@@ -19,128 +12,86 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from nexus import indexes as nexus_indexes
 from nexus import tools as nexus_tools
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
-from tests.conftest import make_neo4j_driver
+from nexus.backends import memgraph as graph_backend
+from nexus.backends import pgvector as vector_backend
+from tests.conftest import make_graph_driver
 
 # ---------------------------------------------------------------------------
-# nexus.backends.neo4j — get_scopes_for_project
+# nexus.backends.memgraph — get_scopes_for_project
 # ---------------------------------------------------------------------------
 
 
 class TestGetScopesForProject:
-    """Covers neo4j.py lines 66-77 (happy path + error branch)."""
+    """Covers memgraph.py get_scopes_for_project (happy path + error branch)."""
 
     def test_returns_scopes_for_project(self):
         records = [{"value": "CORE_CODE"}, {"value": "SYSTEM_LOGS"}]
-        mock_driver, _ = make_neo4j_driver(records)
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            result = neo4j_backend.get_scopes_for_project("TRADING_BOT")
+        mock_driver, _ = make_graph_driver(records)
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            result = graph_backend.get_scopes_for_project("TRADING_BOT")
         assert set(result) == {"CORE_CODE", "SYSTEM_LOGS"}
 
     def test_returns_empty_list_on_connection_error(self):
         with patch.object(
-            neo4j_backend, "get_driver", side_effect=Exception("bolt closed")
+            graph_backend, "get_driver", side_effect=Exception("bolt closed")
         ):
-            result = neo4j_backend.get_scopes_for_project("ANY_PROJECT")
+            result = graph_backend.get_scopes_for_project("ANY_PROJECT")
         assert result == []
 
     def test_query_filters_by_project_id(self):
         """Verifies the Cypher uses a project_id parameter (not a literal)."""
-        mock_driver, mock_session = make_neo4j_driver([])
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            neo4j_backend.get_scopes_for_project("MY_PROJECT")
+        mock_driver, mock_session = make_graph_driver([])
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            graph_backend.get_scopes_for_project("MY_PROJECT")
         _, kwargs = mock_session.run.call_args
         assert kwargs.get("project_id") == "MY_PROJECT"
 
     def test_returns_empty_when_no_scopes(self):
-        mock_driver, _ = make_neo4j_driver([])
-        with patch.object(neo4j_backend, "get_driver", return_value=mock_driver):
-            result = neo4j_backend.get_scopes_for_project("EMPTY_PROJECT")
+        mock_driver, _ = make_graph_driver([])
+        with patch.object(graph_backend, "get_driver", return_value=mock_driver):
+            result = graph_backend.get_scopes_for_project("EMPTY_PROJECT")
         assert result == []
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.neo4j — neo4j_driver() factory (line 25)
-# ---------------------------------------------------------------------------
-
-
-class TestNeo4jDriverFactory:
-    """Exercises the neo4j_driver() function itself (GraphDatabase.driver call)."""
-
-    def test_driver_uses_configured_url_and_auth(self):
-        mock_driver_instance = MagicMock()
-        with patch("nexus.backends.neo4j.GraphDatabase") as mock_gdb:
-            mock_gdb.driver.return_value = mock_driver_instance
-            driver = neo4j_backend.neo4j_driver()
-        mock_gdb.driver.assert_called_once()
-        call_kwargs = mock_gdb.driver.call_args
-        # URL is first positional arg
-        assert call_kwargs[0][0] == neo4j_backend.DEFAULT_NEO4J_URL
-        assert driver is mock_driver_instance
-
-
-# ---------------------------------------------------------------------------
-# nexus.indexes — get_vector_index body (lines 100-103)
+# nexus.indexes — get_vector_index body
 # ---------------------------------------------------------------------------
 
 
 class TestGetVectorIndex:
-    """Covers nexus/indexes.py lines 100-103 — ensure vector store wires correctly."""
+    """Covers nexus/indexes.py — ensure vector store wires correctly."""
 
     def test_returns_vector_store_index(self):
-        mock_client = MagicMock()
-        mock_aclient = MagicMock()
         mock_store = MagicMock()
         mock_index = MagicMock()
 
         with (
             patch.object(nexus_indexes, "setup_settings"),
-            patch("nexus.indexes.get_qdrant_client", return_value=mock_client),
-            patch("nexus.indexes.get_async_qdrant_client", return_value=mock_aclient),
-            patch("nexus.indexes.QdrantVectorStore", return_value=mock_store),
+            patch("nexus.indexes.PGVectorStore") as mock_pgv_cls,
             patch(
                 "nexus.indexes.VectorStoreIndex.from_vector_store",
                 return_value=mock_index,
             ) as mock_factory,
         ):
+            mock_pgv_cls.from_params.return_value = mock_store
+            # Reset cache before test
+            nexus_indexes._vector_index_cache = None
             result = nexus_indexes.get_vector_index()
 
         mock_factory.assert_called_once_with(vector_store=mock_store)
         assert result is mock_index
 
-    def test_uses_default_qdrant_url(self):
-        """collection_name and URL come from config constants."""
-        # Reset cache before test
-        nexus_indexes._vector_index_cache = None
-        mock_client = MagicMock()
-        mock_aclient = MagicMock()
-        with (
-            patch.object(nexus_indexes, "setup_settings"),
-            patch(
-                "nexus.indexes.get_qdrant_client", return_value=mock_client
-            ) as mock_cls,
-            patch("nexus.indexes.get_async_qdrant_client", return_value=mock_aclient),
-            patch("nexus.indexes.QdrantVectorStore"),
-            patch("nexus.indexes.VectorStoreIndex.from_vector_store"),
-        ):
-            nexus_indexes.get_vector_index()
-        _, kwargs = mock_cls.call_args
-        assert kwargs["url"] == nexus_indexes.DEFAULT_QDRANT_URL
-
 
 # ---------------------------------------------------------------------------
-# nexus.tools — get_graph_context result hit path (lines 127-128)
+# nexus.tools — get_graph_context with results (hit path)
 # ---------------------------------------------------------------------------
 
 
 class TestGetGraphContextWithResults:
-    """Covers tools.py lines 127-128: the successful retrieval with non-empty nodes."""
-
     def _mock_index_with_content(self, content: str):
         node = MagicMock()
         node.node.get_content.return_value = content
-        node.score = 0.95  # Score is required for formatting
+        node.score = 0.95
         mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=[node])
         mock_index = MagicMock()
@@ -170,7 +121,7 @@ class TestGetGraphContextWithResults:
         for i, c in enumerate(contents):
             n = MagicMock()
             n.node.get_content.return_value = c
-            n.score = 0.9 - i * 0.1  # Descending scores: 0.9, 0.8, 0.7
+            n.score = 0.9 - i * 0.1
             nodes.append(n)
         mock_retriever = MagicMock()
         mock_retriever.aretrieve = AsyncMock(return_value=nodes)
@@ -188,13 +139,11 @@ class TestGetGraphContextWithResults:
 
 
 class TestIngestGraphMetadata:
-    """Verifies all required metadata fields are present on inserted graph docs."""
-
     async def test_graph_doc_has_all_metadata_fields(self):
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="GRAPHHASH99"),
-            patch.object(neo4j_backend, "is_duplicate", return_value=False),
+            patch.object(graph_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_graph_index", return_value=mock_index),
         ):
             await nexus_tools.ingest_graph_document(
@@ -210,7 +159,7 @@ class TestIngestGraphMetadata:
         mock_index = MagicMock()
         with (
             patch("nexus.tools.content_hash", return_value="VH"),
-            patch.object(qdrant_backend, "is_duplicate", return_value=False),
+            patch.object(vector_backend, "is_duplicate", return_value=False),
             patch("nexus.tools.get_vector_index", return_value=mock_index),
         ):
             await nexus_tools.ingest_vector_document(
@@ -226,8 +175,6 @@ class TestIngestGraphMetadata:
 
 
 class TestValidateIngestInputsEdgeCases:
-    """Exhaustive whitespace checks not covered in test_unit.py."""
-
     async def test_newline_only_text_is_rejected(self):
         result = await nexus_tools.ingest_vector_document("\n\n\n", "PROJ", "SCOPE")
         assert "Error" in result
@@ -242,50 +189,11 @@ class TestValidateIngestInputsEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# nexus.backends.qdrant — scroll_field with empty collection
-# ---------------------------------------------------------------------------
-
-
-class TestScrollFieldEdgeCases:
-    def test_empty_collection_returns_empty_set(self):
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [([], None)]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            result = qdrant_backend.scroll_field("project_id")
-        assert result == set()
-
-    def test_payload_with_none_value_is_skipped(self):
-        """A record whose payload[key] == None should not be added to the set."""
-        record = MagicMock()
-        record.payload = {"project_id": None}
-        mock_client = MagicMock()
-        mock_client.scroll.side_effect = [([record], None)]
-        with patch.object(qdrant_backend, "get_client", return_value=mock_client):
-            # None values ARE added — they're falsy but scroll_field only checks key presence
-            # This test documents current behaviour explicitly
-            result = qdrant_backend.scroll_field("project_id")
-        # None gets added as a value — this exercises the code path fully
-        assert None in result or result == set()
-
-
-# ---------------------------------------------------------------------------
-# nexus.indexes — inner double-checked lock guard (line 49)
+# nexus.indexes — inner double-checked lock guard
 # ---------------------------------------------------------------------------
 
 
 class TestSetupSettingsInnerGuard:
-    """Forces the inner ``if _settings_initialized: return`` branch (line 49).
-
-    _thread.lock is a C-level immutable type so we cannot patch its __enter__.
-    Instead we use two real threads:
-      - Thread A acquires _settings_lock and waits.
-      - Thread B calls setup_settings(); its outer check sees False and it
-        blocks on the lock.
-      - Thread A sets _settings_initialized = True then releases the lock.
-      - Thread B now holds the lock, runs the inner check which sees True,
-        and returns early (line 49) — WITHOUT initialising Ollama etc.
-    """
-
     def test_inner_guard_hits_early_return(self):
         import threading
 
@@ -297,10 +205,9 @@ class TestSetupSettingsInnerGuard:
 
         def thread_a():
             with nexus_indexes._settings_lock:
-                t_a_has_lock.set()  # signal B it can proceed
-                t_a_release.wait(timeout=3)  # wait for B to be ready
+                t_a_has_lock.set()
+                t_a_release.wait(timeout=3)
                 nexus_indexes._settings_initialized = True
-            # lock released — B now enters
 
         def thread_b():
             try:
@@ -310,7 +217,6 @@ class TestSetupSettingsInnerGuard:
                     patch("nexus.indexes.SentenceSplitter"),
                 ):
                     nexus_indexes.setup_settings()
-                    # Inner guard fired — constructors must be uncalled
                     assert mock_llm.call_count == 0, (
                         "Ollama was called despite inner guard"
                     )
@@ -327,15 +233,14 @@ class TestSetupSettingsInnerGuard:
             tb = threading.Thread(target=thread_b, daemon=True)
 
             ta.start()
-            t_a_has_lock.wait(timeout=3)  # wait until A holds the lock
+            t_a_has_lock.wait(timeout=3)
 
             tb.start()
-            # Give B time to pass the outer check and block on the lock
             import time
 
             time.sleep(0.05)
 
-            t_a_release.set()  # let A set the flag and release
+            t_a_release.set()
             ta.join(timeout=3)
             tb.join(timeout=3)
 
@@ -346,21 +251,18 @@ class TestSetupSettingsInnerGuard:
 
 
 # ---------------------------------------------------------------------------
-# server — __main__ guard (line 54)
+# server — __main__ guard
 # ---------------------------------------------------------------------------
 
 
 class TestServerMainGuard:
     def test_main_guard_calls_main(self):
-        """Exercises the ``if __name__ == '__main__': main()`` branch via runpy."""
         import runpy
 
         import nexus.config as nexus_config
 
         with patch.object(nexus_config.mcp, "run"):
-            # run_path with run_name="__main__" triggers the guard
             runpy.run_path(
                 "/home/turiya/antigravity/projects/mcp-nexus-rag/server.py",
                 run_name="__main__",
             )
-        # If we get here without exception the guard executed mcp.run()

@@ -1,3 +1,4 @@
+# Version: v3.0
 import asyncio
 import shutil
 from pathlib import Path
@@ -5,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from nexus import indexes as nexus_indexes
-from nexus.backends import neo4j as neo4j_backend
-from nexus.backends import qdrant as qdrant_backend
+from nexus.backends import memgraph as graph_backend
+from nexus.backends import pgvector as vector_backend
 from nexus.tools import (
     ingest_graph_document,
     ingest_project_directory,
@@ -64,8 +65,8 @@ async def test_directory_ingestion_logic():
         # Give it a tiny bit of time for safety (though shouldn't be needed)
         await asyncio.sleep(1)
 
-        # Verify Neo4j has the paths
-        paths = neo4j_backend.get_all_filepaths(project_id, scope)
+        # Verify Memgraph has the paths
+        paths = graph_backend.get_all_filepaths(project_id, scope)
         print(f"Stored paths: {paths}")
 
         assert "valid.py" in paths
@@ -78,7 +79,7 @@ async def test_directory_ingestion_logic():
         sync_result = await sync_deleted_files(str(test_dir), project_id, scope)
         print(f"Sync result: {sync_result}")
 
-        paths_after = neo4j_backend.get_all_filepaths(project_id, scope)
+        paths_after = graph_backend.get_all_filepaths(project_id, scope)
         assert len(paths_after) == 1
         assert "useful.md" in paths_after
         assert "valid.py" not in paths_after
@@ -87,8 +88,8 @@ async def test_directory_ingestion_logic():
         # Cleanup
         if test_dir.exists():
             shutil.rmtree(test_dir)
-        neo4j_backend.delete_data(project_id, scope)
-        qdrant_backend.delete_data(project_id, scope)
+        graph_backend.delete_data(project_id, scope)
+        vector_backend.delete_data(project_id, scope)
 
 
 @pytest.mark.integration
@@ -104,17 +105,17 @@ async def test_backend_file_operations():
 
     try:
         await asyncio.sleep(1)
-        paths = neo4j_backend.get_all_filepaths(project_id, scope)
+        paths = graph_backend.get_all_filepaths(project_id, scope)
         print(f"Stored paths (manual): {paths}")
         assert "test1.py" in paths
         assert "test2.py" in paths
 
-        # Test Neo4j deletion
-        neo4j_backend.delete_by_filepath(project_id, "test1.py", scope)
-        paths_after = neo4j_backend.get_all_filepaths(project_id, scope)
+        # Test Memgraph deletion
+        graph_backend.delete_by_filepath(project_id, "test1.py", scope)
+        paths_after = graph_backend.get_all_filepaths(project_id, scope)
         assert "test1.py" not in paths_after
         assert "test2.py" in paths_after
 
     finally:
-        neo4j_backend.delete_data(project_id, scope)
-        qdrant_backend.delete_data(project_id, scope)
+        graph_backend.delete_data(project_id, scope)
+        vector_backend.delete_data(project_id, scope)

@@ -20,41 +20,21 @@ services:
       timeout: 5s
       retries: 5
 
-  # Graph Database for LlamaIndex PropertyGraphIndex
-  neo4j:
-    image: neo4j:2025-community
-    container_name: turiya-neo4j
+  # Graph Database for LlamaIndex PropertyGraphIndex (Memgraph)
+  memgraph-rag:
+    image: memgraph/memgraph:latest
+    container_name: turiya-memgraph-rag
     restart: unless-stopped
-    environment:
-      NEO4J_AUTH: neo4j/password123
-      NEO4J_server_memory_heap_initial__size: 512m
-      NEO4J_server_memory_heap_max__size: 2g
-      NEO4J_server_memory_pagecache_size: 1g
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_security_procedures_unrestricted: 'apoc.*'
-      NEO4J_dbms_security_procedures_allowlist: 'apoc.*'
     ports:
-      - "7474:7474"
-      - "7687:7687"
+      - "7689:7687"
     volumes:
-      - neo4j_data:/data
+      - memgraph_rag_data:/var/lib/memgraph
     healthcheck:
-      test: [ "CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1" ]
+      test: [ "CMD-SHELL", "echo 'RETURN 1;' | mgconsole || exit 1" ]
       interval: 15s
       timeout: 10s
       retries: 5
-      start_period: 30s
-
-  # Vector Database for LlamaIndex
-  qdrant:
-    image: qdrant/qdrant:latest
-    container_name: turiya-qdrant
-    restart: unless-stopped
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    volumes:
-      - qdrant_data:/qdrant/storage
+      start_period: 10s
 
   # Semantic Cache for repeated LLM queries
   redis:
@@ -130,7 +110,6 @@ services:
 
 volumes:
   postgres_data:
-  neo4j_data:
-  qdrant_data:
+  memgraph_rag_data:
   redis_data:
   ollama_data:

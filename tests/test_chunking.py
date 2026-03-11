@@ -1,4 +1,4 @@
-# Version: v1.1
+# Version: v2.0
 """
 Tests for nexus.chunking — Document chunking utilities.
 """
@@ -117,15 +117,15 @@ class TestIngestWithChunking:
     @patch.object(chunking, "INGEST_CHUNK_SIZE", 100)
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
-    async def test_graph_ingest_chunks_large_document(self, mock_neo4j, mock_get_index):
+    @patch("nexus.tools.graph_backend")
+    async def test_graph_ingest_chunks_large_document(self, mock_graph, mock_get_index):
         """Large documents should be automatically chunked for GraphRAG."""
         from nexus.tools import ingest_graph_document
 
         mock_index = MagicMock()
-        mock_index.insert = MagicMock()
+        mock_index.insert_nodes = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         large_text = "Hello world. " * 50  # ~650 bytes > 100 byte limit
         result = await ingest_graph_document(
@@ -135,20 +135,20 @@ class TestIngestWithChunking:
         )
 
         assert "chunks" in result.lower()
-        assert mock_index.insert.call_count > 1
+        assert mock_index.insert_nodes.call_count > 1
 
     @patch.object(chunking, "MAX_DOCUMENT_SIZE", 100)
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.graph_backend")
     async def test_graph_ingest_rejects_large_when_auto_chunk_false(
-        self, mock_neo4j, mock_get_index
+        self, mock_graph, mock_get_index
     ):
         """Large documents should be rejected when auto_chunk=False."""
         from nexus.tools import ingest_graph_document
 
         mock_index = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         large_text = "Hello world. " * 50  # > 100 bytes
         result = await ingest_graph_document(
@@ -161,22 +161,23 @@ class TestIngestWithChunking:
         assert "error" in result.lower()
         assert "limit" in result.lower()
         mock_index.insert.assert_not_called()
+        mock_index.insert_nodes.assert_not_called()
 
     @patch.object(chunking, "MAX_DOCUMENT_SIZE", 100)
     @patch.object(chunking, "INGEST_CHUNK_SIZE", 100)
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_vector_index")
-    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.vector_backend")
     async def test_vector_ingest_chunks_large_document(
-        self, mock_qdrant, mock_get_index
+        self, mock_vector, mock_get_index
     ):
         """Large documents should be automatically chunked for VectorRAG."""
         from nexus.tools import ingest_vector_document
 
         mock_index = MagicMock()
-        mock_index.insert = MagicMock()
+        mock_index.insert_nodes = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_qdrant.is_duplicate.return_value = False
+        mock_vector.is_duplicate.return_value = False
 
         large_text = "Hello world. " * 50  # ~650 bytes > 100 byte limit
         result = await ingest_vector_document(
@@ -186,20 +187,20 @@ class TestIngestWithChunking:
         )
 
         assert "chunks" in result.lower()
-        assert mock_index.insert.call_count > 1
+        assert mock_index.insert_nodes.call_count > 1
 
     @patch.object(chunking, "MAX_DOCUMENT_SIZE", 100)
     @patch("nexus.tools.get_vector_index")
-    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.vector_backend")
     async def test_vector_ingest_rejects_large_when_auto_chunk_false(
-        self, mock_qdrant, mock_get_index
+        self, mock_vector, mock_get_index
     ):
         """Large documents should be rejected when auto_chunk=False."""
         from nexus.tools import ingest_vector_document
 
         mock_index = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_qdrant.is_duplicate.return_value = False
+        mock_vector.is_duplicate.return_value = False
 
         large_text = "Hello world. " * 50  # > 100 bytes
         result = await ingest_vector_document(
@@ -212,17 +213,18 @@ class TestIngestWithChunking:
         assert "error" in result.lower()
         assert "limit" in result.lower()
         mock_index.insert.assert_not_called()
+        mock_index.insert_nodes.assert_not_called()
 
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.graph_backend")
     async def test_small_document_not_chunked(
-        self, mock_neo4j, mock_get_index, mock_graph_index
+        self, mock_graph, mock_get_index, mock_graph_index
     ):
         """Small documents should be ingested as single document."""
         from nexus.tools import ingest_graph_document
 
         mock_get_index.return_value = mock_graph_index
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         small_text = "Hello world."
         result = await ingest_graph_document(
@@ -238,15 +240,15 @@ class TestIngestWithChunking:
     @patch.object(chunking, "INGEST_CHUNK_SIZE", 100)
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
-    async def test_chunk_source_identifier_format(self, mock_neo4j, mock_get_index):
+    @patch("nexus.tools.graph_backend")
+    async def test_chunk_source_identifier_format(self, mock_graph, mock_get_index):
         """Chunk source identifiers should include chunk number."""
         from nexus.tools import ingest_graph_document
 
         mock_index = MagicMock()
         mock_index.insert = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         large_text = "Hello world. " * 50
         await ingest_graph_document(
@@ -270,9 +272,9 @@ class TestBatchIngestWithChunking:
     @patch.object(chunking, "INGEST_CHUNK_SIZE", 100)
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.graph_backend")
     async def test_batch_graph_ingest_chunks_large_documents(
-        self, mock_neo4j, mock_get_index
+        self, mock_graph, mock_get_index
     ):
         """Batch ingest should chunk large documents."""
         from nexus.tools import ingest_graph_documents_batch
@@ -280,7 +282,7 @@ class TestBatchIngestWithChunking:
         mock_index = MagicMock()
         mock_index.insert = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         documents = [
             {"text": "Small doc.", "project_id": "TEST", "scope": "CODE"},
@@ -298,9 +300,9 @@ class TestBatchIngestWithChunking:
 
     @patch.object(chunking, "MAX_DOCUMENT_SIZE", 100)
     @patch("nexus.tools.get_graph_index")
-    @patch("nexus.tools.neo4j_backend")
+    @patch("nexus.tools.graph_backend")
     async def test_batch_graph_rejects_large_when_auto_chunk_false(
-        self, mock_neo4j, mock_get_index
+        self, mock_graph, mock_get_index
     ):
         """Batch ingest should reject large documents when auto_chunk=False."""
         from nexus.tools import ingest_graph_documents_batch
@@ -308,7 +310,7 @@ class TestBatchIngestWithChunking:
         mock_index = MagicMock()
         mock_index.insert = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_neo4j.is_duplicate.return_value = False
+        mock_graph.is_duplicate.return_value = False
 
         documents = [
             {"text": "Small doc.", "project_id": "TEST", "scope": "CODE"},
@@ -329,9 +331,9 @@ class TestBatchIngestWithChunking:
     @patch.object(chunking, "INGEST_CHUNK_SIZE", 100)
     @patch.object(chunking, "INGEST_CHUNK_OVERLAP", 10)
     @patch("nexus.tools.get_vector_index")
-    @patch("nexus.tools.qdrant_backend")
+    @patch("nexus.tools.vector_backend")
     async def test_batch_vector_ingest_chunks_large_documents(
-        self, mock_qdrant, mock_get_index
+        self, mock_vector, mock_get_index
     ):
         """Batch vector ingest should chunk large documents."""
         from nexus.tools import ingest_vector_documents_batch
@@ -339,7 +341,7 @@ class TestBatchIngestWithChunking:
         mock_index = MagicMock()
         mock_index.insert = MagicMock()
         mock_get_index.return_value = mock_index
-        mock_qdrant.is_duplicate.return_value = False
+        mock_vector.is_duplicate.return_value = False
 
         documents = [
             {"text": "Small doc.", "project_id": "TEST", "scope": "CODE"},

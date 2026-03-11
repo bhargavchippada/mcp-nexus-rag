@@ -1,44 +1,50 @@
 #!/usr/bin/env python3
-# Version: v1.4
+# Version: v2.0
 """Safe integrity cleanup for Nexus RAG + Code-Graph-RAG backends.
 
 Default mode is dry-run. Use --apply to perform deletions.
+
+Backends:
+  - Memgraph RAG (port 7689): GraphRAG property graph store
+  - pgvector (Postgres): Vector store with metadata in JSONB
+  - Memgraph CGR (port 7688): Code-Graph-RAG AST index
 """
 
 from __future__ import annotations
 
 import argparse
 import re
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 
+import psycopg2
 from neo4j import GraphDatabase
-from qdrant_client import QdrantClient
 
 from nexus.config import (
-    COLLECTION_NAME,
-    DEFAULT_NEO4J_PASSWORD,
-    DEFAULT_NEO4J_URL,
-    DEFAULT_NEO4J_USER,
-    DEFAULT_QDRANT_URL,
+    DEFAULT_MEMGRAPH_URL,
+    DEFAULT_PG_DB,
+    DEFAULT_PG_HOST,
+    DEFAULT_PG_PASSWORD,
+    DEFAULT_PG_PORT,
+    DEFAULT_PG_USER,
+    PG_TABLE_NAME_SQL,
 )
 
 
 @dataclass
 class CleanupStats:
-    neo_dup_groups: int = 0
-    neo_dup_nodes: int = 0
-    neo_unscoped_chunks: int = 0
-    neo_deleted_dup_nodes: int = 0
-    neo_deleted_unscoped: int = 0
-    qdr_dup_groups: int = 0
-    qdr_dup_nodes: int = 0
-    qdr_deleted_dup_nodes: int = 0
-    neo_abs_file_paths: int = 0
-    neo_normalized_paths: int = 0
-    qdr_abs_file_paths: int = 0
-    qdr_normalized_paths: int = 0
+    graph_dup_groups: int = 0
+    graph_dup_nodes: int = 0
+    graph_unscoped_chunks: int = 0
+    graph_deleted_dup_nodes: int = 0
+    graph_deleted_unscoped: int = 0
+    pgv_dup_groups: int = 0
+    pgv_dup_nodes: int = 0
+    pgv_deleted_dup_nodes: int = 0
+    graph_abs_file_paths: int = 0
+    graph_normalized_paths: int = 0
+    pgv_abs_file_paths: int = 0
+    pgv_normalized_paths: int = 0
     mem_total_files: int = 0
     mem_stale_or_unwanted: int = 0
     mem_deleted_nodes: int = 0
@@ -57,10 +63,9 @@ def _is_unwanted_memgraph_path(path: str) -> bool:
     return False
 
 
-def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
-    driver = GraphDatabase.driver(
-        DEFAULT_NEO4J_URL, auth=(DEFAULT_NEO4J_USER, DEFAULT_NEO4J_PASSWORD)
-    )
+def audit_and_cleanup_memgraph_rag(apply: bool, stats: CleanupStats) -> None:
+    """Audit and clean the Memgraph RAG graph store (port 7689)."""
+    driver = GraphDatabase.driver(DEFAULT_MEMGRAPH_URL, auth=("", ""))
     with driver.session() as s:
         dup = s.run(
             """
@@ -71,8 +76,8 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
             RETURN count(*) AS groups, coalesce(sum(c - 1), 0) AS nodes
             """
         ).single()
-        stats.neo_dup_groups = int(dup["groups"])
-        stats.neo_dup_nodes = int(dup["nodes"])
+        stats.graph_dup_groups = int(dup["groups"])
+        stats.graph_dup_nodes = int(dup["nodes"])
 
         unscoped = s.run(
             """
@@ -81,7 +86,7 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
             RETURN count(n) AS c
             """
         ).single()
-        stats.neo_unscoped_chunks = int(unscoped["c"])
+        stats.graph_unscoped_chunks = int(unscoped["c"])
 
         abs_fp = s.run(
             """
@@ -90,7 +95,7 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
             RETURN count(n) AS c
             """
         ).single()
-        stats.neo_abs_file_paths = int(abs_fp["c"])
+        stats.graph_abs_file_paths = int(abs_fp["c"])
 
         if apply:
             dedup_res = s.run(
@@ -104,7 +109,7 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
                 RETURN count(*) AS groups, coalesce(sum(to_delete), 0) AS deleted
                 """
             ).single()
-            stats.neo_deleted_dup_nodes = int(dedup_res["deleted"])
+            stats.graph_deleted_dup_nodes = int(dedup_res["deleted"])
 
             unscoped_res = s.run(
                 """
@@ -115,7 +120,7 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
                 RETURN c AS deleted
                 """
             ).single()
-            stats.neo_deleted_unscoped = int(unscoped_res["deleted"])
+            stats.graph_deleted_unscoped = int(unscoped_res["deleted"])
 
             normalized = s.run(
                 """
@@ -126,70 +131,92 @@ def audit_and_cleanup_neo4j(apply: bool, stats: CleanupStats) -> None:
                 RETURN count(n) AS c
                 """
             ).single()
-            stats.neo_normalized_paths = int(normalized["c"])
+            stats.graph_normalized_paths = int(normalized["c"])
 
     driver.close()
 
 
-def audit_and_cleanup_qdrant(apply: bool, stats: CleanupStats) -> None:
-    client = QdrantClient(url=DEFAULT_QDRANT_URL)
+def audit_and_cleanup_pgvector(apply: bool, stats: CleanupStats) -> None:
+    """Audit and clean the pgvector store."""
+    conn = psycopg2.connect(
+        host=DEFAULT_PG_HOST,
+        port=DEFAULT_PG_PORT,
+        dbname=DEFAULT_PG_DB,
+        user=DEFAULT_PG_USER,
+        password=DEFAULT_PG_PASSWORD,
+    )
+    conn.autocommit = True
+    cur = conn.cursor()
+    table = PG_TABLE_NAME_SQL
 
-    by_key: dict[tuple[str, str, str], list[str]] = defaultdict(list)
-    normalize_updates: list[tuple[str, str]] = []
-    offset = None
-    while True:
-        points, offset = client.scroll(
-            collection_name=COLLECTION_NAME,
-            limit=1000,
-            offset=offset,
-            with_payload=True,
-            with_vectors=False,
-        )
-        if not points:
-            break
+    # Find duplicate content_hash groups
+    cur.execute(
+        f"""
+        SELECT metadata_->>'project_id', metadata_->>'tenant_scope',
+               metadata_->>'content_hash', count(*) AS c
+        FROM {table}
+        WHERE metadata_->>'content_hash' IS NOT NULL
+          AND metadata_->>'project_id' IS NOT NULL
+          AND metadata_->>'tenant_scope' IS NOT NULL
+        GROUP BY metadata_->>'project_id', metadata_->>'tenant_scope',
+                 metadata_->>'content_hash'
+        HAVING count(*) > 1
+        """
+    )
+    dup_rows = cur.fetchall()
+    stats.pgv_dup_groups = len(dup_rows)
+    stats.pgv_dup_nodes = sum(r[3] - 1 for r in dup_rows)
 
-        for p in points:
-            pl = p.payload or {}
-            pid = pl.get("project_id")
-            scope = pl.get("tenant_scope")
-            ch = pl.get("content_hash")
-            fp = pl.get("file_path")
-            if pid and scope and ch:
-                by_key[(str(pid), str(scope), str(ch))].append(str(p.id))
-            if isinstance(fp, str) and fp.startswith("/home/turiya/antigravity/"):
-                stats.qdr_abs_file_paths += 1
-                normalize_updates.append(
-                    (str(p.id), fp.removeprefix("/home/turiya/antigravity/"))
+    # Find absolute file paths
+    cur.execute(
+        f"""
+        SELECT count(*) FROM {table}
+        WHERE metadata_->>'file_path' LIKE '/home/turiya/antigravity/%%'
+        """
+    )
+    stats.pgv_abs_file_paths = cur.fetchone()[0]
+
+    if apply:
+        # Delete duplicate rows (keep one per group)
+        deleted = 0
+        for pid, scope, ch, cnt in dup_rows:
+            cur.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE id IN (
+                    SELECT id FROM {table}
+                    WHERE metadata_->>'project_id' = %s
+                      AND metadata_->>'tenant_scope' = %s
+                      AND metadata_->>'content_hash' = %s
+                    ORDER BY id
+                    OFFSET 1
                 )
-
-        if offset is None:
-            break
-
-    delete_ids: list[str] = []
-    for ids in by_key.values():
-        if len(ids) > 1:
-            stats.qdr_dup_groups += 1
-            stats.qdr_dup_nodes += len(ids) - 1
-            delete_ids.extend(ids[1:])
-
-    if apply and delete_ids:
-        client.delete(collection_name=COLLECTION_NAME, points_selector=delete_ids)
-        stats.qdr_deleted_dup_nodes = len(delete_ids)
-
-    if apply and normalize_updates:
-        # Payload updates are done point-by-point to avoid large in-memory batches.
-        for point_id, rel_path in normalize_updates:
-            client.set_payload(
-                collection_name=COLLECTION_NAME,
-                payload={"file_path": rel_path},
-                points=[point_id],
+                """,
+                (pid, scope, ch),
             )
-        stats.qdr_normalized_paths = len(normalize_updates)
+            deleted += cur.rowcount
+        stats.pgv_deleted_dup_nodes = deleted
+
+        # Normalize absolute file paths
+        cur.execute(
+            f"""
+            UPDATE {table}
+            SET metadata_ = jsonb_set(
+                metadata_,
+                '{{file_path}}',
+                to_jsonb(regexp_replace(metadata_->>'file_path', '^/home/turiya/antigravity/', ''))
+            )
+            WHERE metadata_->>'file_path' LIKE '/home/turiya/antigravity/%%'
+            """
+        )
+        stats.pgv_normalized_paths = cur.rowcount
+
+    cur.close()
+    conn.close()
 
 
-def audit_and_cleanup_memgraph(apply: bool, stats: CleanupStats) -> None:
-    # Use the Neo4j Bolt driver for Memgraph so cleanup works in the default
-    # Poetry environment without an extra mgclient dependency.
+def audit_and_cleanup_memgraph_cgr(apply: bool, stats: CleanupStats) -> None:
+    """Audit and clean the Code-Graph-RAG Memgraph instance (port 7688)."""
     root = Path("/home/turiya/antigravity")
     driver = GraphDatabase.driver("bolt://localhost:7688", auth=None)
 
@@ -235,27 +262,29 @@ def main() -> None:
     args = parser.parse_args()
 
     stats = CleanupStats()
-    audit_and_cleanup_neo4j(args.apply, stats)
-    audit_and_cleanup_qdrant(args.apply, stats)
-    audit_and_cleanup_memgraph(args.apply, stats)
+    audit_and_cleanup_memgraph_rag(args.apply, stats)
+    audit_and_cleanup_pgvector(args.apply, stats)
+    audit_and_cleanup_memgraph_cgr(args.apply, stats)
 
     mode = "APPLY" if args.apply else "DRY-RUN"
     print(f"SAFE CLEANUP REPORT [{mode}]")
-    print(f"Neo4j duplicate hash groups: {stats.neo_dup_groups}")
-    print(f"Neo4j duplicate nodes (extra): {stats.neo_dup_nodes}")
-    print(f"Neo4j unscoped chunks: {stats.neo_unscoped_chunks}")
-    print(f"Neo4j deleted duplicate nodes: {stats.neo_deleted_dup_nodes}")
-    print(f"Neo4j deleted unscoped chunks: {stats.neo_deleted_unscoped}")
-    print(f"Qdrant duplicate hash groups: {stats.qdr_dup_groups}")
-    print(f"Qdrant duplicate points (extra): {stats.qdr_dup_nodes}")
-    print(f"Qdrant deleted duplicate points: {stats.qdr_deleted_dup_nodes}")
-    print(f"Neo4j absolute file_path nodes: {stats.neo_abs_file_paths}")
-    print(f"Neo4j normalized file_path nodes: {stats.neo_normalized_paths}")
-    print(f"Qdrant absolute file_path points: {stats.qdr_abs_file_paths}")
-    print(f"Qdrant normalized file_path points: {stats.qdr_normalized_paths}")
-    print(f"Memgraph File nodes: {stats.mem_total_files}")
-    print(f"Memgraph stale/unwanted targets: {stats.mem_stale_or_unwanted}")
-    print(f"Memgraph deleted nodes (best-effort rowcount): {stats.mem_deleted_nodes}")
+    print(f"Memgraph RAG duplicate hash groups: {stats.graph_dup_groups}")
+    print(f"Memgraph RAG duplicate nodes (extra): {stats.graph_dup_nodes}")
+    print(f"Memgraph RAG unscoped chunks: {stats.graph_unscoped_chunks}")
+    print(f"Memgraph RAG deleted duplicate nodes: {stats.graph_deleted_dup_nodes}")
+    print(f"Memgraph RAG deleted unscoped chunks: {stats.graph_deleted_unscoped}")
+    print(f"pgvector duplicate hash groups: {stats.pgv_dup_groups}")
+    print(f"pgvector duplicate points (extra): {stats.pgv_dup_nodes}")
+    print(f"pgvector deleted duplicate points: {stats.pgv_deleted_dup_nodes}")
+    print(f"Memgraph RAG absolute file_path nodes: {stats.graph_abs_file_paths}")
+    print(f"Memgraph RAG normalized file_path nodes: {stats.graph_normalized_paths}")
+    print(f"pgvector absolute file_path points: {stats.pgv_abs_file_paths}")
+    print(f"pgvector normalized file_path points: {stats.pgv_normalized_paths}")
+    print(f"Memgraph CGR File nodes: {stats.mem_total_files}")
+    print(f"Memgraph CGR stale/unwanted targets: {stats.mem_stale_or_unwanted}")
+    print(
+        f"Memgraph CGR deleted nodes (best-effort rowcount): {stats.mem_deleted_nodes}"
+    )
 
 
 if __name__ == "__main__":
