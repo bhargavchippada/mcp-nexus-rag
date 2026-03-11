@@ -1,4 +1,4 @@
-# Version: v2.1
+# Version: v2.2
 """
 nexus.watcher — Continuous RAG sync daemon.
 
@@ -191,6 +191,10 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
     Acquires a per-file asyncio lock to prevent concurrent ingestion of the
     same file (e.g. watcher + manual sync_project_files overlap).
     """
+    import re
+    import time as _time
+
+    from nexus.metrics import record_file_ingestion, timer
     from nexus.tools import ingest_graph_document, ingest_vector_document
 
     for abs_path_str in paths:
@@ -214,6 +218,8 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
                 logger.debug(f"Watcher: unchanged, skipping {abs_path_str}")
                 continue
 
+            _t_file_start = _time.monotonic()
+
             try:
                 content = filepath.read_text(encoding="utf-8")
                 try:
@@ -236,15 +242,19 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
 
                 graph_result = "Skipped: already in graph"
                 vector_result = "Skipped: already in vector"
+                graph_ms = 0.0
+                vector_ms = 0.0
 
                 if needs_graph:
-                    graph_result = await ingest_graph_document(
-                        text=content,
-                        project_id=project_id,
-                        scope=scope,
-                        source_identifier=source_id,
-                        file_path=canonical_path,
-                    )
+                    with timer() as gt:
+                        graph_result = await ingest_graph_document(
+                            text=content,
+                            project_id=project_id,
+                            scope=scope,
+                            source_identifier=source_id,
+                            file_path=canonical_path,
+                        )
+                    graph_ms = gt.elapsed_ms
                     backfilled = graph_backend.backfill_all_unscoped(project_id, scope)
                     if backfilled:
                         logger.info(
@@ -255,13 +265,38 @@ async def _sync_changed(paths: list[str], workspace_root: Path) -> None:
                         )
 
                 if needs_vector:
-                    vector_result = await ingest_vector_document(
-                        text=content,
-                        project_id=project_id,
-                        scope=scope,
-                        source_identifier=source_id,
-                        file_path=canonical_path,
-                    )
+                    with timer() as vt:
+                        vector_result = await ingest_vector_document(
+                            text=content,
+                            project_id=project_id,
+                            scope=scope,
+                            source_identifier=source_id,
+                            file_path=canonical_path,
+                        )
+                    vector_ms = vt.elapsed_ms
+
+                total_ms = (_time.monotonic() - _t_file_start) * 1000
+
+                # Extract chunk counts from result strings
+                def _parse_chunks(result_str: str) -> int:
+                    m = re.search(r"(\d+) chunks", result_str)
+                    return int(m.group(1)) if m else 1
+
+                record_file_ingestion(
+                    file_path=source_id,
+                    project_id=project_id,
+                    scope=scope,
+                    total_ms=total_ms,
+                    graph_ms=graph_ms,
+                    vector_ms=vector_ms,
+                    chunks=_parse_chunks(graph_result),
+                    graph_chunks_ingested=_parse_chunks(graph_result)
+                    if "Error" not in graph_result and "Skipped" not in graph_result
+                    else 0,
+                    vector_chunks_ingested=_parse_chunks(vector_result)
+                    if "Error" not in vector_result and "Skipped" not in vector_result
+                    else 0,
+                )
 
                 if "Error" not in graph_result and "Error" not in vector_result:
                     logger.info(f"Watcher: synced {source_id} ({project_id}/{scope})")

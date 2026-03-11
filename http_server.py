@@ -1,4 +1,4 @@
-# Version: v2.2
+# Version: v2.3
 """
 HTTP API server for Nexus RAG.
 
@@ -10,6 +10,7 @@ Run with: uvicorn http_server:app --host 0.0.0.0 --port 8765
 
 import asyncio
 import re
+import time as _time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Optional
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 
 # Import the actual tool implementations
 # Note: nest_asyncio removed - conflicts with uvloop used by uvicorn
+from nexus.cache import invalidate_all_cache
 from nexus.tools import (
     answer_query,
     get_all_project_ids,
@@ -83,7 +85,15 @@ class QueryResponse(BaseModel):
     vector_results: list[VectorResult]
     graph_results: list[GraphResult]
     synthesis: Optional[str]
+    elapsed_ms: int = Field(0, description="Total query time in milliseconds")
     timestamp: str
+
+
+class CacheInvalidateResponse(BaseModel):
+    """Response body for /cache/invalidate endpoint."""
+
+    keys_deleted: int
+    message: str
 
 
 class HealthResponse(BaseModel):
@@ -298,6 +308,7 @@ async def http_query(request: QueryRequest):
     """Query both vector and graph stores with optional synthesis."""
     from nexus.config import logger
 
+    _t_start = _time.monotonic()
     project_id = request.project_id or "AGENT"
     scope = request.scope or ""
 
@@ -349,13 +360,37 @@ async def http_query(request: QueryRequest):
     if request.synthesize:
         synthesis = await _synthesize(request.query, project_id, scope, request.rerank)
 
+    elapsed_ms = int((_time.monotonic() - _t_start) * 1000)
+
+    from nexus.metrics import record_http_query
+
+    record_http_query(
+        query=request.query,
+        project_id=project_id,
+        elapsed_ms=elapsed_ms,
+        vector_count=len(vector_results),
+        graph_count=len(graph_results),
+        has_synthesis=synthesis is not None,
+    )
+
     return QueryResponse(
         query=request.query,
         project_id=project_id,
         vector_results=vector_results,
         graph_results=graph_results,
         synthesis=synthesis,
+        elapsed_ms=elapsed_ms,
         timestamp=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+@app.post("/cache/invalidate", response_model=CacheInvalidateResponse)
+async def http_invalidate_cache():
+    """Invalidate the entire Nexus cache across all projects and scopes."""
+    keys_deleted = invalidate_all_cache()
+    return CacheInvalidateResponse(
+        keys_deleted=keys_deleted,
+        message=f"Cache invalidated: {keys_deleted} keys deleted",
     )
 
 

@@ -1,4 +1,4 @@
-# Version: v3.0
+# Version: v3.2
 """
 Tests for nexus.watcher — RAG sync daemon.
 
@@ -38,7 +38,7 @@ class TestClassifyFile:
         assert _classify_file(p, WORKSPACE) == ("AGENT", "PERSONA")
 
     def test_project_readme_not_tracked(self):
-        """Project core docs are no longer tracked."""
+        """Only CLAUDE.md is tracked — README.md excluded to reduce indexing."""
         p = WORKSPACE / "projects/gravity-claw/README.md"
         assert _classify_file(p, WORKSPACE) is None
 
@@ -55,7 +55,7 @@ class TestClassifyFile:
         assert _classify_file(p, WORKSPACE) is None
 
     def test_workspace_memory_not_tracked(self):
-        """Root MEMORY.md is no longer tracked."""
+        """Root MEMORY.md excluded — only CLAUDE.md tracked."""
         p = WORKSPACE / "MEMORY.md"
         assert _classify_file(p, WORKSPACE) is None
 
@@ -121,8 +121,8 @@ class TestCoreDocEventHandler:
         changed, deleted = h.pop_ready(debounce=0.0)
         assert changed == []
 
-    def test_modified_project_readme_ignored(self):
-        """Project core docs are no longer tracked by the watcher."""
+    def test_modified_project_readme_not_queued(self):
+        """Project README.md is not tracked — only CLAUDE.md."""
         h = self._handler()
         e = self._make_event(str(WORKSPACE / "projects/gravity-claw/README.md"))
         h.on_modified(e)
@@ -186,8 +186,8 @@ class TestCoreDocEventHandler:
         assert changed == []
         assert deleted == []
 
-    def test_moved_event_queues_delete_only_if_tracked(self):
-        """Move from CLAUDE.md to a project file: delete src, ignore dst."""
+    def test_moved_event_queues_both_src_and_dst_if_tracked(self):
+        """Move from CLAUDE.md to a project README: delete src only (README not tracked)."""
         h = self._handler()
         src = str(WORKSPACE / "CLAUDE.md")
         dst = str(WORKSPACE / "projects/gravity-claw/README.md")
@@ -198,7 +198,7 @@ class TestCoreDocEventHandler:
         h.on_moved(e)
         changed, deleted = h.pop_ready(debounce=0.0)
         assert src in deleted
-        # dst is a project README which is no longer tracked
+        # dst is a project README which is NOT tracked (only CLAUDE.md)
         assert dst not in changed
 
     def test_pop_clears_state(self):
@@ -442,19 +442,20 @@ class TestSyncDeleted:
             mock_graph.delete_by_filepath.assert_not_called()
             mock_vector.delete_by_filepath.assert_not_called()
 
-    async def test_project_core_doc_delete_ignored(self, tmp_path):
-        """Project core docs are no longer tracked — delete should be ignored."""
+    async def test_project_non_claude_doc_delete_ignored(self, tmp_path):
+        """Project MEMORY.md is not tracked — delete should be a no-op."""
         workspace = tmp_path / "antigravity"
         workspace.mkdir()
         f = workspace / "projects" / "mission-control" / "MEMORY.md"
 
         with (
             patch("nexus.watcher.graph_backend") as mock_graph,
-            patch("nexus.watcher.vector_backend"),
+            patch("nexus.watcher.vector_backend") as mock_vector,
             patch("nexus.watcher.cache_module"),
         ):
             await _sync_deleted([str(f)], workspace)
             mock_graph.delete_by_filepath.assert_not_called()
+            mock_vector.delete_by_filepath.assert_not_called()
 
     async def test_cache_invalidated_after_delete(self, tmp_path):
         """_sync_deleted must invalidate cache so stale results are not served."""

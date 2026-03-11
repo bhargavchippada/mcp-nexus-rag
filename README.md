@@ -2,7 +2,7 @@
 
 <!-- Executive summary: tech stack, mission, architecture -->
 
-**Version:** v5.0
+**Version:** v5.2
 
 > See [AGENTS.md](AGENTS.md) for commands | [MEMORY.md](MEMORY.md) for state | [TODO.md](TODO.md) for tasks
 
@@ -10,7 +10,7 @@ Strict multi-tenant memory server for the Antigravity agent ecosystem.
 Provides **GraphRAG** (Memgraph) and **Vector RAG** (pgvector/Postgres) retrieval, both isolated by `project_id` and `tenant_scope`.
 All inference runs locally via Ollama -- zero data leakage.
 
-**Status**: Production-ready | Security-first | High-performance | 433 tests passing (445 total, 12 deselected) | Redis semantic cache integrated
+**Status**: Production-ready | Security-first | High-performance | 451 tests passing (463 total, 12 deselected) | Redis semantic cache integrated | Performance metrics tracking
 
 ---
 
@@ -92,7 +92,7 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 | ------------------ | ------------------------------------------------------- |
 | `health_check`     | Check connectivity to Memgraph, pgvector, and Ollama    |
 | `get_tenant_stats` | Get document/node counts for project/scope              |
-| `print_all_stats`  | Display ASCII table of all projects, scopes, and counts |
+| `print_all_stats`  | Display ASCII table of all projects, scopes, counts + performance metrics summary |
 
 `get_tenant_stats` returns:
 
@@ -120,7 +120,7 @@ The `(project_id, tenant_scope)` tuple is enforced as an exact-match filter in b
 | -------------------------- | -------------------------------------------------------------------------------------- |
 | `delete_all_data`          | **Full wipe** -- delete all data from Memgraph and pgvector across all tenants         |
 | `ingest_project_directory` | Recursively ingest an entire directory tree into both GraphRAG and VectorRAG            |
-| `sync_project_files`       | Re-ingest tracked persona file (CLAUDE.md) if changed (idempotent, SHA-256 dedup)      |
+| `sync_project_files`       | Re-ingest tracked persona files (CLAUDE.md only) if changed (idempotent, SHA-256 dedup) |
 | `sync_deleted_files`       | Remove stale database entries for files deleted from disk                               |
 | `list_core_doc_files`      | List tracked persona file(s) for sync (dry-run for `sync_project_files`)               |
 | `invalidate_project_cache` | Targeted cache invalidation without data deletion                                      |
@@ -346,11 +346,22 @@ npx @modelcontextprotocol/inspector poetry run python server.py
 - **Backend modules:** `nexus/backends/memgraph.py` (graph ops), `nexus/backends/pgvector.py` (vector ops via psycopg2 SQL).
 - All 433 tests pass, lint clean.
 
-### Watcher Simplification (2026-03-09)
+### Performance Metrics (2026-03-11)
 
-- Watcher now tracks **only `CLAUDE.md`** (agent persona). Per-project core docs (README.md, MEMORY.md, AGENTS.md, TODO.md) removed from auto-sync.
-- Database fully wiped and re-initialized for clean CLAUDE.md-only ingestion.
-- `sync.py` v2.0: removed `CORE_DOC_PATTERNS`, `PROJECT_MAPPINGS`, `_project_id_from_path()`. Single tracked file: `CLAUDE.md` → `("AGENT", "PERSONA")`.
+- **`nexus/metrics.py`** — Lightweight metrics for ingestion and query tracking
+  - File-level ingestion timing (total, graph, vector breakdown, ms/chunk)
+  - Query latency (retrieval, synthesis, total, cache hit/miss)
+  - HTTP API query tracking
+  - JSONL persistent log (`metrics/performance.jsonl`, gitignored)
+  - In-memory rolling buffer (200 entries) for `print_all_stats` summaries
+- Instrumented: `watcher.py` (ingestion), `tools.py:answer_query` (queries), `http_server.py` (HTTP queries)
+
+### Watcher CLAUDE.md-Only Tracking (2026-03-11)
+
+- Watcher tracks **only `CLAUDE.md`** at workspace root and per-project (`projects/<name>/CLAUDE.md`)
+- Other docs (README, MEMORY, AGENTS, TODO) excluded — they change too frequently, causing constant re-indexing that saturates the Ollama LLM pipeline
+- Root `CLAUDE.md` → `("AGENT", "PERSONA")`; per-project → `("<PROJECT_ID>", "PERSONA")`
+- v3.1 briefly expanded to 5 files; reverted to CLAUDE.md-only in v3.2 for performance
 
 ```bash
 # Integrity audit / cleanup (dry-run first, then apply)

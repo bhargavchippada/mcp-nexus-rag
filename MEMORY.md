@@ -2,16 +2,16 @@
 
 <!-- Logical state: known bugs, key findings, lessons learned -->
 
-**Version:** v6.22
+**Version:** v6.25
 
 ## Project Status
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 435 passed (447 total, 12 deselected) |
+| **Tests** | 451 passed (463 total, 12 deselected) |
 | **Coverage** | ~83% |
 | **Status** | Production-ready |
-| **Last Updated** | 2026-03-10 |
+| **Last Updated** | 2026-03-11 |
 
 ---
 
@@ -122,6 +122,59 @@ Gravity-claw (Docker container) connects to Nexus RAG via MCP SSE transport on p
 **Remaining bottleneck:** ~350-400ms of each query is the Ollama LLM synthesis call (qwen2.5:3b generating the answer). This is the irreducible minimum for a 3B model. Raw Ollama inference on warm model is 78-98ms — the gap is LlamaIndex wrapper overhead.
 
 > **Guideline:** Never use `PropertyGraphIndex.as_retriever()` directly for queries — always use `get_graph_retriever()` which bypasses the LLM synonym step. Always pass `num_ctx` in Ollama API calls.
+
+### Expanded Watcher File Tracking (2026-03-11)
+**Change:** Expanded `PERSONA_FILES` in `sync.py` v3.1 from `CLAUDE.md`-only to also track `README.md`, `MEMORY.md`, `AGENTS.md`, `TODO.md` at both workspace root and per-project (`projects/<name>/`).
+
+**Impact:** Database grew from 1 file / 41 chunks to 25 files / 2500+ chunks across 6 projects (AGENT, AGENTIC_TRADER, GRAVITY_CLAW, MCP_NEXUS_RAG, MISSION_CONTROL, WEB_SCRAPERS). Pass rate improved from 25% → 50%.
+
+**Remaining RAG quality issues (50% pass rate):**
+- **Retrieval misses:** nomic-embed-text doesn't well-distinguish between "name" as identity vs code concept. "what is your name?" retrieves code-graph-rag Cypher chunks instead of identity section.
+- **LLM hallucination:** qwen2.5:3b hallucinates specific values (says chunk size is "1024" when context says "384", says "4 MCPs" when there are 23).
+- **Graph ingestion slow:** Each chunk requires an LLM call for entity extraction (~600-700ms). 25 files = hours of ingestion.
+
+> **Guideline:** For better pass rate, consider: (1) larger LLM model, (2) HyDE query expansion, (3) metadata-enriched chunking with section headers, (4) disabling graph ingestion for markdown docs (vector-only sufficient).
+
+### Memgraph Vector Index Dimension Mismatch (2026-03-11) (FIXED)
+**Root Cause:** LlamaIndex `MemgraphPropertyGraphStore` auto-creates a vector index with dimension 1536 (OpenAI default), but our embeddings from `nomic-embed-text` are 768-dimensional. After a volume wipe, the wrong-dimension index blocks all chunk insertions.
+**Fix Applied:** After Memgraph volume wipe, pre-create the vector index with correct dimensions before ingestion:
+```sql
+CREATE VECTOR INDEX entity ON :__Entity__(embedding) WITH CONFIG {"dimension": 768, "capacity": 5000};
+```
+**Prevention Guideline:** After any Memgraph RAG volume wipe (`docker volume rm mcp-nexus-rag_memgraph_rag_data`), ALWAYS create the 768-dim vector index BEFORE the first graph ingestion. Add this to the start-services.sh bootstrap sequence.
+
+### Watcher Reverted to CLAUDE.md-Only (2026-03-11)
+**Root Cause:** Expanding PERSONA_FILES to 5 docs x 6 projects = 25 files caused continuous re-indexing. Project docs (MEMORY.md, TODO.md, AGENTS.md, README.md) change frequently, each change triggering a full GraphRAG re-ingestion (38-250s per file). This saturated the Ollama pipeline.
+**Fix:** Reverted `sync.py` v3.2 to track only `CLAUDE.md`. Database wiped and reindexed cleanly.
+**Benchmark (CLAUDE.md only, clean):** 38.1s total, 41 chunks, 930ms/chunk, 0 errors.
+
+> **Guideline:** Only track files that change infrequently (weekly/monthly) via the watcher. For frequently-changing docs, use manual `ingest_document` calls when needed.
+
+### Gravity-Claw Heartbeat Creates Multiple Chunks (2026-03-11)
+**Root Cause:** `ingest_vector_document` chunks the pretty-printed JSON heartbeat (~5KB) into 11-15 pieces at 512-byte chunk size. The `delete_tenant_data` correctly deletes old chunks before each new pulse, but the chunking is wasteful.
+**Impact:** Low — data is cleaned on each pulse. But pgvector carries 11-15 rows per heartbeat instead of 1.
+**Recommended Fix (in gravity-claw):** Use compact JSON (`JSON.stringify(pulse)` without indentation) or increase `MAX_DOCUMENT_SIZE` for heartbeat scope.
+
+### Performance Metrics Infrastructure (2026-03-11)
+**Added:** `nexus/metrics.py` v1.0 — JSONL + in-memory metrics for ingestion and query tracking.
+
+**Ingestion Benchmark Results (25-file initial sync):**
+- Graph ingestion is 99.7% of total time. Vector is negligible (<1s per file).
+- CLAUDE.md (41 chunks): 49.4s total, 1206ms/chunk
+- Large files (agentic-trader README, 26 chunks): 166.8s, 6415ms/chunk
+- Small files (1 chunk): 3.6-10.0s (LLM cold-start overhead)
+- **Outlier:** AGENTS.md took 250.8s (25s/chunk) due to Memgraph connection error on chunk 11 causing retry cascade
+- **Average per file (excluding outlier):** ~28.7s
+- **Average graph ms/chunk:** ~5087ms (varies 915-6415ms depending on chunk complexity and LLM context window pressure)
+
+**Bottleneck:** `SimpleLLMPathExtractor` in LlamaIndex — each chunk requires a full LLM call to qwen2.5:3b for entity/relationship extraction. This is inherent to the GraphRAG design.
+
+> **Guideline:** Monitor `metrics/performance.jsonl` for ingestion regressions. Chunks taking >10s indicate Memgraph connection issues or Ollama slowdown. Consider disabling graph ingestion for frequently-changing docs (vector-only sufficient for markdown).
+
+### HTTP Server Enhancements (2026-03-11)
+- Added `elapsed_ms` field to `/query` response for timing visibility
+- Added `/cache/invalidate` POST endpoint for manual cache clearing
+- Mission-control UI updated to display query time and "Clear Cache" button
 
 ### Orphan Nodes and Duplicates -- Root Causes and Fixes
 - **Unscoped entity nodes:** LlamaIndex's `PropertyGraphIndex.insert()` creates entity nodes during LLM extraction without propagating tenant metadata (project_id, tenant_scope). Fix: `backfill_all_unscoped()` in `neo4j.py` v2.4 runs after every graph insert -- tags ALL nodes with `project_id IS NULL`.

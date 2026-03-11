@@ -2,7 +2,7 @@
 
 <!-- Commands for AI agents: testing, building, running -->
 
-**Version:** v3.0
+**Version:** v3.1
 
 ## Services — Full Startup
 
@@ -243,6 +243,39 @@ async def main():
     ))
 asyncio.run(main())
 PY
+```
+
+## Performance Metrics
+
+```bash
+# View JSONL metrics log (ingestion + query timings)
+cat metrics/performance.jsonl | python3 -m json.tool --no-ensure-ascii
+
+# Parse ingestion benchmark summary
+cat metrics/performance.jsonl | python3 -c "
+import json, sys
+entries = [json.loads(l) for l in sys.stdin if l.strip()]
+fi = [e for e in entries if e.get('type') == 'file_ingestion']
+for e in fi:
+    print(f\"{e['file_path']:50s} {e['total_ms']:8.0f}ms  graph={e['graph_ms']:8.0f}ms  chunks={e['chunks']:3d}\")
+if fi:
+    totals = [e['total_ms'] for e in fi]
+    print(f'Avg: {sum(totals)/len(totals)/1000:.1f}s  Min: {min(totals)/1000:.1f}s  Max: {max(totals)/1000:.1f}s')
+"
+
+# Check query latency metrics
+cat metrics/performance.jsonl | python3 -c "
+import json, sys
+qs = [json.loads(l) for l in sys.stdin if l.strip() and json.loads(l).get('type') == 'query']
+for q in qs[-10:]:
+    print(f\"{q['query'][:50]:50s} {q['total_ms']:6.0f}ms  cached={q.get('cached', False)}\")
+"
+
+# Watcher log — see METRICS lines for real-time ingestion timing
+grep "METRICS" /tmp/rag-sync-watcher.log | tail -20
+
+# Performance summary via MCP (in-memory stats from current session)
+# Use print_all_stats tool — includes metrics summary at bottom
 ```
 
 ## Watcher (Code-Graph-RAG)

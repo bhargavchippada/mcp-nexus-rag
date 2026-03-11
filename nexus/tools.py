@@ -1337,6 +1337,19 @@ async def answer_query(
     )
     if cached is not None:
         logger.info(f"answer_query cache hit: project={project_id} scope={scope_msg}")
+        from nexus.metrics import record_query
+
+        record_query(
+            query=query,
+            project_id=project_id,
+            scope=scope_msg,
+            total_ms=0,
+            retrieval_ms=0,
+            synthesis_ms=0,
+            vector_passages=0,
+            graph_passages=0,
+            cached=True,
+        )
         return (
             cached  # answer is LLM output — max_context_chars limits input, not output
         )
@@ -1423,10 +1436,25 @@ async def answer_query(
             logger.warning("answer_query: LLM returned empty response, skipping cache")
             return "Error: LLM returned empty response. Please retry."
 
+        _t_total_ms = _t_retrieve_ms + _t_llm_ms
         logger.info(
             f"answer_query: LLM {_t_llm_ms:.0f}ms, answer {len(answer)} chars "
-            f"(retrieve={_t_retrieve_ms:.0f}ms, total={_t_retrieve_ms + _t_llm_ms:.0f}ms)"
+            f"(retrieve={_t_retrieve_ms:.0f}ms, total={_t_total_ms:.0f}ms)"
         )
+
+        from nexus.metrics import record_query
+
+        record_query(
+            query=query,
+            project_id=project_id,
+            scope=scope_msg,
+            total_ms=_t_total_ms,
+            retrieval_ms=_t_retrieve_ms,
+            synthesis_ms=_t_llm_ms,
+            vector_passages=len(vector_passages),
+            graph_passages=len(graph_passages),
+        )
+
         cache_module.set_cached(
             f"answer:{query}", project_id, scope, answer, tool_type="answer"
         )
@@ -1751,6 +1779,32 @@ async def print_all_stats() -> str:
         f"Graph nodes: {total_graph} (chunks={total_chunks}, entities={total_entities}) | "
         f"Vector docs: {total_vector} | Total: {grand_total}"
     )
+
+    # Append performance metrics summary
+    from nexus.metrics import get_jsonl_path, get_summary
+
+    perf = get_summary()
+    if perf:
+        lines.append("\n--- Performance Metrics ---")
+        fi = perf.get("file_ingestion")
+        if fi:
+            lines.append(
+                f"Ingestion: {fi['count']} files | "
+                f"avg {fi['avg_total_ms']:.0f}ms/file "
+                f"(graph {fi['avg_graph_ms']:.0f}ms + vector {fi['avg_vector_ms']:.0f}ms) | "
+                f"range {fi['min_total_ms']:.0f}-{fi['max_total_ms']:.0f}ms | "
+                f"{fi['total_chunks']} chunks total"
+            )
+        qs = perf.get("query")
+        if qs:
+            lines.append(
+                f"Queries: {qs['count']} total ({qs['cached']} cached) | "
+                f"avg {qs['avg_total_ms']:.0f}ms | "
+                f"range {qs['min_total_ms']:.0f}-{qs['max_total_ms']:.0f}ms"
+            )
+        path = get_jsonl_path()
+        if path:
+            lines.append(f"Metrics log: {path}")
 
     return "\n".join(lines)
 

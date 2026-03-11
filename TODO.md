@@ -2,7 +2,7 @@
 
 <!-- Pending tasks: [ ] incomplete -->
 
-**Version:** v5.5
+**Version:** v5.8
 
 ## Pending
 
@@ -36,7 +36,14 @@
 - [x] Add initial-scan mode to watcher — v2.1: bootstraps unsynced files on startup (2026-03-10)
 - [ ] [LOW] Clean up old host Ollama models at `/usr/share/ollama/.ollama/models` (systemd Ollama replaced by host `ollama serve`)
 - [ ] [LOW] Remove stale Docker volumes: `docker volume rm mcp-nexus-rag_neo4j_data mcp-nexus-rag_qdrant_data` (orphaned from v2.x → v3.0 migration)
-- [ ] [MED] Expand `PERSONA_FILES` in `sync.py` — currently only tracks `CLAUDE.md`; docstring in `sync_project_files` claims to track README.md/MEMORY.md/AGENTS.md/TODO.md per project but code doesn't match
+- [x] [MED] Expand `PERSONA_FILES` in `sync.py` — now tracks CLAUDE.md, README.md, MEMORY.md, AGENTS.md, TODO.md at workspace + per-project (2026-03-11)
+- [x] [HIGH] Add performance metrics for ingestion + query tracking — `nexus/metrics.py` v1.0 + JSONL log + 16 tests (2026-03-11)
+- [x] [HIGH] Revert watcher to CLAUDE.md-only — expanded 5-file tracking caused constant re-indexing (2026-03-11)
+- [x] [HIGH] Fix Memgraph vector index dimension mismatch — pre-create 768-dim index after volume wipe (2026-03-11)
+- [ ] [HIGH] Add 768-dim vector index creation to `start-services.sh` bootstrap — prevents dimension mismatch after volume wipe
+- [ ] [MED] Gravity-claw heartbeat: switch to compact JSON to reduce chunk count from 11-15 to 1-2
+- [ ] [MED] Add Grafana/dashboard for metrics visualization — parse `metrics/performance.jsonl` for trend analysis
+- [ ] [LOW] Add metrics alerting — detect ingestion chunks >10s or query latency >30s as anomalies
 
 ### P2 Priority — Next Sprint (Code Review 2026-03-09)
 

@@ -1,9 +1,10 @@
-# Version: v3.0
+# Version: v3.2
 """
-nexus.sync — File synchronization for agent persona document.
+nexus.sync — File synchronization for core documentation files.
 
-Provides pattern-based file watching and ingestion for the CLAUDE.md agent
-persona file. This is the only file automatically tracked by the RAG watcher.
+Tracks CLAUDE.md at workspace root and per-project for auto-ingestion.
+Other docs (README, MEMORY, AGENTS, TODO) excluded — they change too
+frequently, causing constant re-indexing that saturates the LLM pipeline.
 
 Includes a per-file asyncio lock to prevent concurrent ingestion of the same
 file from racing (e.g. watcher + manual sync_project_files overlap).
@@ -34,7 +35,9 @@ def get_sync_lock(file_key: str) -> asyncio.Lock:
 # Tracked files
 # ---------------------------------------------------------------------------
 
-# Only the agent persona file is auto-tracked
+# Core documentation file tracked for auto-ingestion.
+# Only CLAUDE.md is tracked — other project docs change too frequently,
+# causing constant re-indexing that saturates the Ollama LLM pipeline.
 PERSONA_FILES = [
     "CLAUDE.md",
 ]
@@ -58,10 +61,17 @@ def _classify_file(filepath: Path, workspace_root: Path) -> Optional[tuple[str, 
         return None  # Outside workspace root
 
     rel_str = str(rel)
+    parts = rel.parts
 
     # Persona files (CLAUDE.md only)
     if rel_str in PERSONA_FILES:
         return ("AGENT", "PERSONA")
+
+    # Per-project CLAUDE.md: projects/<name>/CLAUDE.md
+    if len(parts) == 3 and parts[0] == "projects" and parts[2] in PERSONA_FILES:
+        project_name = parts[1]
+        project_id = project_name.upper().replace("-", "_")
+        return (project_id, "PERSONA")
 
     return None
 
@@ -112,6 +122,25 @@ def get_core_doc_files(workspace_root: str | Path) -> list[dict]:
                     "source": f"workspace:{rel_path}",
                 }
             )
+
+    # Per-project persona files: projects/<name>/CLAUDE.md
+    projects_dir = root / "projects"
+    if projects_dir.is_dir():
+        for project_dir in sorted(projects_dir.iterdir()):
+            if not project_dir.is_dir():
+                continue
+            for rel_path in PERSONA_FILES:
+                filepath = project_dir / rel_path
+                if filepath.exists():
+                    project_id = project_dir.name.upper().replace("-", "_")
+                    files.append(
+                        {
+                            "filepath": filepath,
+                            "project_id": project_id,
+                            "scope": "PERSONA",
+                            "source": f"project:{project_dir.name}/{rel_path}",
+                        }
+                    )
 
     logger.info(f"Found {len(files)} tracked documentation files")
     return files
