@@ -6,6 +6,10 @@
 
 ## Pending
 
+### In Progress
+
+- [x] Verify reranker health alert source, add Mission Control reranker health visibility, and move hidden Gravity Claw check-ins into persisted cron state (2026-03-11)
+
 ### P0 Priority — Immediate (Code Review 2026-03-09)
 
 - [ ] **Split tools.py (2071 lines)** into modular structure
