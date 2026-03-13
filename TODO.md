@@ -2,7 +2,49 @@
 
 <!-- Pending tasks: [ ] incomplete -->
 
-**Version:** v5.8
+**Version:** v5.9
+
+## SurrealDB Migration (Phase 4 — After Phases 1-3 Stable)
+
+> **Workspace artifact:** `artifacts/2026-03-11/ANTIGRAVITY_ARCHITECTURE_surrealdb_migration_plan.md`
+> **Goal:** Replace Memgraph (7689) + pgvector (5432) with SurrealDB 3.0 unified graph+vector store
+> **Estimated effort:** 3-5 sessions
+> **Prerequisite:** Split tools.py first (P0 below) — cleaner migration surface
+
+### Infrastructure
+- [ ] Add `surrealdb[pydantic]` to `pyproject.toml`, remove `neo4j` and `psycopg2-binary`
+- [ ] Create `nexus/surreal_store.py` — Unified graph+vector store (replaces graph_store.py + vector_store.py)
+- [ ] Create `scripts/surrealdb-schema.surql` — document table (768-dim HNSW), entity table, relates_to/extracted_from relations
+- [ ] Add `SURREAL_*` env vars to config, remove PG/Memgraph config
+
+### Migration
+- [ ] Migrate pgvector embeddings → SurrealDB `document` table with HNSW DIMENSION 768 DIST COSINE
+- [ ] Migrate Memgraph entities → SurrealDB `entity` table
+- [ ] Migrate Memgraph RELATES_TO edges → SurrealDB `relates_to` RELATION
+- [ ] Add `extracted_from` RELATION (entity → document) for provenance
+- [ ] Implement native hybrid search (vector KNN + BM25 FTS with RRF fusion)
+- [ ] Rewrite `nexus/watcher.py` to ingest into SurrealDB
+- [ ] Rewrite `nexus/sync.py` for SurrealDB dedup detection
+- [ ] Simplify `nexus/cache.py` — no more cross-store invalidation (graph+vector always consistent)
+
+### MCP Interface (MUST remain unchanged)
+- [ ] `answer_query()` — same signature, same response format
+- [ ] `get_graph_context()` — graph traversal via SurrealQL arrow syntax
+- [ ] `get_vector_context()` — KNN via SurrealQL `<|K|>` operator
+- [ ] `ingest_graph_document()` / `ingest_vector_document()` — same API, unified backend
+- [ ] All downstream consumers (gravity-claw, mission-control) unaffected
+
+### Validation
+- [ ] Vector search recall ≥ 95% of pgvector baseline (measured on test query set)
+- [ ] Graph traversal latency < 200ms for 3-hop queries
+- [ ] Dedup check performance parity
+- [ ] Run full 433-test suite against SurrealDB backend
+
+### Cleanup (after 2-week validation)
+- [ ] Remove `nexus/graph_store.py` and `nexus/vector_store.py`
+- [ ] Remove LlamaIndex PropertyGraphIndex/VectorStoreIndex dependencies
+- [ ] Update `scripts/start-services.sh` — remove Memgraph/pgvector startup
+- [ ] Decommission Memgraph RAG (7689) and PostgreSQL (5432) Docker containers
 
 ## Pending
 
@@ -12,7 +54,7 @@
 
 ### P0 Priority — Immediate (Code Review 2026-03-09)
 
-- [ ] **Split tools.py (2071 lines)** into modular structure
+- [ ] **Split tools.py (2071 lines)** into modular structure (DO THIS BEFORE SurrealDB migration)
   - Create `nexus/tools/ingest.py` — ingestion tools (single/batch, graph/vector)
   - Create `nexus/tools/query.py` — retrieval tools (graph context, vector context, answer_query)
   - Create `nexus/tools/admin.py` — admin tools (delete, stats, health check)
